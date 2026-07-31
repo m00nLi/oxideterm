@@ -274,16 +274,6 @@ impl Render for WorkspaceApp {
            .on_mouse_down(
                MouseButton::Left,
                cx.listener(|this, _event: &MouseDownEvent, _window, cx| {
-                    // Commit any active inline rename before processing the
-                    // click. This runs in the bubble phase: clicks inside the
-                    // rename input are consumed by stop_propagation and never
-                    // reach here, so the input stays interactive.
-                    if this.renaming_tab_id.is_some() {
-                        this.confirm_tab_rename(cx);
-                    }
-                    if this.renaming_terminal_id.is_some() {
-                        this.confirm_terminal_rename(cx);
-                    }
                    // Popovers inside the command bar stop propagation. Any
                    // remaining workspace click is outside those overlays and
                    // should dismiss them without stealing the original click.
@@ -1155,6 +1145,12 @@ impl Render for WorkspaceApp {
             })
             .when(self.shortcuts_modal.open, |root| {
                 root.child(self.render_shortcuts_modal(cx))
+            })
+            .when_some(self.render_tab_rename_dialog(cx), |root, dialog| {
+                root.child(dialog)
+            })
+            .when_some(self.render_terminal_rename_dialog(cx), |root, dialog| {
+                root.child(dialog)
             })
             .when_some(self.render_app_lock_dialog(cx), |root, dialog| {
                 root.child(dialog)

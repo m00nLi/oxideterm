@@ -846,25 +846,22 @@ impl WorkspaceApp {
             .get(&session_id)
             .cloned()
  .unwrap_or_default();
-        self.renaming_terminal_id = Some(session_id);
-        self.terminal_rename_draft = draft;
+        self.terminal_rename_dialog = Some((session_id, draft));
         cx.notify();
     }
 
     /// Abort terminal rename without applying the draft.
     pub(in crate::workspace) fn cancel_terminal_rename(&mut self, cx: &mut Context<Self>) {
-        if self.renaming_terminal_id.take().is_some() {
-            self.terminal_rename_draft.clear();
+        if self.terminal_rename_dialog.take().is_some() {
             cx.notify();
         }
     }
 
     /// Apply the terminal rename draft and exit edit mode.
     pub(in crate::workspace) fn confirm_terminal_rename(&mut self, cx: &mut Context<Self>) {
-        let Some(session_id) = self.renaming_terminal_id.take() else {
+        let Some((session_id, draft)) = self.terminal_rename_dialog.take() else {
             return;
         };
-        let draft = std::mem::take(&mut self.terminal_rename_draft);
         let trimmed = draft.trim();
         if trimmed.is_empty() {
             self.terminal_labels.remove(&session_id);
@@ -882,7 +879,7 @@ impl WorkspaceApp {
         event: &KeyDownEvent,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.renaming_terminal_id.is_none() {
+        if self.terminal_rename_dialog.is_none() {
             return false;
         }
        let key = event.keystroke.key.as_str();
@@ -901,7 +898,7 @@ impl WorkspaceApp {
                 true
             }
             "backspace" => {
-                self.terminal_rename_draft.pop();
+                self.terminal_rename_dialog.as_mut().unwrap().1.pop();
                 cx.notify();
                 true
             }
@@ -910,7 +907,7 @@ impl WorkspaceApp {
             _ => {
                 if let Some(text) = event.keystroke.key_char.as_deref() {
                     if !text.is_empty() && !text.chars().any(char::is_control) {
-                        self.terminal_rename_draft.push_str(text);
+                        self.terminal_rename_dialog.as_mut().unwrap().1.push_str(text);
                         cx.notify();
                         return true;
                     }
@@ -922,7 +919,7 @@ impl WorkspaceApp {
 
     /// Whether the given terminal session is currently being renamed inline.
     pub(in crate::workspace) fn is_renaming_terminal(&self, session_id: TerminalSessionId) -> bool {
-        self.renaming_terminal_id == Some(session_id)
+        self.terminal_rename_dialog.as_ref().is_some_and(|(id, _)| id.0 == session_id.0)
     }
 
     pub(in crate::workspace) fn render_active_session_focus_terminal(
@@ -983,7 +980,7 @@ impl WorkspaceApp {
                             .child(oxideterm_gpui_ui::text_input::text_input(
                                 &self.tokens,
                                 oxideterm_gpui_ui::text_input::TextInputView {
-                                    value: &self.terminal_rename_draft,
+                                    value: &self.terminal_rename_dialog.as_ref().map(|(_, d)| d.as_str()).unwrap_or(""),
                                     placeholder: self.i18n.t("sessions.focused_list.rename_terminal"),
                                     focused: true,
                                     caret_visible: self.new_connection_caret_visible,
@@ -1014,7 +1011,7 @@ impl WorkspaceApp {
             // Edit (rename) and close buttons are hidden while renaming so
             // the inline input owns the row. They sit outside the selectable
             // text child so their mouse events are not swallowed.
-            .when(!self.is_renaming_terminal(session_id), |row| {
+            .when(true, |row| {
                 row.child(
                     div()
                         .size(px(18.0))
@@ -1754,7 +1751,7 @@ impl WorkspaceApp {
                                 .child(oxideterm_gpui_ui::text_input::text_input(
                                     &self.tokens,
                                     oxideterm_gpui_ui::text_input::TextInputView {
-                                        value: &self.terminal_rename_draft,
+                                        value: &self.terminal_rename_dialog.as_ref().map(|(_, d)| d.as_str()).unwrap_or(""),
                                         placeholder: self.i18n.t(
                                             "sessions.focused_list.rename_terminal",
                                         ),
@@ -1791,7 +1788,7 @@ impl WorkspaceApp {
                 // Edit (pencil) and close (X) buttons share the same
                 // hover-reveal pattern. Both are hidden during rename so the
                 // inline input owns the row.
-                .when(!self.is_renaming_terminal(session_id), |row| {
+                .when(true, |row| {
                     row.child(
                         div()
                             .size(px(20.0))
@@ -1988,5 +1985,83 @@ mod tests {
         assert!(!session_status_can_remove_from_sidebar(
             ActiveSessionStatus::Active
         ));
+    }
+}
+
+impl WorkspaceApp {
+    pub(in crate::workspace) fn render_terminal_rename_dialog(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let (session_id, draft) = self.terminal_rename_dialog.as_ref()?;
+        let theme = self.tokens.ui;
+        let can_confirm = !draft.trim().is_empty();
+
+        let dialog = oxideterm_gpui_ui::modal::modal_container(&self.tokens)
+            .child(oxideterm_gpui_ui::modal::modal_header(
+                &self.tokens,
+                self.i18n.t("sessions.focused_list.rename_terminal"),
+                String::new(),
+            ))
+            .child(
+                oxideterm_gpui_ui::modal::modal_body(&self.tokens)
+                    .py(px(12.0))
+                    .child(
+                        oxideterm_gpui_ui::text_input::text_input(
+                            &self.tokens,
+                            oxideterm_gpui_ui::text_input::TextInputView {
+                                value: draft,
+                                placeholder: self.i18n.t("sessions.focused_list.rename_terminal"),
+                                focused: true,
+                                caret_visible: self.new_connection_caret_visible,
+                                secret: false,
+                                selected_all: false,
+                                selected_range: None,
+                                marked_text: None,
+                            },
+                        ),
+                    ),
+            )
+            .child(
+                oxideterm_gpui_ui::modal::modal_footer(&self.tokens)
+                    .child(
+                        oxideterm_gpui_ui::button::button(
+                            &self.tokens,
+                            self.i18n.t("common.actions.cancel"),
+                            oxideterm_gpui_ui::button::ButtonTone::Secondary,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _event, _window, cx| {
+                                this.cancel_terminal_rename(cx);
+                                cx.stop_propagation();
+                            }),
+                        ),
+                    )
+                    .child(
+                        oxideterm_gpui_ui::button::button(
+                            &self.tokens,
+                            self.i18n.t("common.actions.confirm"),
+                            oxideterm_gpui_ui::button::ButtonTone::Primary,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _event, _window, cx| {
+                                this.confirm_terminal_rename(cx);
+                                cx.stop_propagation();
+                            }),
+                        ),
+                    ),
+            );
+
+        let backdrop = oxideterm_gpui_ui::modal::dismissible_dialog_backdrop().on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _event, _window, cx| {
+                this.cancel_terminal_rename(cx);
+                cx.stop_propagation();
+            }),
+        );
+
+        Some(backdrop.child(dialog).into_any_element())
     }
 }

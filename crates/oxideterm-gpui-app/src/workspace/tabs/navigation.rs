@@ -382,9 +382,8 @@ impl WorkspaceApp {
         // Prune the custom terminal label and clear inline-rename state so
         // stale ids don't swallow input or leak memory.
         self.terminal_labels.remove(&session_id);
-        if self.renaming_terminal_id == Some(session_id) {
-            self.renaming_terminal_id = None;
-            self.terminal_rename_draft.clear();
+        if self.terminal_rename_dialog.as_ref().is_some_and(|(id, _)| id.0 == session_id.0) {
+            self.terminal_rename_dialog = None;
         }
        let Some(node_id) = self.terminal_ssh_nodes.remove(&session_id) else {
            return;
@@ -917,9 +916,8 @@ impl WorkspaceApp {
        self.detached_tab_windows.remove(&tab.id);
         // Clear inline-rename state if the closed tab was being renamed,
         // otherwise the orphaned id would swallow all keyboard input.
-        if self.renaming_tab_id == Some(tab.id) {
-            self.renaming_tab_id = None;
-            self.rename_input_draft.clear();
+        if self.tab_rename_dialog.as_ref().is_some_and(|(id, _)| id.0 == tab.id.0) {
+            self.tab_rename_dialog = None;
         }
        if self
             .main_window_tabs

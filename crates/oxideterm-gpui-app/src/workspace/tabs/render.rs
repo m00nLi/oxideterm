@@ -132,7 +132,7 @@ impl WorkspaceApp {
                 .filter(|job| job.ended_at.is_none());
             let show_reconnect_progress = reconnect_job.is_some();
             let icon = tab_kind_icon(self, &tab.kind);
-            let tab_text = self.tab_display_title(tab);
+            let tab_text = self.tab_display_title(tab).clone();
             let tab_tooltip_label = tab_text.clone();
             let tab_tooltip_id = format!("workspace-tab-title-{}", tab_id.0);
             let middle_click_tooltip_id = tab_tooltip_id.clone();
@@ -253,18 +253,13 @@ impl WorkspaceApp {
                     self.tokens.metrics.tab_icon_size,
                     tab_text_color,
                 ))
-                .child(if self.is_renaming_tab(tab_id) {
-                    // Inline rename replaces the static title with the shared
-                    // text-input primitive so the edit matches every form.
-                    self.render_tab_rename_input()
-                } else {
+                .child(
                     div()
                         .flex_1()
                         .truncate()
                         .text_size(px(self.tokens.metrics.tab_font_size))
-                        .child(tab_text)
-                        .into_any_element()
-                })
+                        .child(tab_text),
+                )
                 .when_some(
                     reconnect_job.zip(reconnect_node_id),
                     |tab, (job, node_id)| {

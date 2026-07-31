@@ -727,10 +727,10 @@ pub(crate) struct WorkspaceApp {
     focus_handle: FocusHandle,
     tabs: Vec<Tab>,
     main_window_tabs: WorkspaceWindowTabState,
-    renaming_tab_id: Option<TabId>,
-    rename_input_draft: String,
-    renaming_terminal_id: Option<TerminalSessionId>,
-    terminal_rename_draft: String,
+    tab_rename_dialog: Option<(TabId, String)>,
+
+    terminal_rename_dialog: Option<(TerminalSessionId, String)>,
+
     detached_tabs: HashSet<TabId>,
     detached_tab_windows: HashMap<TabId, AnyWindowHandle>,
     detached_tab_return_drag: Option<DetachedTabReturnDrag>,
