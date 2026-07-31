@@ -727,7 +727,11 @@ pub(crate) struct WorkspaceApp {
     focus_handle: FocusHandle,
     tabs: Vec<Tab>,
     main_window_tabs: WorkspaceWindowTabState,
-    tab_rename_dialog: Option<(TabId, String)>,
+    tab_rename_dialog: Option<(TabId, String, usize, usize)>,
+    tab_rename_dialog_offset: Point<Pixels>,
+    tab_rename_dialog_drag: Option<(Point<Pixels>, Point<Pixels>)>,
+    tab_rename_text_drag: Option<bool>,
+    tab_rename_input_bounds: Option<Bounds<Pixels>>,
 
     terminal_rename_dialog: Option<(TerminalSessionId, String)>,
 

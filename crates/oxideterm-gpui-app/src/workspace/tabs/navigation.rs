@@ -916,8 +916,12 @@ impl WorkspaceApp {
        self.detached_tab_windows.remove(&tab.id);
         // Clear inline-rename state if the closed tab was being renamed,
         // otherwise the orphaned id would swallow all keyboard input.
-        if self.tab_rename_dialog.as_ref().is_some_and(|(id, _)| id.0 == tab.id.0) {
-            self.tab_rename_dialog = None;
+        if self.tab_rename_dialog.as_ref().is_some_and(|(id, _, _, _)| id.0 == tab.id.0) {
+           self.tab_rename_dialog_offset = Point::new(px(0.0), px(0.0));
+           self.tab_rename_dialog_drag = None;
+           self.tab_rename_text_drag = None;
+           self.tab_rename_input_bounds = None;
+           self.tab_rename_dialog = None;
         }
        if self
             .main_window_tabs
@@ -1313,6 +1317,13 @@ impl WorkspaceApp {
     }
 
     pub(in crate::workspace) fn tab_display_title(&self, tab: &Tab) -> String {
+        // Prefix with a 1-based sequential number derived from the tab's
+        // position in the tab bar.  Closing a tab shifts subsequent tabs so
+        // the sequence stays compact (1, 2, 3 …) instead of growing forever.
+        let seq = self
+            .tab_index_by_id(tab.id)
+            .map(|i| i + 1)
+            .unwrap_or(tab.id.0 as usize);
         // A user-set custom title wins over the static/i18n derived title so
         // renamed tabs keep their name across language switches.
         let title = match &tab.custom_title {
@@ -1325,10 +1336,10 @@ impl WorkspaceApp {
         if matches!(tab.kind, TabKind::LocalTerminal | TabKind::SshTerminal) {
             let pane_count = tab.root_pane.as_ref().map_or(1, PaneNode::pane_count);
             if pane_count > 1 {
-                return format!("{title} ({pane_count})");
+                return format!("{seq}.{title} ({pane_count})");
             }
         }
-        title
+        format!("{seq}.{title}")
     }
 
     pub(super) fn tab_visual_width(&self, tab: &Tab) -> f32 {
