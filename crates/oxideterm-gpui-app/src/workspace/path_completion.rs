@@ -145,8 +145,6 @@ impl PathCompletionState {
         }
         let max_index = self.suggestions.len().saturating_sub(1) as isize;
         self.selected_index = (self.selected_index as isize + delta).clamp(0, max_index) as usize;
-        // Keep keyboard navigation and the popup viewport owned by the same state.
-        self.scroll_handle.scroll_to_item(self.selected_index);
         true
     }
 
@@ -268,9 +266,9 @@ impl WorkspaceApp {
         anchor: oxideterm_gpui_ui::text_input::TextInputAnchor,
         cx: &mut Context<Self>,
     ) {
-        let changed = self.text_input_anchors.changed(anchor);
+        let changed = self.text_input_anchors.get(&anchor.id) != Some(&anchor);
         self.update_text_input_anchor(anchor, cx);
-        if changed && self.path_completion_is_visible(owner, cx) {
+        if changed && self.path_completion_state(owner).is_visible() {
             // Geometry-only updates repaint only while a visible popup depends on them.
             cx.notify();
         }
@@ -281,15 +279,15 @@ impl WorkspaceApp {
         owner: PathCompletionOwner,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let (visible, selected_index, scroll_handle, suggestions) =
-            self.path_completion_snapshot(owner, cx);
-        if !visible {
+        let state = self.path_completion_state(owner);
+        if !state.is_visible() {
             return None;
         }
         let anchor = self
             .text_input_anchors
-            .get(owner.ime_target().anchor_id())?;
+            .get(&owner.ime_target().anchor_id())?;
         let theme = self.tokens.ui;
+        let selected_index = state.selected_index();
         let mut popup = div()
             .id(owner.popup_id())
             .w(anchor.bounds.size.width)
@@ -299,7 +297,7 @@ impl WorkspaceApp {
             .flex()
             .flex_col()
             .overflow_y_scroll()
-            .track_scroll(&scroll_handle)
+            .track_scroll(&state.scroll_handle)
             .rounded(px(self.tokens.radii.md))
             .border_1()
             .border_color(rgb(theme.border))
@@ -308,7 +306,7 @@ impl WorkspaceApp {
             // Deferred drawing alone does not prevent the file list behind the popup from hit-testing.
             .occlude();
 
-        for (index, candidate) in suggestions.into_iter().enumerate() {
+        for (index, candidate) in state.suggestions().iter().cloned().enumerate() {
             let label = if candidate.is_directory {
                 format!("{}/", candidate.name)
             } else {
@@ -376,55 +374,11 @@ impl WorkspaceApp {
         )
     }
 
-    fn path_completion_is_visible(&self, owner: PathCompletionOwner, cx: &App) -> bool {
+    fn path_completion_state(&self, owner: PathCompletionOwner) -> &PathCompletionState {
         match owner {
-            PathCompletionOwner::FileManager => {
-                self.file_manager.read(cx).path_completion.is_visible()
-            }
-            PathCompletionOwner::SftpLocal => {
-                self.sftp_view.read(cx).local_path_completion.is_visible()
-            }
-            PathCompletionOwner::SftpRemote => {
-                self.sftp_view.read(cx).remote_path_completion.is_visible()
-            }
-        }
-    }
-
-    fn path_completion_snapshot(
-        &self,
-        owner: PathCompletionOwner,
-        cx: &App,
-    ) -> (bool, usize, ScrollHandle, Vec<PathCompletionCandidate>) {
-        match owner {
-            PathCompletionOwner::FileManager => {
-                let state = &self.file_manager.read(cx).path_completion;
-                (
-                    state.is_visible(),
-                    state.selected_index(),
-                    state.scroll_handle.clone(),
-                    state.suggestions().to_vec(),
-                )
-            }
-            PathCompletionOwner::SftpLocal => {
-                let sftp = self.sftp_view.read(cx);
-                let state = &sftp.local_path_completion;
-                (
-                    state.is_visible(),
-                    state.selected_index(),
-                    state.scroll_handle.clone(),
-                    state.suggestions().to_vec(),
-                )
-            }
-            PathCompletionOwner::SftpRemote => {
-                let sftp = self.sftp_view.read(cx);
-                let state = &sftp.remote_path_completion;
-                (
-                    state.is_visible(),
-                    state.selected_index(),
-                    state.scroll_handle.clone(),
-                    state.suggestions().to_vec(),
-                )
-            }
+            PathCompletionOwner::FileManager => &self.file_manager.path_completion,
+            PathCompletionOwner::SftpLocal => &self.sftp_view.local_path_completion,
+            PathCompletionOwner::SftpRemote => &self.sftp_view.remote_path_completion,
         }
     }
 
@@ -437,10 +391,10 @@ impl WorkspaceApp {
         match owner {
             PathCompletionOwner::FileManager => self.accept_file_manager_path_completion(index, cx),
             PathCompletionOwner::SftpLocal => {
-                self.accept_sftp_path_completion(sftp::SftpPane::Local, index, cx)
+                self.accept_sftp_path_completion(sftp::SftpPane::Local, index)
             }
             PathCompletionOwner::SftpRemote => {
-                self.accept_sftp_path_completion(sftp::SftpPane::Remote, index, cx)
+                self.accept_sftp_path_completion(sftp::SftpPane::Remote, index)
             }
         }
     }
@@ -529,22 +483,5 @@ mod tests {
 
         assert!(state.apply_entries(generation, &parent_path, entries));
         assert_eq!(state.suggestions().len(), 12);
-    }
-
-    #[test]
-    fn completion_selection_can_move_beyond_the_initial_viewport() {
-        let mut state = PathCompletionState::default();
-        let request = remote_path_completion_request("/root/").unwrap();
-        let (generation, parent_path) = state.request(request).unwrap();
-        let entries = (0..12)
-            .map(|index| candidate(&format!("folder-{index:02}"), true))
-            .collect();
-
-        assert!(state.apply_entries(generation, &parent_path, entries));
-        for _ in 0..PATH_COMPLETION_VISIBLE_ROWS {
-            assert!(state.move_selection(1));
-        }
-
-        assert_eq!(state.selected_index(), PATH_COMPLETION_VISIBLE_ROWS);
     }
 }

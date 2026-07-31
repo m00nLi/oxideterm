@@ -28,13 +28,11 @@ use oxideterm_terminal_graphics::{
 
 mod backpressure;
 mod color;
-mod command_sender;
 mod data;
 mod editor_integration;
 mod local_graphics_event_loop;
 mod local_shell;
 mod local_shell_integration;
-mod privilege_prompt;
 mod process;
 mod process_lifecycle;
 mod remote_shell_integration;
@@ -44,10 +42,6 @@ mod shell_completion;
 mod shell_integration;
 
 pub use alacritty_terminal::term::TermMode;
-pub use command_sender::{
-    TerminalSenderFrame, TerminalSenderInputMode, TerminalSenderPacing, TerminalSenderPlan,
-    TerminalSenderPlanError, build_terminal_sender_plan,
-};
 pub use data::{
     GraphicsOptions, TerminalAttrs, TerminalCell, TerminalColor, TerminalCursorShape,
     TerminalImageAnimationState, TerminalImageData, TerminalImageFrame, TerminalImageId,
@@ -70,9 +64,6 @@ pub use oxideterm_terminal_encoding::{
     TerminalInputEncoder as RawTerminalInputEncoder, TerminalOutputDecoder,
 };
 pub use oxideterm_trzsz::{TrzszTransferDirection, TrzszTransferPolicy, TrzszTransferSelection};
-pub use privilege_prompt::{
-    TerminalPrivilegePrompt, TerminalPrivilegePromptEvent, detect_terminal_privilege_prompt,
-};
 pub use process::{TerminalLifecycle, TerminalProcessInfo, TerminalProcessProbe};
 pub use remote_shell_integration::{
     REMOTE_SHELL_INTEGRATION_RELATIVE_DIR, REMOTE_SHELL_INTEGRATION_VERSION,

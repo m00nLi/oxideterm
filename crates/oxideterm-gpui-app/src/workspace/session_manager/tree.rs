@@ -8,10 +8,7 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.tokens.ui;
-        let (selected_count, search_query) = {
-            let manager = self.session_manager.read(cx);
-            (manager.selected_items.len(), manager.search_query.clone())
-        };
+        let selected_count = self.session_manager.selected_items.len();
         let viewport_width = f32::from(window.viewport_size().width);
         let show_primary_labels = viewport_width >= MANAGER_RESPONSIVE_SM;
         let show_transfer_labels = viewport_width >= MANAGER_RESPONSIVE_MD;
@@ -34,7 +31,7 @@ impl WorkspaceApp {
                     .max_w(px(MANAGER_TOOLBAR_SEARCH_WIDTH))
                     .child(self.render_session_text_input(
                         SessionManagerInput::Search,
-                        &search_query,
+                        &self.session_manager.search_query,
                         self.i18n.t("sessionManager.toolbar.search_placeholder"),
                         cx,
                     )),
@@ -112,10 +109,9 @@ impl WorkspaceApp {
                                 self.i18n.t("sessionManager.batch.move_to_group"),
                                 ButtonVariant::Outline,
                                 cx.listener(|this, _event, _window, cx| {
-                                    this.session_manager.update(cx, |manager, cx| {
-                                        manager.show_batch_move = !manager.show_batch_move;
-                                        cx.notify();
-                                    });
+                                    this.session_manager.show_batch_move =
+                                        !this.session_manager.show_batch_move;
+                                    cx.notify();
                                     cx.stop_propagation();
                                 }),
                             )
@@ -173,15 +169,12 @@ impl WorkspaceApp {
         show_label: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (current_mode, menu_open) = {
-            let manager = self.session_manager.read(cx);
-            (manager.view_mode, manager.view_mode_menu_open)
-        };
+        let current_mode = self.session_manager.view_mode;
         let workspace = cx.entity();
         let trigger = self.render_toolbar_button(
             current_mode.icon(),
             self.i18n.t(current_mode.label_key()),
-            if menu_open {
+            if self.session_manager.view_mode_menu_open {
                 ButtonVariant::Default
             } else {
                 ButtonVariant::Outline
@@ -189,7 +182,7 @@ impl WorkspaceApp {
             has_background,
             show_label,
             cx.listener(move |this, _event, _window, cx| {
-                this.toggle_session_view_mode_menu(cx);
+                this.toggle_session_view_mode_menu();
                 cx.notify();
                 cx.stop_propagation();
             }),
@@ -215,20 +208,13 @@ impl WorkspaceApp {
         show_label: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (direction, sort_field, menu_open) = {
-            let manager = self.session_manager.read(cx);
-            (
-                manager.sort_direction,
-                manager.sort_field,
-                manager.sort_menu_open,
-            )
-        };
-        let label = self.i18n.t(sort_field.label_key());
+        let direction = self.session_manager.sort_direction;
+        let label = self.i18n.t(self.session_manager.sort_field.label_key());
         let workspace = cx.entity();
         let trigger = self.render_toolbar_button(
             direction.icon(),
             label,
-            if menu_open {
+            if self.session_manager.sort_menu_open {
                 ButtonVariant::Default
             } else {
                 ButtonVariant::Outline
@@ -236,7 +222,7 @@ impl WorkspaceApp {
             has_background,
             show_label,
             cx.listener(move |this, _event, _window, cx| {
-                this.toggle_session_sort_menu(cx);
+                this.toggle_session_sort_menu();
                 cx.notify();
                 cx.stop_propagation();
             }),
@@ -285,9 +271,8 @@ impl WorkspaceApp {
         let mut menu = context_menu_event_boundary(
             dropdown_menu_content(&self.tokens).w(px(MANAGER_VIEW_MODE_MENU_WIDTH)),
         );
-        let current_mode = self.session_manager.read(cx).view_mode;
         for mode in modes {
-            let active = current_mode == mode;
+            let active = self.session_manager.view_mode == mode;
             let item = dropdown_menu_item(
                 &self.tokens,
                 self.i18n.t(mode.label_key()),
@@ -301,11 +286,9 @@ impl WorkspaceApp {
                 false,
                 has_background,
                 move |this, _event, _window, cx| {
-                    this.session_manager.update(cx, |manager, cx| {
-                        manager.view_mode = mode;
-                        cx.notify();
-                    });
-                    this.close_session_row_menus(cx);
+                    this.session_manager.view_mode = mode;
+                    this.close_session_row_menus();
+                    cx.notify();
                     cx.stop_propagation();
                 },
                 cx,
@@ -359,15 +342,11 @@ impl WorkspaceApp {
         let mut menu = context_menu_event_boundary(
             dropdown_menu_content(&self.tokens).w(px(MANAGER_SORT_MENU_WIDTH)),
         );
-        let (current_field, current_direction) = {
-            let manager = self.session_manager.read(cx);
-            (manager.sort_field, manager.sort_direction)
-        };
         for field in fields {
-            let active = current_field == field;
+            let active = self.session_manager.sort_field == field;
             let mut label = self.i18n.t(field.label_key());
             if active {
-                label.push_str(match current_direction {
+                label.push_str(match self.session_manager.sort_direction {
                     SortDirection::Asc => " ↑",
                     SortDirection::Desc => " ↓",
                 });
@@ -385,8 +364,8 @@ impl WorkspaceApp {
                 false,
                 has_background,
                 move |this, _event, _window, cx| {
-                    this.set_session_sort_field(field, cx);
-                    this.close_session_row_menus(cx);
+                    this.set_session_sort_field(field);
+                    this.close_session_row_menus();
                     cx.notify();
                     cx.stop_propagation();
                 },

@@ -22,7 +22,7 @@ use oxideterm_topology::{
     ConnectionTopologyConsumerSummary, ConnectionTopologyEdge, ConnectionTopologyNode,
     ConnectionTopologySnapshot, ConnectionTopologyStatus,
 };
-use parking_lot::{Mutex as ParkingMutex, RwLock};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Handle as TokioHandle;
 use tokio::sync::{Mutex, Notify};
@@ -160,7 +160,6 @@ pub struct AcquiredSftpMeta {
     pub session: Arc<Mutex<SftpSession>>,
     pub was_new: bool,
     pub cwd: Option<String>,
-    pub generation: u64,
 }
 
 enum SharedSftpState {
@@ -218,9 +217,7 @@ struct ConnectionEntry {
     connection_id: String,
     key: String,
     config: SshConfig,
-    ownership_transition: ParkingMutex<()>,
     parent_connection_id: RwLock<Option<String>>,
-    parent_connection_consumer: RwLock<Option<ConnectionConsumer>>,
     state: RwLock<ConnectionState>,
     ref_count: AtomicU64,
     keep_alive: AtomicBool,
@@ -247,9 +244,7 @@ impl ConnectionEntry {
             connection_id: Uuid::new_v4().to_string(),
             key,
             config,
-            ownership_transition: ParkingMutex::new(()),
             parent_connection_id: RwLock::new(None),
-            parent_connection_consumer: RwLock::new(None),
             state: RwLock::new(ConnectionState::Connecting),
             ref_count: AtomicU64::new(0),
             keep_alive: AtomicBool::new(false),
@@ -411,12 +406,6 @@ impl SshConnectionHandle {
         &self.entry.key
     }
 
-    pub(crate) fn config(&self) -> &SshConfig {
-        // The registry remains the sole owner of authentication material while
-        // consumers borrow non-reconnect shell settings from the live entry.
-        &self.entry.config
-    }
-
     pub fn info(&self) -> ConnectionInfo {
         self.entry.info()
     }
@@ -478,29 +467,12 @@ impl SshConnectionHandle {
         Ok(self.acquire_sftp_with_meta().await?.session)
     }
 
-    /// Returns only the already-open shared channel for the exact owner
-    /// generation. It never creates or substitutes a replacement session.
-    pub async fn acquire_existing_sftp_generation(
-        &self,
-        expected_generation: u64,
-    ) -> Option<Arc<Mutex<SftpSession>>> {
-        let guard = self.entry.sftp.lock().await;
-        if self.entry.sftp_generation.load(Ordering::Acquire) != expected_generation {
-            return None;
-        }
-        match &*guard {
-            SharedSftpState::Ready(session) => Some(Arc::clone(session)),
-            SharedSftpState::Empty | SharedSftpState::Initializing { .. } => None,
-        }
-    }
-
     pub async fn acquire_sftp_with_meta(&self) -> Result<AcquiredSftpMeta, SftpError> {
         loop {
             let initializing = {
                 let mut guard = self.entry.sftp.lock().await;
                 match &*guard {
                     SharedSftpState::Ready(session) => {
-                        let generation = self.entry.sftp_generation.load(Ordering::Acquire);
                         let session = Arc::clone(session);
                         drop(guard);
                         let cwd = {
@@ -511,7 +483,6 @@ impl SshConnectionHandle {
                             session,
                             was_new: false,
                             cwd,
-                            generation,
                         });
                     }
                     SharedSftpState::Initializing { notify, .. } => Some(notify.clone()),
@@ -540,7 +511,6 @@ impl SshConnectionHandle {
                     let session = Arc::new(Mutex::new(sftp));
                     match &*guard {
                         SharedSftpState::Ready(existing) => {
-                            let generation = self.entry.sftp_generation.load(Ordering::Acquire);
                             let existing = Arc::clone(existing);
                             drop(guard);
                             let cwd = {
@@ -551,14 +521,12 @@ impl SshConnectionHandle {
                                 session: existing,
                                 was_new: false,
                                 cwd,
-                                generation,
                             });
                         }
                         SharedSftpState::Initializing { notify, generation }
                             if *generation
                                 == self.entry.sftp_generation.load(Ordering::Acquire) =>
                         {
-                            let generation = *generation;
                             let notify = notify.clone();
                             *guard = SharedSftpState::Ready(Arc::clone(&session));
                             notify.notify_waiters();
@@ -567,7 +535,6 @@ impl SshConnectionHandle {
                                 session,
                                 was_new: true,
                                 cwd,
-                                generation,
                             });
                         }
                         SharedSftpState::Initializing { notify, .. } => {
@@ -770,6 +737,7 @@ impl SshConnectionRegistry {
             let _ = emitter.emit_state_from_connection(&info.connection_id, &info.state, reason);
         }
         if became_active && entry.first_visible_terminal_started() {
+            tracing::debug!(connection_id = %entry.connection_id, skip = entry.config.skip_remote_env_detection, "connection became active, checking env detection");
             // Match Tauri's environment detector gate: hidden exec/shell probes
             // must not be the first session on a fresh SSH login because PAM
             // MOTD/lastlog output belongs to the user's first visible terminal.
@@ -792,6 +760,11 @@ impl SshConnectionRegistry {
     }
 
     fn maybe_spawn_remote_env_detection(&self, entry: Arc<ConnectionEntry>) {
+        tracing::debug!(connection_id = %entry.connection_id, skip = entry.config.skip_remote_env_detection, "maybe_spawn_remote_env_detection called");
+        if entry.config.skip_remote_env_detection {
+            tracing::debug!(connection_id = %entry.connection_id, "skipping remote env detection");
+            return;
+        }
         let runtime = self
             .idle_task_runtime
             .read()
@@ -852,63 +825,9 @@ impl SshConnectionRegistry {
             .get(connection_id)
             .map(|key| key.value().clone())?;
         let entry = self.by_key.get(&key)?.clone();
-        let _ownership_transition = entry.ownership_transition.lock();
-        if !self.connection_entry_is_registered(connection_id, &key) {
-            return None;
-        }
-        let released_parent_ownership = if parent_connection_id.is_none() {
-            entry
-                .parent_connection_consumer
-                .write()
-                .take()
-                .and_then(|parent_consumer| {
-                    entry
-                        .parent_connection_id
-                        .read()
-                        .clone()
-                        .map(|parent_id| (parent_id, parent_consumer))
-                })
-        } else {
-            None
-        };
         *entry.parent_connection_id.write() = parent_connection_id;
         entry.touch();
-        if let Some((parent_id, parent_consumer)) = released_parent_ownership {
-            self.release(&parent_id, &parent_consumer);
-        }
         Some(entry.info())
-    }
-
-    pub fn set_parent_connection_ownership(
-        &self,
-        connection_id: &str,
-        parent_connection_id: String,
-        parent_consumer: ConnectionConsumer,
-    ) -> Option<ConnectionInfo> {
-        let key = self
-            .by_id
-            .get(connection_id)
-            .map(|key| key.value().clone())?;
-        let entry = self.by_key.get(&key)?.clone();
-        let _ownership_transition = entry.ownership_transition.lock();
-        if !self.connection_entry_is_registered(connection_id, &key) {
-            return None;
-        }
-        // Parent ownership is linked under the same lifecycle lock used by retirement.
-        *entry.parent_connection_id.write() = Some(parent_connection_id);
-        *entry.parent_connection_consumer.write() = Some(parent_consumer);
-        entry.touch();
-        Some(entry.info())
-    }
-
-    fn connection_entry_is_registered(&self, connection_id: &str, key: &str) -> bool {
-        self.by_id
-            .get(connection_id)
-            .is_some_and(|registered_key| registered_key.value() == key)
-            && self
-                .by_key
-                .get(key)
-                .is_some_and(|registered_entry| registered_entry.connection_id == connection_id)
     }
 
     pub fn descendant_connection_infos(&self, root_connection_id: &str) -> Vec<ConnectionInfo> {
@@ -940,31 +859,12 @@ impl SshConnectionRegistry {
             .get(connection_id)
             .map(|key| key.value().clone())?;
         let entry = self.by_key.get(&key).map(|entry| entry.clone())?;
-        let _ownership_transition = entry.ownership_transition.lock();
-        if !self.connection_entry_is_registered(connection_id, &key) {
-            return None;
-        }
         entry.cancel_idle_timer();
         let info = entry.info();
-        let parent_ownership =
-            entry
-                .parent_connection_consumer
-                .write()
-                .take()
-                .and_then(|parent_consumer| {
-                    entry
-                        .parent_connection_id
-                        .read()
-                        .clone()
-                        .map(|parent_id| (parent_id, parent_consumer))
-                });
         if entry.connection_id == connection_id {
             self.by_key.remove(&key);
         }
         self.by_id.remove(connection_id);
-        if let Some((parent_id, parent_consumer)) = parent_ownership {
-            self.release(&parent_id, &parent_consumer);
-        }
         Some(info)
     }
 
@@ -1027,6 +927,7 @@ impl SshConnectionRegistry {
         reason: impl AsRef<str>,
     ) -> Vec<ConnectionInfo> {
         let reason = reason.as_ref();
+        tracing::debug!(connection_id = %root_connection_id, %reason, "mark_transport_lost_cascade called");
         let changed = self.mark_link_down_cascade(root_connection_id);
         for info in &changed {
             if let Some(handle) = self.get(&info.connection_id) {
@@ -1056,6 +957,15 @@ impl SshConnectionRegistry {
             .collect::<Vec<_>>();
         let mut changed = Vec::new();
         for connection_id in connection_ids {
+            // Skip keepalive probe for connections that opted out of remote
+            // env detection. The registry probe calls send_keepalive which
+            // kills the transport on servers that don't support
+            // keepalive@openssh.com global requests.
+            if let Some(handle) = self.get(&connection_id) {
+                if handle.entry.config.skip_remote_env_detection {
+                    continue;
+                }
+            }
             if matches!(
                 self.probe_active_connection(&connection_id, timeout).await,
                 ProbeConnectionStatus::Dead

@@ -87,9 +87,8 @@ impl WorkspaceApp {
                 ])
             }
             2 => {
-                let cli = self.settings_workspace.read(cx).cli_companion_snapshot();
-                let cli_status = cli.status.as_ref();
-                let cli_loading = cli.loading;
+                let cli_status = self.settings_page.cli_companion_status.as_ref();
+                let cli_loading = self.settings_page.cli_companion_loading;
                 let cli_installed = cli_status.is_some_and(|status| status.installed);
                 let cli_bundled = cli_status.is_some_and(|status| status.bundled);
                 let cli_needs_reinstall = cli_status.is_some_and(|status| status.needs_reinstall);
@@ -100,7 +99,8 @@ impl WorkspaceApp {
                 let cli_path = cli_status
                     .and_then(|status| status.install_path.clone())
                     .unwrap_or_else(|| cli_install_path().display().to_string());
-                let (badge_label, badge_color) = if cli.error.is_some() {
+                let (badge_label, badge_color) = if self.settings_page.cli_companion_error.is_some()
+                {
                     (
                         self.i18n.t("settings_view.general.cli_status_error"),
                         self.tokens.ui.error,
@@ -211,7 +211,7 @@ impl WorkspaceApp {
                                     )
                                 })
                                 .when_some(
-                                    cli.error.clone(),
+                                    self.settings_page.cli_companion_error.clone(),
                                     |column, error| {
                                         column.child(
                                             div()
@@ -264,7 +264,7 @@ impl WorkspaceApp {
                             ))
                         })
                         .when(
-                            !cli_loading && cli.error.is_some(),
+                            !cli_loading && self.settings_page.cli_companion_error.is_some(),
                             |row| {
                                 row.child(self.cli_companion_action_button(
                                     self.i18n.t("settings_view.help.retry"),
@@ -382,7 +382,6 @@ impl WorkspaceApp {
         &self,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let launch_at_login = self.settings_workspace.read(cx).launch_at_login_snapshot();
         // TODO(signing): Once every macOS artifact is Developer ID signed and
         // notarized, replace this system-settings handoff with an in-app
         // SMAppService register/unregister toggle and remove the manual copy.
@@ -408,10 +407,7 @@ impl WorkspaceApp {
                             .t("settings_view.general.launch_at_login_macos_hint"),
                     ),
             );
-        if let Some(error) = launch_at_login.error {
-            let error = match error {
-                LaunchAtLoginError::OperationFailed(error) => error,
-            };
+        if let Some(error) = self.launch_at_login_error.clone() {
             description = description.child(
                 div()
                     .text_size(px(self.tokens.metrics.ui_text_xs))
@@ -419,7 +415,7 @@ impl WorkspaceApp {
                     .child(
                         self.i18n
                             .t("settings_view.general.launch_at_login_failed")
-                            .replace("{{error}}", error.as_ref()),
+                            .replace("{{error}}", &error),
                     ),
             );
         }
@@ -436,12 +432,12 @@ impl WorkspaceApp {
                 ..ToolbarButtonOptions::default()
             },
             cx.listener(|this, _event, _window, cx| {
-                let result = oxideterm_gpui_platform::autostart::open_login_items_settings()
-                    .map_err(|error| error.to_string());
-                this.settings_workspace.update(cx, |settings, cx| {
-                    settings.finish_launch_at_login_settings_handoff(result, cx);
-                });
+                this.launch_at_login_error =
+                    oxideterm_gpui_platform::autostart::open_login_items_settings()
+                        .err()
+                        .map(|error| error.to_string());
                 cx.stop_propagation();
+                cx.notify();
             }),
         );
 
@@ -468,10 +464,9 @@ impl WorkspaceApp {
         &self,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let launch_at_login = self.settings_workspace.read(cx).launch_at_login_snapshot();
-        let loading = launch_at_login.pending;
-        let enabled = launch_at_login.enabled;
-        let error = launch_at_login.error;
+        let loading = self.launch_at_login_loading;
+        let enabled = self.launch_at_login_enabled;
+        let error = self.launch_at_login_error.clone();
         let control = div()
             .flex_none()
             .opacity(if loading { 0.55 } else { 1.0 })
@@ -479,12 +474,7 @@ impl WorkspaceApp {
                 checkbox(&self.tokens, String::new(), enabled).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _event, _window, cx| {
-                        if !this
-                            .settings_workspace
-                            .read(cx)
-                            .launch_at_login_snapshot()
-                            .pending
-                        {
+                        if !this.launch_at_login_loading {
                             this.set_launch_at_login_enabled(!enabled, cx);
                         }
                         cx.stop_propagation();
@@ -522,13 +512,6 @@ impl WorkspaceApp {
             );
         }
         if let Some(error) = error {
-            let error = match error {
-                LaunchAtLoginError::ApprovalRequired => self
-                    .i18n
-                    .t("settings_view.general.launch_at_login_approval_required"),
-                LaunchAtLoginError::OperationFailed(error)
-                | LaunchAtLoginError::TaskFailed(error) => error.to_string(),
-            };
             label = label.child(
                 div()
                     .text_size(px(self.tokens.metrics.ui_text_xs))
@@ -536,7 +519,7 @@ impl WorkspaceApp {
                     .child(
                         self.i18n
                             .t("settings_view.general.launch_at_login_failed")
-                            .replace("{{error}}", error.as_ref()),
+                            .replace("{{error}}", &error),
                     ),
             );
         }
@@ -561,23 +544,32 @@ impl WorkspaceApp {
 
     #[cfg(not(target_os = "macos"))]
     pub(in crate::workspace) fn refresh_launch_at_login_status(&mut self, cx: &mut Context<Self>) {
+        if self.launch_at_login_loading {
+            return;
+        }
+        self.launch_at_login_loading = true;
+        self.launch_at_login_error = None;
         let runtime = self.forwarding_runtime.clone();
-        self.settings_workspace.update(cx, |settings, cx| {
-            settings.start_launch_at_login_operation(
-                async move {
-                    let result = runtime
-                        .spawn_blocking(oxideterm_gpui_platform::autostart::is_enabled)
-                        .await
-                        .map_err(|error| {
-                            LaunchAtLoginError::TaskFailed(error.to_string().into())
-                        })?;
-                    result.map_err(|error| {
-                        LaunchAtLoginError::OperationFailed(error.to_string().into())
-                    })
-                },
-                cx,
-            );
-        });
+        cx.spawn(async move |weak, cx| {
+            let result = runtime
+                .spawn_blocking(oxideterm_gpui_platform::autostart::is_enabled)
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|result| result.map_err(|error| error.to_string()));
+            let _ = weak.update(cx, |this, cx| {
+                this.launch_at_login_loading = false;
+                match result {
+                    Ok(enabled) => {
+                        this.launch_at_login_enabled = enabled;
+                        this.launch_at_login_error = None;
+                    }
+                    Err(error) => this.launch_at_login_error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -586,36 +578,46 @@ impl WorkspaceApp {
         enabled: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.launch_at_login_loading {
+            return;
+        }
+        self.launch_at_login_loading = true;
+        self.launch_at_login_error = None;
         let runtime = self.forwarding_runtime.clone();
-        self.settings_workspace.update(cx, |settings, cx| {
-            settings.start_launch_at_login_operation(
-                async move {
-                    let result = runtime
-                        .spawn_blocking(move || {
-                            oxideterm_gpui_platform::autostart::set_enabled(enabled)?;
-                            let actual = oxideterm_gpui_platform::autostart::is_enabled()?;
-                            if actual != enabled {
-                                return Err(std::io::Error::other(
-                                    "the operating system did not retain the startup setting",
-                                ));
-                            }
-                            Ok(actual)
-                        })
-                        .await
-                        .map_err(|error| {
-                            LaunchAtLoginError::TaskFailed(error.to_string().into())
-                        })?;
-                    result.map_err(|error| {
-                        if error.kind() == std::io::ErrorKind::PermissionDenied {
-                            LaunchAtLoginError::ApprovalRequired
-                        } else {
-                            LaunchAtLoginError::OperationFailed(error.to_string().into())
-                        }
-                    })
-                },
-                cx,
-            );
-        });
+        cx.spawn(async move |weak, cx| {
+            let result = runtime
+                .spawn_blocking(move || {
+                    oxideterm_gpui_platform::autostart::set_enabled(enabled)?;
+                    let actual = oxideterm_gpui_platform::autostart::is_enabled()?;
+                    if actual != enabled {
+                        return Err(std::io::Error::other(
+                            "the operating system did not retain the startup setting",
+                        ));
+                    }
+                    Ok(actual)
+                })
+                .await;
+            let _ = weak.update(cx, |this, cx| {
+                this.launch_at_login_loading = false;
+                match result {
+                    Ok(Ok(enabled)) => {
+                        this.launch_at_login_enabled = enabled;
+                        this.launch_at_login_error = None;
+                    }
+                    Ok(Err(error)) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                        this.launch_at_login_error = Some(
+                            this.i18n
+                                .t("settings_view.general.launch_at_login_approval_required"),
+                        );
+                    }
+                    Ok(Err(error)) => this.launch_at_login_error = Some(error.to_string()),
+                    Err(error) => this.launch_at_login_error = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     pub(in crate::workspace) fn general_checkbox_row(
@@ -727,9 +729,8 @@ impl WorkspaceApp {
                 ..ToolbarButtonOptions::default()
             },
             cx.listener(|this, _event, _window, cx| {
-                this.settings_workspace.update(cx, |settings, cx| {
-                    settings.open_data_directory_reset_confirm(cx);
-                });
+                this.settings_data_directory_confirm = Some(DataDirectoryConfirm::Reset);
+                this.settings_data_directory_confirm_presence.reopen();
                 this.reset_standard_confirm_focus();
                 cx.stop_propagation();
                 cx.notify();
@@ -747,50 +748,107 @@ impl WorkspaceApp {
                 self.i18n.t("settings_view.general.select_data_directory"),
             )),
         });
-        let selection = async move {
+        cx.spawn(async move |weak, cx| {
             let Ok(Ok(Some(paths))) = receiver.await else {
-                return None;
+                return;
             };
-            paths.into_iter().next()
-        };
-        self.settings_workspace.update(cx, |settings, cx| {
-            settings.start_data_directory_picker(selection, cx);
-        });
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = weak.update(cx, |this, cx| {
+                match oxideterm_settings::check_data_directory(&path) {
+                    Ok(check) if check.has_existing_data => {
+                        // Tauri asks for a second confirmation before writing
+                        // bootstrap.json when known OxideTerm data already
+                        // exists in the target directory.
+                        this.settings_data_directory_confirm =
+                            Some(DataDirectoryConfirm::Conflict {
+                                path,
+                                files_found: check.files_found,
+                            });
+                        this.settings_data_directory_confirm_presence.reopen();
+                        this.reset_standard_confirm_focus();
+                        cx.notify();
+                    }
+                    Ok(_) => this.apply_settings_data_directory(path, cx),
+                    Err(error) => {
+                        this.push_ai_settings_toast(
+                            error.to_string(),
+                            TerminalNoticeVariant::Error,
+                        );
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(in crate::workspace) fn apply_settings_data_directory(
+        &mut self,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        match oxideterm_settings::set_data_directory(&path) {
+            Ok(()) => {
+                self.push_ai_settings_toast(
+                    self.i18n.t("settings_view.general.data_directory_changed"),
+                    TerminalNoticeVariant::Success,
+                );
+            }
+            Err(error) => {
+                self.push_ai_settings_toast(error.to_string(), TerminalNoticeVariant::Error);
+            }
+        }
+        cx.notify();
+    }
+
+    pub(in crate::workspace) fn reset_settings_data_directory(&mut self, cx: &mut Context<Self>) {
+        match oxideterm_settings::reset_data_directory() {
+            Ok(()) => {
+                self.push_ai_settings_toast(
+                    self.i18n.t("settings_view.general.data_directory_reset"),
+                    TerminalNoticeVariant::Success,
+                );
+            }
+            Err(error) => {
+                self.push_ai_settings_toast(error.to_string(), TerminalNoticeVariant::Error);
+            }
+        }
+        cx.notify();
     }
 
     pub(in crate::workspace) fn cancel_settings_data_directory_confirm(
         &mut self,
         cx: &mut Context<Self>,
     ) {
-        let delay = oxideterm_gpui_ui::motion::duration(
-            &self.tokens,
-            oxideterm_gpui_ui::motion::MotionDuration::Control,
-        );
-        self.clear_standard_confirm_focus();
-        self.settings_workspace.update(cx, |settings, cx| {
-            settings.begin_data_directory_confirm_exit(false, delay, cx);
-        });
-        cx.notify();
+        if self.begin_settings_data_directory_confirm_exit(cx) {
+            cx.notify();
+        }
     }
 
     pub(in crate::workspace) fn confirm_settings_data_directory(&mut self, cx: &mut Context<Self>) {
-        let delay = oxideterm_gpui_ui::motion::duration(
-            &self.tokens,
-            oxideterm_gpui_ui::motion::MotionDuration::Control,
-        );
-        self.clear_standard_confirm_focus();
-        self.settings_workspace.update(cx, |settings, cx| {
-            settings.begin_data_directory_confirm_exit(true, delay, cx);
-        });
-        cx.notify();
+        let Some(confirm) = self.settings_data_directory_confirm.clone() else {
+            return;
+        };
+        if !self.begin_settings_data_directory_confirm_exit(cx) {
+            return;
+        }
+        match confirm {
+            DataDirectoryConfirm::Conflict { path, .. } => {
+                self.apply_settings_data_directory(path, cx);
+            }
+            DataDirectoryConfirm::Reset => {
+                self.reset_settings_data_directory(cx);
+            }
+        }
     }
 
     pub(in crate::workspace) fn render_settings_data_directory_confirm_dialog(
         &self,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let settings_workspace = self.settings_workspace.read(cx);
-        let confirm = settings_workspace.data_directory_confirm()?;
+        let confirm = self.settings_data_directory_confirm.as_ref()?;
         let (title_key, description) = match confirm {
             DataDirectoryConfirm::Conflict { files_found, .. } => (
                 "settings_view.general.data_directory_conflict",
@@ -808,7 +866,7 @@ impl WorkspaceApp {
             oxideterm_gpui_ui::confirm::confirm_dialog_with_focus_motion(
                 &self.tokens,
                 "settings-data-directory-confirm-motion",
-                settings_workspace.data_directory_confirm_phase(),
+                self.settings_data_directory_confirm_presence.phase(),
                 ConfirmDialogView {
                     variant: ConfirmDialogVariant::Default,
                     title: div().child(self.i18n.t(title_key)).into_any_element(),
@@ -843,12 +901,7 @@ impl WorkspaceApp {
             return self.terminal_page_switcher(cx);
         }
 
-        let terminal_page = self
-            .settings_workspace
-            .read(cx)
-            .route_snapshot()
-            .terminal_page;
-        match (terminal_page, section_index - 1) {
+        match (self.settings_page.terminal_page, section_index - 1) {
             (TerminalSettingsPage::Display, 0) => {
                 let mut rows = vec![self.select_setting_row(
                     "settings_view.terminal.font_family",
@@ -1046,14 +1099,6 @@ impl WorkspaceApp {
                     ),
                     self.card_separator(),
                     self.bool_row(
-                        "settings_view.terminal.quick_bar",
-                        "settings_view.terminal.quick_bar_hint",
-                        settings.terminal.command_bar.quick_bar_enabled,
-                        set_quick_bar_enabled,
-                        cx,
-                    ),
-                    self.card_separator(),
-                    self.bool_row(
                         "settings_view.terminal.quick_commands_confirm",
                         "settings_view.terminal.quick_commands_confirm_hint",
                         settings
@@ -1151,6 +1196,34 @@ impl WorkspaceApp {
                 ],
             ),
             (TerminalSettingsPage::Highlight, 0) => self.highlight_rules_card(settings, cx),
+            (TerminalSettingsPage::Keepalive, 0) => self.settings_card(
+                "ssh.form.keepalive_send_string",
+                "ssh.form.keepalive_send_string_hint",
+                vec![
+                    self.number_row(
+                        "ssh.form.keepalive_interval",
+                        "ssh.form.keepalive_interval_hint",
+                        SettingsInput::TerminalKeepaliveInterval,
+                        settings.terminal.keepalive.interval_secs as i64,
+                        cx,
+                    ),
+                    self.card_separator(),
+                    {
+                        let control = self.number_input(
+                        SettingsInput::TerminalKeepaliveString,
+                        settings.terminal.keepalive.send_string.clone(),
+                        200.0,
+                        cx,
+                    );
+                        self.setting_row(
+                        "ssh.form.keepalive_send_string",
+                        "ssh.form.keepalive_send_string_hint",
+                        control,
+                        cx,
+                    )
+                    },
+                ],
+            ),
             _ => div().into_any_element(),
         }
     }
@@ -1165,7 +1238,7 @@ impl WorkspaceApp {
         let value = if focused {
             self.settings_input_draft.clone()
         } else {
-            self.current_settings_input_value(input, cx)
+            self.current_settings_input_value(input)
         };
         let target = WorkspaceImeTarget::Settings(input);
         let workspace = cx.entity();
@@ -1197,7 +1270,7 @@ impl WorkspaceApp {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                    let current = this.current_settings_input_value(input, cx);
+                    let current = this.current_settings_input_value(input);
                     this.focus_settings_input(input, current, cx);
                     this.ime_marked_text = None;
                     window.focus(&this.focus_handle, cx);
@@ -1218,7 +1291,6 @@ impl WorkspaceApp {
                 "aider, custom-tui",
                 true,
                 line_height,
-                cx,
             );
         } else {
             command_editor = self.render_settings_multiline_textarea_lines(
@@ -1227,11 +1299,10 @@ impl WorkspaceApp {
                 &value,
                 false,
                 line_height,
-                cx,
             );
         }
 
-        if let Some(marked) = self.marked_text_for_target(target, cx) {
+        if let Some(marked) = self.marked_text_for_target(target) {
             command_editor = command_editor.child(
                 div()
                     .underline()
@@ -1611,7 +1682,7 @@ impl WorkspaceApp {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                    let current = this.current_settings_input_value(input, cx);
+                    let current = this.current_settings_input_value(input);
                     this.focus_settings_input(input, current, cx);
                     this.ime_marked_text = None;
                     window.focus(&this.focus_handle, cx);
@@ -1631,9 +1702,8 @@ impl WorkspaceApp {
             &value,
             false,
             line_height,
-            cx,
         );
-        if let Some(marked) = self.marked_text_for_target(target, cx) {
+        if let Some(marked) = self.marked_text_for_target(target) {
             textarea = textarea.child(
                 div()
                     .underline()
@@ -1657,7 +1727,7 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) {
         let value = self.terminal_command_specs_editor_initial_value();
-        self.prepare_modal_interaction_boundary(cx);
+        self.prepare_modal_interaction_boundary();
         self.terminal_command_specs_editor_open = true;
         self.focus_settings_input(SettingsInput::TerminalCommandSpecsJson, value, cx);
         window.focus(&self.focus_handle, cx);
@@ -1685,9 +1755,8 @@ impl WorkspaceApp {
         value: &str,
         placeholder: bool,
         line_height: f32,
-        cx: &App,
     ) -> Div {
-        let selection = self.ime_selected_range_for_target(target, cx);
+        let selection = self.ime_selected_range_for_target(target);
         let theme = self.tokens.ui;
         for (line_range, line_text) in settings_multiline_line_ranges(value) {
             let (selection_range, caret_offset) =
@@ -1699,9 +1768,7 @@ impl WorkspaceApp {
             if placeholder {
                 // Browser placeholder text is not part of the editable value;
                 // keep it muted and do not feed it through selection segments.
-                line = line
-                    .text_color(rgb(theme.text_muted))
-                    .child(line_text.as_str().to_string());
+                line = line.text_color(rgb(theme.text_muted)).child(line_text);
             } else {
                 // Tauri uses a real textarea, so caret/selection sit inside the
                 // current visual line. Native renders line elements manually and
@@ -1712,7 +1779,7 @@ impl WorkspaceApp {
                     false,
                     selection_range,
                     caret_offset,
-                    self.input_caret.visible(),
+                    self.new_connection_caret_visible,
                 ));
             }
             textarea = textarea.child(line);
@@ -1816,7 +1883,6 @@ impl WorkspaceApp {
                             error
                         ),
                         TerminalNoticeVariant::Error,
-                        cx,
                     ),
                 }
             }
@@ -1843,14 +1909,12 @@ impl WorkspaceApp {
                                 self.push_ai_settings_toast(
                                     self.i18n.t("settings_view.terminal.command_specs_saved"),
                                     TerminalNoticeVariant::Success,
-                                    cx,
                                 );
                                 cx.notify();
                             }
                             Err(error) => self.push_ai_settings_toast(
                                 error.to_string(),
                                 TerminalNoticeVariant::Error,
-                                cx,
                             ),
                         }
                     }
@@ -1861,7 +1925,6 @@ impl WorkspaceApp {
                             error
                         ),
                         TerminalNoticeVariant::Error,
-                        cx,
                     ),
                 }
             }

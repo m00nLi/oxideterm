@@ -41,7 +41,6 @@ pub(crate) const TERMINAL_OSC52_CLIPBOARD: bool = true;
 pub(crate) const TERMINAL_OSC52_CLIPBOARD_READ: bool = false;
 pub(crate) const TERMINAL_COPY_ON_SELECT: bool = false;
 pub(crate) const TERMINAL_MIDDLE_CLICK_PASTE: bool = false;
-pub(crate) const TERMINAL_RIGHT_CLICK_PASTE: bool = false;
 pub(crate) const TERMINAL_OPEN_LINKS_WITH_MODIFIER: bool = true;
 pub(crate) const TERMINAL_DETECT_FILE_PATHS_AS_LINKS: bool = true;
 pub(crate) const TERMINAL_KEEP_SELECTION_ON_COPY: bool = true;
@@ -73,7 +72,6 @@ pub struct TerminalUiPreferences {
     pub osc52_clipboard_read: bool,
     pub copy_on_select: bool,
     pub middle_click_paste: bool,
-    pub right_click_paste: bool,
     pub open_links_with_modifier: bool,
     pub detect_file_paths_as_links: bool,
     pub selection_requires_shift: bool,
@@ -102,30 +100,6 @@ pub struct TerminalUiPreferences {
     pub trzsz_policy: Option<TrzszTransferPolicy>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct TerminalUiPreferenceOverrides {
-    pub terminal_encoding: Option<TerminalEncoding>,
-    pub backspace_sequence: Option<TerminalBackspaceSequence>,
-    pub delete_sequence: Option<TerminalDeleteSequence>,
-}
-
-impl TerminalUiPreferenceOverrides {
-    pub fn apply_to(self, preferences: &mut TerminalUiPreferences) {
-        // These protocol-facing values belong to the terminal session. Apply
-        // them after application defaults so later settings refreshes cannot
-        // erase a saved host's explicit behavior.
-        if let Some(terminal_encoding) = self.terminal_encoding {
-            preferences.terminal_encoding = terminal_encoding;
-        }
-        if let Some(backspace_sequence) = self.backspace_sequence {
-            preferences.backspace_sequence = backspace_sequence;
-        }
-        if let Some(delete_sequence) = self.delete_sequence {
-            preferences.delete_sequence = delete_sequence;
-        }
-    }
-}
-
 impl Default for TerminalUiPreferences {
     fn default() -> Self {
         Self {
@@ -144,7 +118,6 @@ impl Default for TerminalUiPreferences {
             osc52_clipboard_read: TERMINAL_OSC52_CLIPBOARD_READ,
             copy_on_select: TERMINAL_COPY_ON_SELECT,
             middle_click_paste: TERMINAL_MIDDLE_CLICK_PASTE,
-            right_click_paste: TERMINAL_RIGHT_CLICK_PASTE,
             open_links_with_modifier: TERMINAL_OPEN_LINKS_WITH_MODIFIER,
             detect_file_paths_as_links: TERMINAL_DETECT_FILE_PATHS_AS_LINKS,
             selection_requires_shift: TERMINAL_SELECTION_REQUIRES_SHIFT,
@@ -537,7 +510,6 @@ pub(crate) struct TerminalUiSettings {
     pub(crate) osc52_clipboard_read: bool,
     pub(crate) copy_on_select: bool,
     pub(crate) middle_click_paste: bool,
-    pub(crate) right_click_paste: bool,
     pub(crate) open_links_with_modifier: bool,
     pub(crate) detect_file_paths_as_links: bool,
     pub(crate) keep_selection_on_copy: bool,
@@ -563,7 +535,6 @@ impl Default for TerminalUiSettings {
             osc52_clipboard_read: TERMINAL_OSC52_CLIPBOARD_READ,
             copy_on_select: TERMINAL_COPY_ON_SELECT,
             middle_click_paste: TERMINAL_MIDDLE_CLICK_PASTE,
-            right_click_paste: TERMINAL_RIGHT_CLICK_PASTE,
             open_links_with_modifier: TERMINAL_OPEN_LINKS_WITH_MODIFIER,
             detect_file_paths_as_links: TERMINAL_DETECT_FILE_PATHS_AS_LINKS,
             keep_selection_on_copy: TERMINAL_KEEP_SELECTION_ON_COPY,
@@ -595,7 +566,6 @@ impl TerminalUiSettings {
             osc52_clipboard_read: preferences.osc52_clipboard_read,
             copy_on_select: preferences.copy_on_select,
             middle_click_paste: preferences.middle_click_paste,
-            right_click_paste: preferences.right_click_paste,
             open_links_with_modifier: preferences.open_links_with_modifier,
             detect_file_paths_as_links: preferences.detect_file_paths_as_links,
             keep_selection_on_copy: TERMINAL_KEEP_SELECTION_ON_COPY,
@@ -754,15 +724,11 @@ pub(crate) fn terminal_font_with_family_and_cjk(
 ) -> Font {
     let mut fallback_families = Vec::new();
     push_font_fallback(&mut fallback_families, family);
-    // A bundled Latin monospace must precede optional CJK and system fallbacks.
-    push_font_fallback(
-        &mut fallback_families,
-        oxideterm_settings::JETBRAINS_MONO_SUBSET_FAMILY,
-    );
     if let Some(cjk_family) = cjk_family {
         push_font_fallback(&mut fallback_families, cjk_family);
     }
     for fallback in [
+        oxideterm_settings::JETBRAINS_MONO_SUBSET_FAMILY,
         "JetBrainsMono Nerd Font",
         "JetBrains Mono NF (Subset)",
         "JetBrains Mono",
@@ -810,45 +776,5 @@ pub(crate) fn terminal_font_features(font_ligatures: bool) -> FontFeatures {
         FontFeatures::default()
     } else {
         FontFeatures::disable_ligatures()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn host_overrides_replace_only_terminal_protocol_defaults() {
-        let mut preferences = TerminalUiPreferences::default();
-        let original_font_family = preferences.font_family.clone();
-
-        TerminalUiPreferenceOverrides {
-            terminal_encoding: Some(TerminalEncoding::Gb18030),
-            backspace_sequence: Some(TerminalBackspaceSequence::ControlH),
-            delete_sequence: Some(TerminalDeleteSequence::Delete),
-        }
-        .apply_to(&mut preferences);
-
-        assert_eq!(preferences.terminal_encoding, TerminalEncoding::Gb18030);
-        assert_eq!(
-            preferences.backspace_sequence,
-            TerminalBackspaceSequence::ControlH
-        );
-        assert_eq!(preferences.delete_sequence, TerminalDeleteSequence::Delete);
-        assert_eq!(preferences.font_family, original_font_family);
-    }
-
-    #[test]
-    fn empty_host_overrides_preserve_application_defaults() {
-        let mut preferences = TerminalUiPreferences::default();
-        let original_encoding = preferences.terminal_encoding;
-        let original_backspace = preferences.backspace_sequence;
-        let original_delete = preferences.delete_sequence;
-
-        TerminalUiPreferenceOverrides::default().apply_to(&mut preferences);
-
-        assert_eq!(preferences.terminal_encoding, original_encoding);
-        assert_eq!(preferences.backspace_sequence, original_backspace);
-        assert_eq!(preferences.delete_sequence, original_delete);
     }
 }

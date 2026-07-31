@@ -133,7 +133,6 @@
         "invalid_nice": "Geben Sie einen nice-Wert von -20 bis 19 ein.",
         "connection_missing": "Die ausgewählte Verbindung ist nicht mehr verfügbar.",
         "action_failed": "Prozessaktion fehlgeschlagen.",
-        "action_succeeded": "Prozessaktion für PID {{pid}} abgeschlossen.",
         "partial_support": "Prozessverwaltung wird unter {{os}} nur teilweise unterstützt."
       }
     },
@@ -192,8 +191,7 @@
         "exec_opened": "Shell für {{name}} geöffnet.",
         "follow_opened": "Logs für {{name}} werden verfolgt.",
         "connection_missing": "Die ausgewählte Verbindung ist nicht mehr verfügbar.",
-        "action_failed": "Docker-Aktion fehlgeschlagen.",
-        "action_succeeded": "Docker-Aktion für {{name}} abgeschlossen."
+        "action_failed": "Docker-Aktion fehlgeschlagen."
       }
     },
     "host_services": {
@@ -269,7 +267,6 @@
         "follow_opened": "Logs für {{name}} werden verfolgt.",
         "connection_missing": "Die ausgewählte Verbindung ist nicht mehr verfügbar.",
         "action_failed": "Dienstaktion fehlgeschlagen.",
-        "action_succeeded": "Dienstaktion für {{name}} abgeschlossen.",
         "partial_support": "Dienstverwaltung wird auf {{os}} teilweise unterstützt."
       }
     },
@@ -382,7 +379,6 @@
         "new_session_opened": "{{name}} wird geöffnet.",
         "action_already_running": "Es läuft bereits eine tmux-Aktion.",
         "action_failed": "tmux-Aktion fehlgeschlagen.",
-        "action_succeeded": "tmux-Aktion für {{target}} abgeschlossen.",
         "unknown_error": "Unbekannter Fehler",
         "input_required": "Gib vor dem Fortfahren einen Wert ein."
       },
@@ -735,7 +731,8 @@
       "add_by_drilling": "Sie können Unterknoten durch Navigieren hinzufügen",
       "click_to_add": "Klicken Sie auf +, um eine neue Verbindung hinzuzufügen",
       "terminal": "Terminal #{{number}}",
-      "close_terminal": "Terminal schließen"
+      "close_terminal": "Terminal schließen",
+      "rename_terminal": "Terminal umbenennen"
     },
     "actions": {
       "connect": "Verbinden",

@@ -11,9 +11,9 @@ impl WorkspaceApp {
     ) -> AnyElement {
         let provider_id = provider.id.clone();
         let models_expanded = self
-            .ai_entity
-            .read(cx)
-            .settings_provider_models_expanded(&provider.id);
+            .settings_page
+            .expanded_ai_provider_models
+            .contains(&provider.id);
         let mut body = div()
             .w_full()
             .min_w(px(0.0))
@@ -57,14 +57,11 @@ impl WorkspaceApp {
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(move |this, _event, _window, cx| {
-                                            this.ai_entity.update(cx, |ai, cx| {
-                                                ai.toggle_settings_provider_models(
-                                                    &provider_id,
-                                                    cx,
-                                                );
-                                            });
+                                            toggle_string_set(
+                                                &mut this.settings_page.expanded_ai_provider_models,
+                                                &provider_id,
+                                            );
                                             cx.stop_propagation();
-                                            // WorkspaceApp owns the surrounding settings render.
                                             cx.notify();
                                         }),
                                     ),
@@ -79,11 +76,10 @@ impl WorkspaceApp {
                 visible_model_count,
                 AI_PROVIDER_MODEL_CHIPS_PER_VIRTUAL_ROW,
             );
-            self.sync_ai_provider_model_chip_list_state(&provider.id, &chip_rows, hidden_count, cx);
+            self.sync_ai_provider_model_chip_list_state(&provider.id, &chip_rows, hidden_count);
             let state = self
-                .ai_entity
-                .read(cx)
-                .model_ui()
+                .ai
+                .models
                 .provider_model_chip_list_states
                 .borrow()
                 .get(&provider.id)
@@ -134,7 +130,6 @@ impl WorkspaceApp {
         provider_id: &str,
         rows: &[Vec<AiProviderModelChipItem>],
         hidden_count: usize,
-        cx: &App,
     ) {
         let signatures = rows
             .iter()
@@ -155,8 +150,7 @@ impl WorkspaceApp {
             })
             .collect::<Vec<_>>();
         let state = {
-            let ai = self.ai_entity.read(cx);
-            let mut states = ai.model_ui().provider_model_chip_list_states.borrow_mut();
+            let mut states = self.ai.models.provider_model_chip_list_states.borrow_mut();
             states
                 .entry(provider_id.to_string())
                 .or_insert_with(|| {
@@ -170,8 +164,7 @@ impl WorkspaceApp {
                 .clone()
         };
         {
-            let ai = self.ai_entity.read(cx);
-            let mut caches = ai.model_ui().provider_model_chip_list_caches.borrow_mut();
+            let mut caches = self.ai.models.provider_model_chip_list_caches.borrow_mut();
             let cache = caches.entry(provider_id.to_string()).or_default();
             sync_tauri_variable_list_state_by_signatures(
                 &state,
@@ -204,9 +197,9 @@ impl WorkspaceApp {
             return div().into_any_element();
         };
         let models_expanded = self
-            .ai_entity
-            .read(_cx)
-            .settings_provider_models_expanded(&provider.id);
+            .settings_page
+            .expanded_ai_provider_models
+            .contains(&provider.id);
         let visible_model_count = if models_expanded {
             provider.models.len()
         } else {
@@ -259,7 +252,7 @@ impl WorkspaceApp {
             .into_any_element()
     }
 
-    pub(in crate::workspace) fn ai_provider_has_key(&self, provider_id: &str, cx: &App) -> bool {
-        self.ai_provider_has_key_cached(provider_id, cx)
+    pub(in crate::workspace) fn ai_provider_has_key(&self, provider_id: &str) -> bool {
+        self.ai_provider_has_key_cached(provider_id)
     }
 }

@@ -13,7 +13,6 @@ mod providers;
 mod rag;
 mod reasoning;
 mod references;
-mod runtime_context;
 mod settings;
 mod slash;
 pub mod stream_state;
@@ -25,42 +24,24 @@ mod tool_result_protocol;
 mod types;
 
 pub use acp::{
-    AcpAgentRuntime, AcpAuthMethod, AcpAuthMethodKind, AcpClientEvent, AcpClientEventSender,
-    AcpConnectionError, AcpConnectionManager, AcpConnectionState, AcpConversationHandoffCursor,
-    AcpHostCapabilityPolicy, AcpLaunchConfig, AcpLaunchConfigError, AcpLaunchModelHint,
-    AcpManagedEvent, AcpManagedPromptRequest, AcpPermissionOptionProjection,
-    AcpPermissionRequestProjection, AcpPromptSessionOutcome, AcpSessionConfigChoice,
-    AcpSessionConfigOption, AcpSessionConfigSelection, AcpSessionMode, AcpSessionModeState,
-    AcpSessionStateUpdate, AcpStdioLauncher, AcpTerminalCreateSpec, AiMessageBackendKind,
-    AiMessageBackendProvenance, acp_auth_methods, acp_client_event_to_ai_stream_events,
-    acp_conversation_handoff_cursor, acp_internal_error, acp_kill_terminal_request_id,
-    acp_kill_terminal_response, acp_launch_command_available, acp_launch_model_hint,
+    AcpAgentRuntime, AcpClientEvent, AcpClientEventSender, AcpHostCapabilityPolicy,
+    AcpLaunchConfig, AcpLaunchConfigError, AcpLaunchModelHint, AcpPermissionOptionProjection,
+    AcpPermissionRequestProjection, AcpPromptSessionOutcome, AcpRegisteredRuntimeHandle,
+    AcpRuntimeHandleKey, AcpRuntimeRegistry, AcpSessionConfigChoice, AcpSessionConfigOption,
+    AcpSessionConfigSelection, AcpStdioLauncher, AcpTerminalRegistry,
+    acp_client_event_to_ai_stream_events, acp_launch_command_available, acp_launch_model_hint,
     acp_method_not_found, acp_model_config_option,
     acp_model_report_is_available_during_session_start,
     acp_model_report_is_deferred_until_first_prompt, acp_permission_cancelled_response,
     acp_permission_request_projection, acp_permission_response_for_decision,
-    acp_permission_response_for_option, acp_release_terminal_request_id,
-    acp_release_terminal_response, acp_selected_config_choice, acp_session_config_options,
-    acp_session_mode_state, acp_session_notification_to_ai_stream_events, acp_session_state_update,
-    acp_terminal_create_spec, acp_terminal_created_response, acp_terminal_not_found_error,
-    acp_terminal_output_request_id, acp_terminal_output_response, acp_wait_terminal_request_id,
-    acp_wait_terminal_response, ai_message_backend_provenance, build_acp_conversation_handoff,
-    build_acp_initialize_request, build_acp_stdio_launcher, build_sdk_acp_agent,
-    discover_acp_session_config_options, initialize_acp_agent, next_acp_file_review_id,
-    next_acp_terminal_id, resolve_acp_read_text_file_request,
-    resolve_acp_terminal_working_directory, resolve_acp_write_text_file_request,
-    resolve_acp_write_text_file_target, store_ai_message_backend_provenance,
-    with_acp_agent_runtime, with_acp_agent_runtime_events, write_acp_validated_text_file,
+    acp_selected_config_choice, acp_session_config_options,
+    acp_session_notification_to_ai_stream_events, build_acp_initialize_request,
+    build_acp_stdio_launcher, build_sdk_acp_agent, discover_acp_session_config_options,
+    initialize_acp_agent, resolve_acp_read_text_file_request, resolve_acp_write_text_file_request,
+    run_acp_prompt_session_events, with_acp_agent_runtime, with_acp_agent_runtime_events,
 };
 pub use chat::{apply_chat_request_overrides, generate_chat_title};
-pub use context_sanitizer::{
-    preference_is_safe_to_persist, sanitize_api_messages_for_provider,
-    sanitize_chat_state_for_persistence, sanitize_for_ai, sanitize_for_persistence,
-    sanitize_json_for_ai, sanitize_json_for_persistence, sanitize_json_text_for_ai,
-    sanitize_json_text_for_persistence, sanitize_tool_arguments_json_for_persistence,
-    sanitize_tool_arguments_text_for_persistence, sanitize_tool_protocol_json_for_persistence,
-    sanitize_tool_result_json_for_persistence,
-};
+pub use context_sanitizer::{sanitize_api_messages_for_provider, sanitize_for_ai};
 pub use context_window::{
     ContextWindowSource, DEFAULT_CONTEXT_WINDOW, ModelContextWindowInfo,
     extract_context_window_from_model_name, model_context_window, model_context_window_info,
@@ -71,10 +52,7 @@ pub use mcp::{
     McpServerConfig, McpServerStateSnapshot, McpTransport, is_mcp_tool_name, mcp_resource_output,
     mcp_tool_output,
 };
-pub use orchestrator::{
-    OrchestratorArgumentError, canonicalize_orchestrator_tool_arguments,
-    orchestrator_tool_definitions,
-};
+pub use orchestrator::orchestrator_tool_definitions;
 pub use persistence::{AiChatPersistenceStore, PersistedDiagnosticEvent, PersistedTranscriptEntry};
 pub use policy::{
     AiActionRisk, AiPolicyDecision, AiPolicyDecisionKind, AiPolicySafetyMode, AiToolUsePolicy,
@@ -85,7 +63,7 @@ pub use profiles::{AiExecutionBackend, resolve_ai_reasoning_effort, tool_policy_
 pub use provider_embeddings::{
     AiChatEmbeddingApiKeyDecision, AiEmbeddingMode, AiEmbeddingProviderReason,
     ResolvedAiEmbeddingProvider, ai_embedding_requires_api_key, ai_provider_supports_embeddings,
-    embed_query_text, embed_texts, resolve_ai_embedding_provider, resolve_chat_embedding_api_key,
+    embed_texts, resolve_ai_embedding_provider, resolve_chat_embedding_api_key,
 };
 pub use providers::{
     AI_PROVIDER_TEMPLATES, active_model_selection, active_provider_view,
@@ -117,13 +95,6 @@ pub use reasoning::{
 pub use references::{
     ai_reference_context_block, ai_reference_label, current_terminal_context_system_message,
     extract_ai_error_context, infer_ai_cwd,
-};
-pub use runtime_context::{
-    RuntimeCapability, RuntimeCapabilityRegistry, RuntimeContextError, RuntimeContextSnapshot,
-    RuntimeHandleId, RuntimeHandleProjection, RuntimeOwnerGeneration, RuntimeOwnerKey,
-    RuntimeOwnerKind, RuntimeOwnerRegistration, RuntimeRegistryEpoch, RuntimeRevocationReason,
-    RuntimeValidationError, RuntimeValidationFailure, StableResourceKind, StableResourceRef,
-    ToolSessionId, ValidatedRuntimeHandle,
 };
 pub use settings::{
     AiProviderKeyDisplayState, AiProviderRefreshKeyPolicy, add_provider_from_template,
@@ -171,7 +142,7 @@ pub use types::{
     AiChatMessage, AiChatMessageMetadata, AiChatRole, AiChatState, AiChatStreamConfig,
     AiConversation, AiFollowUpSuggestion, AiMessageBranches, AiProviderTemplate, AiProviderView,
     AiStreamEvent, AiToolCall, AiToolChoice, AiToolDefinition, ModelSelectorProviderGroup,
-    ModelSelectorProviderProbe, ProviderModelRefresh, SharedAiProviderKey,
+    ModelSelectorProviderProbe, ProviderModelRefresh,
 };
 
 #[cfg(test)]

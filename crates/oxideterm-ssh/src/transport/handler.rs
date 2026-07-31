@@ -3,10 +3,13 @@ fn ssh_client_config(legacy_ssh_compatibility: bool) -> client::Config {
         inactivity_timeout: None,
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 3,
+        // Use moderate values for single-channel servers that may not handle
+        // large windows/packets well. OpenSSH defaults: 2MB window, 32KB packet.
         window_size: 32 * 1024 * 1024,
         maximum_packet_size: 256 * 1024,
         ..client::Config::default()
     };
+    config.nodelay = true;
     if legacy_ssh_compatibility {
         // This is a per-connection opt-in so the default SSH security posture
         // never offers SHA-1 DH, CBC ciphers, or SHA-1 MACs automatically.

@@ -16,8 +16,7 @@ use oxideterm_editor_syntax::{BracketPair, SyntaxScope};
 use crate::metrics::editor_code_font;
 
 use super::{
-    EditorBoundsProbe, EditorPresentation, HighlightChunkCacheKey, LineChunkSpec, TextEditorView,
-    colored_text,
+    EditorBoundsProbe, HighlightChunkCacheKey, LineChunkSpec, TextEditorView, colored_text,
     coords::{
         byte_column_for_visual_column, selection_byte_range_for_line, visual_column_for_byte_column,
     },
@@ -79,18 +78,13 @@ struct RenderRowContext {
 
 impl Render for TextEditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let focused = self.focus_handle.is_focused(window);
-        self.sync_caret_blink_focus(focused, cx);
         self.measure_code_metrics(window, cx);
         let display_rows = self.display_rows();
         let visible = self
             .viewport
             .visible_rows(display_rows.len(), self.metrics.line_height);
-        let row_context = self.prepare_render_row_context(
-            &display_rows,
-            &display_rows[visible.range.clone()],
-            focused && self.caret_visible,
-        );
+        let row_context =
+            self.prepare_render_row_context(&display_rows, &display_rows[visible.range.clone()]);
         let view = cx.entity();
 
         let mut rows = div()
@@ -120,7 +114,6 @@ impl Render for TextEditorView {
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     window.focus(&this.focus_handle, cx);
-                    this.activate_caret_blink(cx);
                     this.open_context_menu(event.position, cx);
                     cx.stop_propagation();
                 }),
@@ -166,20 +159,13 @@ impl Render for TextEditorView {
             .text_size(px(self.metrics.font_size))
             .line_height(px(self.metrics.line_height))
             .text_color(rgb(self.appearance.text_hex))
-            .bg(if self.presentation == EditorPresentation::Inline {
-                rgba((self.appearance.background_hex << 8) | 0x00)
-            } else {
-                self.editor_background(self.appearance.background_hex)
-            })
-            .when(self.presentation == EditorPresentation::Document, |root| {
-                root.border_1()
-                    .border_color(rgb(self.appearance.border_hex))
-            })
+            .bg(self.editor_background(self.appearance.background_hex))
+            .border_1()
+            .border_color(rgb(self.appearance.border_hex))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event: &MouseDownEvent, window, cx| {
                     window.focus(&this.focus_handle, cx);
-                    this.activate_caret_blink(cx);
                     if this.context_menu.take().is_some() {
                         cx.notify();
                     }
@@ -346,9 +332,9 @@ impl TextEditorView {
         let show_cursor = row_context.primary_caret_display_index == Some(display_index);
         let cursor_column = cursor_visual_column.saturating_sub(display_row.start_col);
         let line_height = self.metrics.line_height;
-        let gutter_width = self.visible_gutter_width();
+        let gutter_width = self.metrics.gutter_width;
         let content_left =
-            gutter_width + self.visible_content_padding_x() - self.viewport.scroll_x_px;
+            gutter_width + self.metrics.content_padding_x - self.viewport.scroll_x_px;
         let row_display = display_row;
         let byte_start = byte_column_for_visual_column(&line_text, display_row.start_col);
         let byte_end = byte_column_for_visual_column(&line_text, display_row.end_col);
@@ -431,19 +417,16 @@ impl TextEditorView {
             .w_full()
             .flex()
             .items_center()
-            .bg(
-                if is_current_line && self.presentation == EditorPresentation::Document {
-                    rgba((self.appearance.accent_hex << 8) | CM_ACTIVE_LINE_ACCENT_ALPHA)
-                } else {
-                    rgba((self.appearance.background_hex << 8) | 0x00)
-                },
-            )
+            .bg(if is_current_line {
+                rgba((self.appearance.accent_hex << 8) | CM_ACTIVE_LINE_ACCENT_ALPHA)
+            } else {
+                rgba((self.appearance.background_hex << 8) | 0x00)
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     this.context_menu = None;
                     window.focus(&this.focus_handle, cx);
-                    this.activate_caret_blink(cx);
                     if let Some(offset) = this.offset_for_window_point(event.position, window) {
                         if (event.modifiers.secondary() || event.modifiers.control)
                             && !event.modifiers.alt
@@ -475,24 +458,21 @@ impl TextEditorView {
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     window.focus(&this.focus_handle, cx);
-                    this.activate_caret_blink(cx);
                     // Match browser editor behavior: opening the context menu
                     // over a selection must not collapse that selection first.
                     this.open_context_menu(event.position, cx);
                     cx.stop_propagation();
                 }),
             )
-            .when(self.presentation == EditorPresentation::Document, |row| {
-                row.child(self.render_gutter(
-                    display_row,
-                    line_height,
-                    gutter_width,
-                    is_current_line,
-                    foldable,
-                    folded,
-                    cx,
-                ))
-            });
+            .child(self.render_gutter(
+                display_row,
+                line_height,
+                gutter_width,
+                is_current_line,
+                foldable,
+                folded,
+                cx,
+            ));
 
         for column in indent_guides {
             let byte_column = byte_column_for_visual_column(segment_text, column);
@@ -914,26 +894,21 @@ impl TextEditorView {
         &self,
         display_rows: &[DisplayRow],
         visible_rows: &[DisplayRow],
-        show_caret: bool,
     ) -> RenderRowContext {
-        let primary_caret_display_index = show_caret
-            .then(|| {
-                self.buffer
-                    .offset_to_line_col(self.cursor.selection().head)
-                    .ok()
-                    .and_then(|position| {
-                        let line_text = self.buffer.line_text(position.line).unwrap_or_default();
-                        let visual_column =
-                            visual_column_for_byte_column(&line_text, position.column);
-                        super::wrap::display_row_for_visual_column(
-                            display_rows,
-                            position.line,
-                            visual_column,
-                        )
-                        .map(|(index, _, _)| index)
-                    })
-            })
-            .flatten();
+        let primary_caret_display_index = self
+            .buffer
+            .offset_to_line_col(self.cursor.selection().head)
+            .ok()
+            .and_then(|position| {
+                let line_text = self.buffer.line_text(position.line).unwrap_or_default();
+                let visual_column = visual_column_for_byte_column(&line_text, position.column);
+                super::wrap::display_row_for_visual_column(
+                    display_rows,
+                    position.line,
+                    visual_column,
+                )
+                .map(|(index, _, _)| index)
+            });
         RenderRowContext {
             // Selection ordering and bracket matching depend on editor state,
             // not on the row, so compute them once for the current frame.
@@ -976,8 +951,8 @@ impl TextEditorView {
             div()
                 .absolute()
                 .top_0()
-                .left(px(self.visible_gutter_width()
-                    + self.visible_content_padding_x()
+                .left(px(self.metrics.gutter_width
+                    + self.metrics.content_padding_x
                     - self.viewport.scroll_x_px))
                 .h(px(self.metrics.line_height))
                 .flex()

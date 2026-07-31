@@ -52,8 +52,9 @@ pub(super) fn native_plugin_host_api_snapshot_from_workspace(
         })
         .collect::<HashMap<_, _>>();
     let node_connection_ids = workspace
-        .node_router
-        .node_metadata_snapshots()
+        .node_runtime_store
+        .export_snapshot()
+        .nodes
         .into_iter()
         .filter_map(|node| {
             node.connection_id
@@ -77,39 +78,33 @@ pub(super) fn native_plugin_host_api_snapshot_from_workspace(
     );
     let notifications =
         native_plugin_notifications_snapshot(&workspace.notification_center.notifications.entries);
-    let terminal = workspace.terminal.read(cx);
-    let quick_command_store = &terminal.quick_commands.store;
     let quick_command_metadata = native_plugin_quick_command_metadata(
-        &quick_command_store.categories,
-        &quick_command_store.commands,
+        &workspace.quick_commands.categories,
+        &workspace.quick_commands.commands,
     );
     let quick_commands = json!({
-        "categories": &quick_command_store.categories,
-        "commands": &quick_command_store.commands,
+        "categories": &workspace.quick_commands.categories,
+        "commands": &workspace.quick_commands.commands,
     });
     let theme_tokens =
         native_plugin_theme_tokens_snapshot(&workspace.tokens, &settings.terminal.theme);
     let available_themes = native_plugin_available_themes(settings);
-    let (cloud_sync_summary, cloud_sync_history) = {
-        let cloud_sync = workspace.cloud_sync.read(cx);
-        let persisted_state = cloud_sync.controller.store.state();
-        (
-            native_plugin_cloud_sync_summary(
-                persisted_state,
-                cloud_sync.controller.active_action,
-                cloud_sync.controller.progress.as_ref(),
-            ),
-            native_plugin_cloud_sync_history(&persisted_state.sync_history),
-        )
-    };
+    let cloud_sync_summary = native_plugin_cloud_sync_summary(
+        workspace.cloud_sync.controller.store.state(),
+        workspace.cloud_sync.controller.active_action,
+        workspace.cloud_sync.controller.progress.as_ref(),
+    );
+    let cloud_sync_history = native_plugin_cloud_sync_history(
+        &workspace.cloud_sync.controller.store.state().sync_history,
+    );
     let host_tools_snapshots =
         oxideterm_plugin_host_api::host_tools::native_plugin_host_tools_snapshot_array(
-            workspace.host_tools.read(cx).profiler_registry(),
+            &workspace.connection_monitor.profiler_registry,
             &native_plugin_profiler_node_connection_ids(workspace),
         );
 
     NativePluginHostApiSnapshot {
-        registry: workspace.plugin_entity.read(cx).registry_snapshot(),
+        registry: workspace.native_plugin_runtime.registry.clone(),
         i18n: workspace.i18n.clone(),
         settings: serde_json::to_value(settings).unwrap_or_else(|_| json!({})),
         locale: settings.general.language.as_str().to_string(),
@@ -120,7 +115,7 @@ pub(super) fn native_plugin_host_api_snapshot_from_workspace(
             "activeConnections": monitor_stats.active_connections,
             "totalSessions": monitor_stats.total_terminals,
         }),
-        layout: workspace.native_plugin_layout_snapshot(cx),
+        layout: workspace.native_plugin_layout_snapshot(),
         connections,
         saved_connections,
         connection_states,
@@ -557,6 +552,7 @@ mod tests {
             identity_agent: Some("/private/agent.sock".to_string()),
             agent_forwarding_socket: Some("/private/forward-agent.sock".to_string()),
             legacy_ssh_compatibility: false,
+            skip_remote_env_detection: false,
             post_connect_command: Some("export TOKEN=private".to_string()),
         };
 

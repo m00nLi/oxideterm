@@ -4,8 +4,8 @@ use anyhow::Result;
 use chrono::Utc;
 
 use crate::{
-    ConnectionOptions, ConnectionTerminalOptions, SaveConnectionRequest, SavedAuth,
-    SavedConnection, SavedProxyHop, SavedUpstreamProxyPolicy, SecretString, SshConfigHost,
+    ConnectionOptions, SaveConnectionRequest, SavedAuth, SavedConnection, SavedProxyHop,
+    SavedUpstreamProxyPolicy, SecretString, SshConfigHost,
     ssh_keys::{
         DefaultPrivateKeyStatus, default_private_key_paths_in_ssh_dir, default_private_key_status,
     },
@@ -105,8 +105,8 @@ pub struct ConnectionDraft {
     pub identity_agent: Option<String>,
     pub agent_forwarding_socket: Option<String>,
     pub legacy_ssh_compatibility: bool,
+    pub skip_remote_env_detection: bool,
     pub post_connect_command: String,
-    pub terminal: ConnectionTerminalOptions,
 }
 
 pub fn saved_connection_from_ssh_host(host: SshConfigHost) -> Result<SavedConnection> {
@@ -214,9 +214,9 @@ pub fn save_request_from_draft(
         identity_agent: draft.identity_agent,
         agent_forwarding_socket: draft.agent_forwarding_socket,
         legacy_ssh_compatibility: draft.legacy_ssh_compatibility,
+        skip_remote_env_detection: draft.skip_remote_env_detection,
         post_connect_command: (!draft.post_connect_command.trim().is_empty())
             .then(|| draft.post_connect_command.trim().to_string()),
-        terminal: draft.terminal,
     })
 }
 
@@ -568,8 +568,8 @@ mod tests {
             identity_agent: None,
             agent_forwarding_socket: None,
             legacy_ssh_compatibility: false,
+            skip_remote_env_detection: false,
             post_connect_command: String::new(),
-            terminal: ConnectionTerminalOptions::default(),
         };
 
         let request = save_request_from_draft(draft, None, None).unwrap();

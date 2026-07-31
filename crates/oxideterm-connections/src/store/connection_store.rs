@@ -181,14 +181,6 @@ impl ConnectionStore {
     }
 
     pub fn upsert(&mut self, request: SaveConnectionRequest) -> Result<ConnectionInfo> {
-        self.upsert_with_runtime_secrets(request)
-            .map(|(connection, _secrets)| connection)
-    }
-
-    pub fn upsert_with_runtime_secrets(
-        &mut self,
-        request: SaveConnectionRequest,
-    ) -> Result<(ConnectionInfo, SavedConnectionRuntimeSecrets)> {
         let group = normalize_optional_group_name(request.group.as_deref())?;
         let now = Utc::now();
         let id = request.id.unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -210,16 +202,13 @@ impl ConnectionStore {
         options.identity_agent = request.identity_agent;
         options.agent_forwarding_socket = request.agent_forwarding_socket;
         options.legacy_ssh_compatibility = request.legacy_ssh_compatibility;
-        options.terminal = request.terminal;
-        let (auth, auth_secret) =
-            self.materialize_auth_with_runtime_secret(request.auth, existing_auth.as_ref())?;
-        let (proxy_chain, proxy_chain_secrets) =
-            self.materialize_proxy_chain_with_runtime_secrets(request.proxy_chain)?;
-        let (upstream_proxy, upstream_proxy_secret) = self
-            .materialize_upstream_proxy_policy_with_runtime_secret(
-                request.upstream_proxy,
-                existing.as_ref().map(|conn| &conn.upstream_proxy),
-            )?;
+        options.skip_remote_env_detection = request.skip_remote_env_detection;
+        let auth = self.materialize_auth(request.auth, existing_auth.as_ref())?;
+        let proxy_chain = self.materialize_proxy_chain(request.proxy_chain)?;
+        let upstream_proxy = self.materialize_upstream_proxy_policy(
+            request.upstream_proxy,
+            existing.as_ref().map(|conn| &conn.upstream_proxy),
+        )?;
         let next_keychain_ids =
             collect_keychain_ids_for_parts(&auth, &proxy_chain, &upstream_proxy);
         let post_connect_command = request.post_connect_command.and_then(|command| {
@@ -280,13 +269,8 @@ impl ConnectionStore {
         {
             let _ = self.keychain.delete(keychain_id);
         }
-        Ok((
-            ConnectionInfo::from(self.get(&id).expect("connection saved")),
-            SavedConnectionRuntimeSecrets {
-                auth: auth_secret,
-                proxy_chain: proxy_chain_secrets,
-                upstream_proxy: upstream_proxy_secret,
-            },
+        Ok(ConnectionInfo::from(
+            self.get(&id).expect("connection saved"),
         ))
     }
 
@@ -574,7 +558,6 @@ impl ConnectionStore {
         profile.icon_background_color = normalize_optional_text(request.icon_background_color);
         profile.host = request.host.trim().to_string();
         profile.port = request.port;
-        profile.terminal = request.terminal;
         profile.connect_on_open = request.connect_on_open.unwrap_or(false);
         if !self
             .data
@@ -1453,15 +1436,6 @@ impl ConnectionStore {
         auth: SavedAuth,
         existing_auth: Option<&SavedAuth>,
     ) -> Result<SavedAuth> {
-        self.materialize_auth_with_runtime_secret(auth, existing_auth)
-            .map(|(auth, _secret)| auth)
-    }
-
-    fn materialize_auth_with_runtime_secret(
-        &self,
-        auth: SavedAuth,
-        existing_auth: Option<&SavedAuth>,
-    ) -> Result<(SavedAuth, Option<SecretString>)> {
         match auth {
             SavedAuth::Password {
                 keychain_id,
@@ -1472,21 +1446,15 @@ impl ConnectionStore {
                         .or(keychain_id)
                         .unwrap_or_else(new_password_keychain_id);
                     self.keychain.store(&keychain_id, &password)?;
-                    Ok((
-                        SavedAuth::Password {
-                            keychain_id: Some(keychain_id),
-                            plaintext_password: None,
-                        },
-                        Some(password),
-                    ))
+                    Ok(SavedAuth::Password {
+                        keychain_id: Some(keychain_id),
+                        plaintext_password: None,
+                    })
                 } else {
-                    Ok((
-                        SavedAuth::Password {
-                            keychain_id,
-                            plaintext_password: None,
-                        },
-                        None,
-                    ))
+                    Ok(SavedAuth::Password {
+                        keychain_id,
+                        plaintext_password: None,
+                    })
                 }
             }
             SavedAuth::Key {
@@ -1501,38 +1469,29 @@ impl ConnectionStore {
                         .or(passphrase_keychain_id)
                         .unwrap_or_else(new_key_passphrase_keychain_id);
                     self.keychain.store(&keychain_id, &passphrase)?;
-                    Ok((
-                        SavedAuth::Key {
-                            key_path,
-                            has_passphrase: true,
-                            passphrase_keychain_id: Some(keychain_id),
-                            plaintext_passphrase: None,
-                        },
-                        Some(passphrase),
-                    ))
+                    Ok(SavedAuth::Key {
+                        key_path,
+                        has_passphrase: true,
+                        passphrase_keychain_id: Some(keychain_id),
+                        plaintext_passphrase: None,
+                    })
                 } else if let Some((has_passphrase, passphrase_keychain_id)) =
                     matching_key_passphrase(existing_auth, &key_path)
                 {
-                    Ok((
-                        SavedAuth::Key {
-                            key_path,
-                            has_passphrase,
-                            passphrase_keychain_id,
-                            plaintext_passphrase: None,
-                        },
-                        None,
-                    ))
+                    Ok(SavedAuth::Key {
+                        key_path,
+                        has_passphrase,
+                        passphrase_keychain_id,
+                        plaintext_passphrase: None,
+                    })
                 } else {
                     let has_passphrase = has_passphrase || passphrase_keychain_id.is_some();
-                    Ok((
-                        SavedAuth::Key {
-                            key_path,
-                            has_passphrase,
-                            passphrase_keychain_id,
-                            plaintext_passphrase: None,
-                        },
-                        None,
-                    ))
+                    Ok(SavedAuth::Key {
+                        key_path,
+                        has_passphrase,
+                        passphrase_keychain_id,
+                        plaintext_passphrase: None,
+                    })
                 }
             }
             SavedAuth::Certificate {
@@ -1549,41 +1508,32 @@ impl ConnectionStore {
                         .or(passphrase_keychain_id)
                         .unwrap_or_else(new_key_passphrase_keychain_id);
                     self.keychain.store(&keychain_id, &passphrase)?;
-                    Ok((
-                        SavedAuth::Certificate {
-                            key_path,
-                            cert_path,
-                            has_passphrase: true,
-                            passphrase_keychain_id: Some(keychain_id),
-                            plaintext_passphrase: None,
-                        },
-                        Some(passphrase),
-                    ))
+                    Ok(SavedAuth::Certificate {
+                        key_path,
+                        cert_path,
+                        has_passphrase: true,
+                        passphrase_keychain_id: Some(keychain_id),
+                        plaintext_passphrase: None,
+                    })
                 } else if let Some((has_passphrase, passphrase_keychain_id)) =
                     matching_certificate_passphrase(existing_auth, &key_path, &cert_path)
                 {
-                    Ok((
-                        SavedAuth::Certificate {
-                            key_path,
-                            cert_path,
-                            has_passphrase,
-                            passphrase_keychain_id,
-                            plaintext_passphrase: None,
-                        },
-                        None,
-                    ))
+                    Ok(SavedAuth::Certificate {
+                        key_path,
+                        cert_path,
+                        has_passphrase,
+                        passphrase_keychain_id,
+                        plaintext_passphrase: None,
+                    })
                 } else {
                     let has_passphrase = has_passphrase || passphrase_keychain_id.is_some();
-                    Ok((
-                        SavedAuth::Certificate {
-                            key_path,
-                            cert_path,
-                            has_passphrase,
-                            passphrase_keychain_id,
-                            plaintext_passphrase: None,
-                        },
-                        None,
-                    ))
+                    Ok(SavedAuth::Certificate {
+                        key_path,
+                        cert_path,
+                        has_passphrase,
+                        passphrase_keychain_id,
+                        plaintext_passphrase: None,
+                    })
                 }
             }
             SavedAuth::ManagedKey {
@@ -1597,67 +1547,47 @@ impl ConnectionStore {
                         .or(passphrase_keychain_id)
                         .unwrap_or_else(new_key_passphrase_keychain_id);
                     self.keychain.store(&keychain_id, &passphrase)?;
-                    Ok((
-                        SavedAuth::ManagedKey {
-                            key_id,
-                            passphrase_keychain_id: Some(keychain_id),
-                            plaintext_passphrase: None,
-                        },
-                        Some(passphrase),
-                    ))
+                    Ok(SavedAuth::ManagedKey {
+                        key_id,
+                        passphrase_keychain_id: Some(keychain_id),
+                        plaintext_passphrase: None,
+                    })
                 } else if let Some(passphrase_keychain_id) =
                     matching_managed_key_passphrase_id(existing_auth, &key_id)
                 {
-                    Ok((
-                        SavedAuth::ManagedKey {
-                            key_id,
-                            passphrase_keychain_id: Some(passphrase_keychain_id),
-                            plaintext_passphrase: None,
-                        },
-                        None,
-                    ))
+                    Ok(SavedAuth::ManagedKey {
+                        key_id,
+                        passphrase_keychain_id: Some(passphrase_keychain_id),
+                        plaintext_passphrase: None,
+                    })
                 } else {
-                    Ok((
-                        SavedAuth::ManagedKey {
-                            key_id,
-                            passphrase_keychain_id,
-                            plaintext_passphrase: None,
-                        },
-                        None,
-                    ))
+                    Ok(SavedAuth::ManagedKey {
+                        key_id,
+                        passphrase_keychain_id,
+                        plaintext_passphrase: None,
+                    })
                 }
             }
-            auth => Ok((auth, None)),
+            auth => Ok(auth),
         }
     }
 
     fn materialize_proxy_chain(&self, proxy_chain: Vec<SavedProxyHop>) -> Result<Vec<SavedProxyHop>> {
-        self.materialize_proxy_chain_with_runtime_secrets(proxy_chain)
-            .map(|(proxy_chain, _secrets)| proxy_chain)
-    }
-
-    fn materialize_proxy_chain_with_runtime_secrets(
-        &self,
-        proxy_chain: Vec<SavedProxyHop>,
-    ) -> Result<(Vec<SavedProxyHop>, Vec<Option<SecretString>>)> {
-        let mut materialized = Vec::with_capacity(proxy_chain.len());
-        let mut runtime_secrets = Vec::with_capacity(proxy_chain.len());
-        for hop in proxy_chain {
-            let (auth, runtime_secret) =
-                self.materialize_auth_with_runtime_secret(hop.auth, None)?;
-            materialized.push(SavedProxyHop {
-                host: non_empty(hop.host.trim(), "Proxy host")?.to_string(),
-                port: hop.port.max(1),
-                username: non_empty(hop.username.trim(), "Proxy username")?.to_string(),
-                auth,
-                agent_forwarding: hop.agent_forwarding,
-                identity_agent: hop.identity_agent,
-                agent_forwarding_socket: hop.agent_forwarding_socket,
-                legacy_ssh_compatibility: hop.legacy_ssh_compatibility,
-            });
-            runtime_secrets.push(runtime_secret);
-        }
-        Ok((materialized, runtime_secrets))
+        proxy_chain
+            .into_iter()
+            .map(|hop| {
+                Ok(SavedProxyHop {
+                    host: non_empty(hop.host.trim(), "Proxy host")?.to_string(),
+                    port: hop.port.max(1),
+                    username: non_empty(hop.username.trim(), "Proxy username")?.to_string(),
+                    auth: self.materialize_auth(hop.auth, None)?,
+                    agent_forwarding: hop.agent_forwarding,
+                    identity_agent: hop.identity_agent,
+                    agent_forwarding_socket: hop.agent_forwarding_socket,
+                    legacy_ssh_compatibility: hop.legacy_ssh_compatibility,
+                })
+            })
+            .collect()
     }
 
     fn materialize_upstream_proxy_policy(
@@ -1665,50 +1595,32 @@ impl ConnectionStore {
         policy: SavedUpstreamProxyPolicy,
         existing_policy: Option<&SavedUpstreamProxyPolicy>,
     ) -> Result<SavedUpstreamProxyPolicy> {
-        self.materialize_upstream_proxy_policy_with_runtime_secret(policy, existing_policy)
-            .map(|(policy, _secret)| policy)
-    }
-
-    fn materialize_upstream_proxy_policy_with_runtime_secret(
-        &self,
-        policy: SavedUpstreamProxyPolicy,
-        existing_policy: Option<&SavedUpstreamProxyPolicy>,
-    ) -> Result<(SavedUpstreamProxyPolicy, Option<SecretString>)> {
         match policy {
-            SavedUpstreamProxyPolicy::UseGlobal => {
-                Ok((SavedUpstreamProxyPolicy::UseGlobal, None))
-            }
-            SavedUpstreamProxyPolicy::Direct => Ok((SavedUpstreamProxyPolicy::Direct, None)),
+            SavedUpstreamProxyPolicy::UseGlobal => Ok(SavedUpstreamProxyPolicy::UseGlobal),
+            SavedUpstreamProxyPolicy::Direct => Ok(SavedUpstreamProxyPolicy::Direct),
             SavedUpstreamProxyPolicy::Custom { proxy } => {
-                let (auth, runtime_secret) = self
-                    .materialize_upstream_proxy_auth_with_runtime_secret(
-                        proxy.auth,
-                        existing_policy,
-                    )?;
-                Ok((
-                    SavedUpstreamProxyPolicy::Custom {
-                        proxy: SavedUpstreamProxyConfig {
-                            protocol: proxy.protocol,
-                            host: non_empty(proxy.host.trim(), "Upstream proxy host")?.to_string(),
-                            port: proxy.port.max(1),
-                            auth,
-                            remote_dns: proxy.remote_dns,
-                            no_proxy: proxy.no_proxy.trim().to_string(),
-                        },
+                let auth = self.materialize_upstream_proxy_auth(proxy.auth, existing_policy)?;
+                Ok(SavedUpstreamProxyPolicy::Custom {
+                    proxy: SavedUpstreamProxyConfig {
+                        protocol: proxy.protocol,
+                        host: non_empty(proxy.host.trim(), "Upstream proxy host")?.to_string(),
+                        port: proxy.port.max(1),
+                        auth,
+                        remote_dns: proxy.remote_dns,
+                        no_proxy: proxy.no_proxy.trim().to_string(),
                     },
-                    runtime_secret,
-                ))
+                })
             }
         }
     }
 
-    fn materialize_upstream_proxy_auth_with_runtime_secret(
+    fn materialize_upstream_proxy_auth(
         &self,
         auth: SavedUpstreamProxyAuth,
         existing_policy: Option<&SavedUpstreamProxyPolicy>,
-    ) -> Result<(SavedUpstreamProxyAuth, Option<SecretString>)> {
+    ) -> Result<SavedUpstreamProxyAuth> {
         match auth {
-            SavedUpstreamProxyAuth::None => Ok((SavedUpstreamProxyAuth::None, None)),
+            SavedUpstreamProxyAuth::None => Ok(SavedUpstreamProxyAuth::None),
             SavedUpstreamProxyAuth::Password {
                 username,
                 keychain_id,
@@ -1720,23 +1632,17 @@ impl ConnectionStore {
                         .or(keychain_id)
                         .unwrap_or_else(new_upstream_proxy_password_keychain_id);
                     self.keychain.store(&keychain_id, &password)?;
-                    Ok((
-                        SavedUpstreamProxyAuth::Password {
-                            username,
-                            keychain_id: Some(keychain_id),
-                            plaintext_password: None,
-                        },
-                        Some(password),
-                    ))
+                    Ok(SavedUpstreamProxyAuth::Password {
+                        username,
+                        keychain_id: Some(keychain_id),
+                        plaintext_password: None,
+                    })
                 } else {
-                    Ok((
-                        SavedUpstreamProxyAuth::Password {
-                            username,
-                            keychain_id,
-                            plaintext_password: None,
-                        },
-                        None,
-                    ))
+                    Ok(SavedUpstreamProxyAuth::Password {
+                        username,
+                        keychain_id,
+                        plaintext_password: None,
+                    })
                 }
             }
         }

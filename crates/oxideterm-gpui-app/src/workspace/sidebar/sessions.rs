@@ -4,11 +4,7 @@ use super::*;
 pub(in crate::workspace) struct ActiveSessionSidebarRow {
     node_id: NodeId,
     parent_id: Option<NodeId>,
-    saved_connection_id: Option<String>,
-    title: String,
-    host: String,
-    username: String,
-    port: u16,
+    node: WorkspaceSshNode,
     node_view: ActiveSessionNode,
     depth: usize,
     is_last: bool,
@@ -25,42 +21,6 @@ fn session_status_can_remove_from_sidebar(status: ActiveSessionStatus) -> bool {
 }
 
 impl WorkspaceApp {
-    fn queue_ssh_terminal_tab_for_sidebar_node(
-        &mut self,
-        node_id: NodeId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Result<()> {
-        let title = self
-            .ssh_nodes
-            .get(&node_id)
-            .map(|node| node.title.clone())
-            .ok_or_else(|| anyhow::anyhow!("SSH node {} not found", node_id.0))?;
-        if self.node_is_ready_for_terminal(&node_id) {
-            return self.queue_ssh_terminal_tab_for_existing_node(node_id, None, title, window, cx);
-        }
-
-        let config = self
-            .node_router
-            .node_runtime_snapshot(&node_id)
-            .map(|snapshot| snapshot.config)
-            .ok_or_else(|| anyhow::anyhow!("SSH node {} has no runtime config", node_id.0))?;
-        let saved_connection_id = self
-            .ssh_nodes
-            .get(&node_id)
-            .and_then(|node| node.saved_connection_id.clone());
-        // Keep secret-bearing config out of virtual rows and retained listeners.
-        // A disconnected node copies it only at the explicit connect action.
-        self.queue_ssh_terminal_tab_for_node(
-            node_id,
-            config,
-            title,
-            saved_connection_id,
-            window,
-            cx,
-        )
-    }
-
     pub(in crate::workspace) fn render_active_sessions_sidebar_content(
         &mut self,
         cx: &mut Context<Self>,
@@ -74,7 +34,7 @@ impl WorkspaceApp {
             return self.render_empty_sessions_sidebar_content(cx);
         }
 
-        self.sync_active_session_sidebar_list_state(&rows, ActiveSessionSidebarViewMode::Tree, cx);
+        self.sync_active_session_sidebar_list_state(&rows, ActiveSessionSidebarViewMode::Tree);
         let state = self.active_session_sidebar_list_state.clone();
         let spec = self.active_session_sidebar_list_spec(ActiveSessionSidebarViewMode::Tree);
         let workspace = cx.entity();
@@ -107,7 +67,6 @@ impl WorkspaceApp {
         self.sync_active_session_sidebar_list_state(
             &visible_rows,
             ActiveSessionSidebarViewMode::Focus,
-            cx,
         );
 
         let state = self.active_session_sidebar_list_state.clone();
@@ -175,11 +134,7 @@ impl WorkspaceApp {
                 Some(ActiveSessionSidebarRow {
                     node_id,
                     parent_id: flat_node.parent_id.map(NodeId::new),
-                    saved_connection_id: node.saved_connection_id.clone(),
-                    title: node.title.clone(),
-                    host: node.endpoint.host.clone(),
-                    username: node.endpoint.username.clone(),
-                    port: node.endpoint.port,
+                    node,
                     node_view,
                     depth: flat_node.depth as usize,
                     is_last: flat_node.is_last_child,
@@ -196,11 +151,10 @@ impl WorkspaceApp {
         &mut self,
         rows: &[ActiveSessionSidebarRow],
         view_mode: ActiveSessionSidebarViewMode,
-        cx: &App,
     ) {
         let signatures = rows
             .iter()
-            .map(|row| self.active_session_sidebar_row_signature(row, view_mode, cx))
+            .map(|row| self.active_session_sidebar_row_signature(row, view_mode))
             .collect::<Vec<_>>();
         sync_tauri_variable_list_state_by_signatures(
             &self.active_session_sidebar_list_state,
@@ -232,7 +186,14 @@ impl WorkspaceApp {
         };
         div()
             .px_1()
-            .child(self.render_active_session_node(row, cx))
+            .child(self.render_active_session_node(
+                row.node_id,
+                row.node,
+                row.node_view,
+                row.depth,
+                row.is_last,
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -240,7 +201,6 @@ impl WorkspaceApp {
         &self,
         row: &ActiveSessionSidebarRow,
         view_mode: ActiveSessionSidebarViewMode,
-        cx: &App,
     ) -> u64 {
         let mut hasher = DefaultHasher::new();
         // This virtual row owns the node header plus expanded action/terminal
@@ -248,8 +208,9 @@ impl WorkspaceApp {
         view_mode.hash(&mut hasher);
         row.node_id.hash(&mut hasher);
         row.parent_id.hash(&mut hasher);
-        row.title.hash(&mut hasher);
-        row.port.hash(&mut hasher);
+        row.node.title.hash(&mut hasher);
+        row.node.config.port.hash(&mut hasher);
+        row.node.terminal_ids.hash(&mut hasher);
         row.node_view.title.hash(&mut hasher);
         row.node_view.terminal_ids.hash(&mut hasher);
         format!("{:?}", row.node_view.status()).hash(&mut hasher);
@@ -259,7 +220,7 @@ impl WorkspaceApp {
         self.expanded_ssh_nodes
             .contains(&row.node_id)
             .hash(&mut hasher);
-        self.has_active_reconnect_job(&row.node_id, cx)
+        self.has_active_reconnect_job(&row.node_id)
             .hash(&mut hasher);
         (self.active_ssh_node_id.as_ref() == Some(&row.node_id)).hash(&mut hasher);
         hasher.finish()
@@ -632,7 +593,10 @@ impl WorkspaceApp {
             ActiveSessionStatus::Active | ActiveSessionStatus::Connected
         );
         let connecting = matches!(row.node_view.status(), ActiveSessionStatus::Connecting);
-        let subtitle = format!("{}@{}:{}", row.username, row.host, row.port);
+        let subtitle = format!(
+            "{}@{}:{}",
+            row.node.config.username, row.node.config.host, row.node.config.port
+        );
         let terminal_count = row.node_view.terminal_ids.len();
         let has_children = row.has_children;
         let action_label = self.i18n.t("sessions.actions.connect");
@@ -778,6 +742,9 @@ impl WorkspaceApp {
                     })
                     .when(!connected && !connecting, |row_el| {
                         let node_id = row.node_id.clone();
+                        let config = row.node.config.clone();
+                        let title = row.node.title.clone();
+                        let saved_connection_id = row.node.saved_connection_id.clone();
                         row_el.child(
                             div()
                                 .rounded(px(self.tokens.radii.md))
@@ -799,8 +766,11 @@ impl WorkspaceApp {
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, _event, window, cx| {
-                                        let _ = this.queue_ssh_terminal_tab_for_sidebar_node(
+                                        let _ = this.queue_ssh_terminal_tab_for_node(
                                             node_id.clone(),
+                                            config.clone(),
+                                            title.clone(),
+                                            saved_connection_id.clone(),
                                             window,
                                             cx,
                                         );
@@ -844,7 +814,7 @@ impl WorkspaceApp {
         }
 
         if selected
-            && !self.has_active_reconnect_job(&row.node_id, cx)
+            && !self.has_active_reconnect_job(&row.node_id)
             && session_status_can_remove_from_sidebar(row.node_view.status())
         {
             let node_id = row.node_id.clone();
@@ -865,6 +835,96 @@ impl WorkspaceApp {
         card.into_any_element()
     }
 
+    /// Begin inline rename for a focused-session terminal.
+    pub(in crate::workspace) fn begin_terminal_rename(
+        &mut self,
+        session_id: TerminalSessionId,
+        cx: &mut Context<Self>,
+    ) {
+        let draft = self
+            .terminal_labels
+            .get(&session_id)
+            .cloned()
+ .unwrap_or_default();
+        self.renaming_terminal_id = Some(session_id);
+        self.terminal_rename_draft = draft;
+        cx.notify();
+    }
+
+    /// Abort terminal rename without applying the draft.
+    pub(in crate::workspace) fn cancel_terminal_rename(&mut self, cx: &mut Context<Self>) {
+        if self.renaming_terminal_id.take().is_some() {
+            self.terminal_rename_draft.clear();
+            cx.notify();
+        }
+    }
+
+    /// Apply the terminal rename draft and exit edit mode.
+    pub(in crate::workspace) fn confirm_terminal_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.renaming_terminal_id.take() else {
+            return;
+        };
+        let draft = std::mem::take(&mut self.terminal_rename_draft);
+        let trimmed = draft.trim();
+        if trimmed.is_empty() {
+            self.terminal_labels.remove(&session_id);
+        } else {
+            self.terminal_labels.insert(session_id, trimmed.to_string());
+        }
+        cx.notify();
+    }
+
+    /// Handle a key event while terminal rename is active. Mirrors the tab
+    /// rename key handler: Enter commits, Escape cancels, Backspace deletes,
+    /// and printable text is inserted via `key_char`.
+    pub(in crate::workspace) fn handle_terminal_rename_key(
+        &mut self,
+        event: &KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.renaming_terminal_id.is_none() {
+            return false;
+        }
+       let key = event.keystroke.key.as_str();
+       let modifiers = &event.keystroke.modifiers;
+        // Consume all keys while renaming so nothing leaks to the terminal.
+        if modifiers.platform || modifiers.control {
+            return true;
+        }
+        match key {
+            "enter" => {
+                self.confirm_terminal_rename(cx);
+                true
+            }
+            "escape" => {
+                self.cancel_terminal_rename(cx);
+                true
+            }
+            "backspace" => {
+                self.terminal_rename_draft.pop();
+                cx.notify();
+                true
+            }
+            "tab" | "arrowleft" | "arrowright" | "arrowup" | "arrowdown"
+            | "home" | "end" | "delete" => true,
+            _ => {
+                if let Some(text) = event.keystroke.key_char.as_deref() {
+                    if !text.is_empty() && !text.chars().any(char::is_control) {
+                        self.terminal_rename_draft.push_str(text);
+                        cx.notify();
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    /// Whether the given terminal session is currently being renamed inline.
+    pub(in crate::workspace) fn is_renaming_terminal(&self, session_id: TerminalSessionId) -> bool {
+        self.renaming_terminal_id == Some(session_id)
+    }
+
     pub(in crate::workspace) fn render_active_session_focus_terminal(
         &self,
         session_id: TerminalSessionId,
@@ -872,16 +932,21 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.tokens.ui;
-        let active = self.active_terminal_session_id(cx) == Some(session_id);
+        let active = self.active_terminal_session_id() == Some(session_id);
         let text_color = if active {
             theme.accent
         } else {
             theme.text_muted
         };
-        let text = self
-            .i18n
-            .t("sessions.focused_list.terminal")
-            .replace("{{number}}", &index.to_string());
+        let bg_hover = theme.bg_hover;
+        // A user-set terminal label replaces the default "Terminal #N" text.
+        let text = match self.terminal_labels.get(&session_id) {
+            Some(label) => label.clone(),
+            None => self
+                .i18n
+                .t("sessions.focused_list.terminal")
+                .replace("{{number}}", &index.to_string()),
+        };
 
         div()
             .h(px(24.0))
@@ -908,40 +973,95 @@ impl WorkspaceApp {
                     .flex_1()
                     .truncate()
                     .text_size(px(SESSION_TREE_META_TEXT_SIZE))
-                    .child(self.render_row_safe_selectable_display_text_in_group(
-                        crate::workspace::selectable_text::selectable_text_id(
-                            "session-focus-terminal",
-                            session_id,
+                   .child(if self.is_renaming_terminal(session_id) {
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .child(oxideterm_gpui_ui::text_input::text_input(
+                                &self.tokens,
+                                oxideterm_gpui_ui::text_input::TextInputView {
+                                    value: &self.terminal_rename_draft,
+                                    placeholder: self.i18n.t("sessions.focused_list.rename_terminal"),
+                                    focused: true,
+                                    caret_visible: self.new_connection_caret_visible,
+                                    secret: false,
+                                    selected_all: false,
+                                    selected_range: None,
+                                    marked_text: None,
+                                },
+                            ))
+                            .into_any_element()
+                   } else {
+                       self.render_row_safe_selectable_display_text_in_group(
+                           crate::workspace::selectable_text::selectable_text_id(
+                               "session-focus-terminal",
+                                session_id,
+                            ),
+                            "session-focus-terminal-cell",
+                            "label",
+                            0,
+                            text,
+                            text_color,
+                            None,
+                            cx,
+                        )
+                        .into_any_element()
+                    }),
+            )
+            // Edit (rename) and close buttons are hidden while renaming so
+            // the inline input owns the row. They sit outside the selectable
+            // text child so their mouse events are not swallowed.
+            .when(!self.is_renaming_terminal(session_id), |row| {
+                row.child(
+                    div()
+                        .size(px(18.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(self.tokens.radii.md))
+                        .cursor_pointer()
+                        .hover(move |btn| btn.bg(rgb(bg_hover)))
+                        .child(Self::render_lucide_icon(
+                            LucideIcon::Pencil,
+                            12.0,
+                            rgb(text_color),
+                        ))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _event, _window, cx| {
+                                this.begin_terminal_rename(session_id, cx);
+                                cx.stop_propagation();
+                            }),
                         ),
-                        "session-focus-terminal-cell",
-                        "label",
-                        0,
-                        text,
-                        text_color,
-                        None,
-                        cx,
-                    )),
-            )
-            .child(
-                div()
-                    .size(px(18.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(self.tokens.radii.md))
-                    .child(Self::render_lucide_icon(
-                        LucideIcon::X,
-                        12.0,
-                        rgb(text_color),
-                    ))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, window, cx| {
-                            this.close_terminal_session(session_id, window, cx);
-                            cx.stop_propagation();
-                        }),
-                    ),
-            )
+                )
+                .child(
+                    div()
+                        .size(px(18.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(self.tokens.radii.md))
+                        .cursor_pointer()
+                        .hover(move |btn| btn.bg(rgb(bg_hover)))
+                        .child(Self::render_lucide_icon(
+                            LucideIcon::X,
+                            12.0,
+                            rgb(text_color),
+                        ))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _event, window, cx| {
+                                this.close_terminal_session(session_id, window, cx);
+                                cx.stop_propagation();
+                            }),
+                        ),
+                )
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, window, cx| {
@@ -958,14 +1078,23 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let node_id = row.node_id.clone();
+        let config = row.node.config.clone();
+        let title = row.node.title.clone();
+        let saved_connection_id = row.node.saved_connection_id.clone();
         vec![
             self.render_active_session_focus_action_chip(
                 LucideIcon::Plus,
                 self.i18n.t("sessions.tree.actions.new_terminal"),
                 SessionActionVariant::Primary,
                 cx.listener(move |this, _event, window, cx| {
-                    let _ =
-                        this.queue_ssh_terminal_tab_for_sidebar_node(node_id.clone(), window, cx);
+                    let _ = this.queue_ssh_terminal_tab_for_node(
+                        node_id.clone(),
+                        config.clone(),
+                        title.clone(),
+                        saved_connection_id.clone(),
+                        window,
+                        cx,
+                    );
                     cx.stop_propagation();
                 }),
                 cx,
@@ -1045,13 +1174,13 @@ impl WorkspaceApp {
 
     pub(in crate::workspace) fn render_active_session_node(
         &self,
-        row: ActiveSessionSidebarRow,
+        node_id: NodeId,
+        node: WorkspaceSshNode,
+        node_view: ActiveSessionNode,
+        node_depth: usize,
+        is_last: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let node_id = row.node_id;
-        let node_view = row.node_view;
-        let node_depth = row.depth;
-        let is_last = row.is_last;
         let expanded = self.expanded_ssh_nodes.contains(&node_id);
         let selected = self.active_ssh_node_id.as_ref() == Some(&node_id);
         let status = self.session_node_status(node_view.status());
@@ -1059,7 +1188,7 @@ impl WorkspaceApp {
         let mut children = Vec::new();
 
         if expanded {
-            if self.has_active_reconnect_job(&node_id, cx) {
+            if self.has_active_reconnect_job(&node_id) {
                 let listener = cx.listener({
                     let node_id = node_id.clone();
                     move |this, _event, _window, cx| {
@@ -1082,9 +1211,15 @@ impl WorkspaceApp {
             ) {
                 let listener = cx.listener({
                     let node_id = node_id.clone();
+                    let config = node.config.clone();
+                    let title = node.title.clone();
+                    let saved_connection_id = node.saved_connection_id.clone();
                     move |this, _event, window, cx| {
-                        let _ = this.queue_ssh_terminal_tab_for_sidebar_node(
+                        let _ = this.queue_ssh_terminal_tab_for_node(
                             node_id.clone(),
+                            config.clone(),
+                            title.clone(),
+                            saved_connection_id.clone(),
                             window,
                             cx,
                         );
@@ -1151,10 +1286,7 @@ impl WorkspaceApp {
                     listener,
                     cx,
                 ));
-                if self.can_save_runtime_node_as_connection(
-                    &node_id,
-                    row.saved_connection_id.as_deref(),
-                ) {
+                if self.can_save_runtime_node_as_connection(&node_id, &node) {
                     let listener = cx.listener({
                         let node_id = node_id.clone();
                         move |this, _event, window, cx| {
@@ -1216,9 +1348,15 @@ impl WorkspaceApp {
             } else if matches!(node_view.status(), ActiveSessionStatus::Error) {
                 let listener = cx.listener({
                     let node_id = node_id.clone();
+                    let config = node.config.clone();
+                    let title = node.title.clone();
+                    let saved_connection_id = node.saved_connection_id.clone();
                     move |this, _event, window, cx| {
-                        let _ = this.queue_ssh_terminal_tab_for_sidebar_node(
+                        let _ = this.queue_ssh_terminal_tab_for_node(
                             node_id.clone(),
+                            config.clone(),
+                            title.clone(),
+                            saved_connection_id.clone(),
                             window,
                             cx,
                         );
@@ -1236,7 +1374,7 @@ impl WorkspaceApp {
                 ));
                 let listener = cx.listener({
                     let node_id = node_id.clone();
-                    let saved_connection_id = row.saved_connection_id.clone();
+                    let saved_connection_id = node.saved_connection_id;
                     move |this, _event, window, cx| {
                         if let Some(saved_connection_id) = saved_connection_id.as_deref() {
                             this.open_saved_connection_reconnect_editor(
@@ -1279,9 +1417,15 @@ impl WorkspaceApp {
             } else if matches!(node_view.status(), ActiveSessionStatus::Idle) {
                 let listener = cx.listener({
                     let node_id = node_id.clone();
+                    let config = node.config.clone();
+                    let title = node.title.clone();
+                    let saved_connection_id = node.saved_connection_id;
                     move |this, _event, window, cx| {
-                        let _ = this.queue_ssh_terminal_tab_for_sidebar_node(
+                        let _ = this.queue_ssh_terminal_tab_for_node(
                             node_id.clone(),
+                            config.clone(),
+                            title.clone(),
+                            saved_connection_id.clone(),
                             window,
                             cx,
                         );
@@ -1336,12 +1480,12 @@ impl WorkspaceApp {
     pub(in crate::workspace) fn can_save_runtime_node_as_connection(
         &self,
         node_id: &NodeId,
-        saved_connection_id: Option<&str>,
+        node: &WorkspaceSshNode,
     ) -> bool {
-        if saved_connection_id.is_some() {
+        if node.saved_connection_id.is_some() {
             return false;
         }
-        let Some(snapshot) = self.node_router.node_metadata(node_id) else {
+        let Some(snapshot) = self.node_runtime_store.snapshot(node_id) else {
             return true;
         };
         // ManualPreset/Restored are already saved-connection materializations,
@@ -1533,11 +1677,15 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.tokens.ui;
-        let active = self.active_terminal_session_id(cx) == Some(session_id);
-        let text = self
-            .i18n
-            .t("sessions.focused_list.terminal")
-            .replace("{{number}}", &index.to_string());
+        let active = self.active_terminal_session_id() == Some(session_id);
+        // A user-set terminal label replaces the default "Terminal #N" text.
+        let text = match self.terminal_labels.get(&session_id) {
+            Some(label) => label.clone(),
+            None => self
+                .i18n
+                .t("sessions.focused_list.terminal")
+                .replace("{{number}}", &index.to_string()),
+        };
         let row_bg = if active {
             rgba((theme.accent << 8) | 0x1a)
         } else {
@@ -1596,42 +1744,99 @@ impl WorkspaceApp {
                             gpui::FontWeight::NORMAL
                         })
                         .text_color(text_color)
-                        .child(self.render_row_safe_selectable_display_text_in_group(
-                            crate::workspace::selectable_text::selectable_text_id(
-                                "session-sidebar-terminal",
-                                session_id,
+                        .child(if self.is_renaming_terminal(session_id) {
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .child(oxideterm_gpui_ui::text_input::text_input(
+                                    &self.tokens,
+                                    oxideterm_gpui_ui::text_input::TextInputView {
+                                        value: &self.terminal_rename_draft,
+                                        placeholder: self.i18n.t(
+                                            "sessions.focused_list.rename_terminal",
+                                        ),
+                                        focused: true,
+                                        caret_visible: self.new_connection_caret_visible,
+                                        secret: false,
+                                        selected_all: false,
+                                        selected_range: None,
+                                        marked_text: None,
+                                    },
+                                ))
+                                .into_any_element()
+                       } else {
+                           self.render_row_safe_selectable_display_text_in_group(
+                               crate::workspace::selectable_text::selectable_text_id(
+                                   "session-sidebar-terminal",
+                                    session_id,
+                                ),
+                                "session-sidebar-terminal-cell",
+                                "label",
+                                0,
+                                text,
+                                if active {
+                                    theme.accent
+                                } else {
+                                    theme.text_muted
+                                },
+                                None,
+                                cx,
+                            )
+                            .into_any_element()
+                        }),
+                )
+                // Edit (pencil) and close (X) buttons share the same
+                // hover-reveal pattern. Both are hidden during rename so the
+                // inline input owns the row.
+                .when(!self.is_renaming_terminal(session_id), |row| {
+                    row.child(
+                        div()
+                            .size(px(20.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(self.tokens.radii.md))
+                            .opacity(0.0)
+                            .hover(|button| button.opacity(1.0))
+                            .child(Self::render_lucide_icon(
+                                LucideIcon::Pencil,
+                                12.0,
+                                text_color,
+                            ))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.begin_terminal_rename(session_id, cx);
+                                    cx.stop_propagation();
+                                }),
                             ),
-                            "session-sidebar-terminal-cell",
-                            "label",
-                            0,
-                            text,
-                            if active {
-                                theme.accent
-                            } else {
-                                theme.text_muted
-                            },
-                            None,
-                            cx,
-                        )),
-                )
-                .child(
-                    div()
-                        .size(px(20.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(self.tokens.radii.md))
-                        .opacity(0.0)
-                        .hover(|button| button.opacity(1.0))
-                        .child(Self::render_lucide_icon(LucideIcon::X, 12.0, text_color))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _event, window, cx| {
-                                this.close_terminal_session(session_id, window, cx);
-                                cx.stop_propagation();
-                            }),
-                        ),
-                )
+                    )
+                    .child(
+                        div()
+                            .size(px(20.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(self.tokens.radii.md))
+                            .opacity(0.0)
+                            .hover(|button| button.opacity(1.0))
+                            .child(Self::render_lucide_icon(
+                                LucideIcon::X,
+                                12.0,
+                                text_color,
+                            ))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _event, window, cx| {
+                                    this.close_terminal_session(session_id, window, cx);
+                                    cx.stop_propagation();
+                                }),
+                            ),
+                    )
+                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _event, window, cx| {

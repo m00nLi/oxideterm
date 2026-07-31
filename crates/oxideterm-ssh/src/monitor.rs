@@ -6,6 +6,7 @@ use std::time::Duration;
 use oxideterm_connection_monitor::{ResourceSampleShell, ResourceSampler, ResourceSamplerFuture};
 
 use crate::{SshConnectionHandle, SshShellChannel};
+use crate::DedicatedMonitorConnection;
 
 impl ResourceSampler for SshConnectionHandle {
     fn open_shell<'a>(
@@ -91,5 +92,54 @@ impl ResourceSampleShell for SshExecResourceSampleShell {
 
     fn close<'a>(&'a mut self) -> ResourceSamplerFuture<'a, Result<(), String>> {
         Box::pin(async { Ok(()) })
+    }
+}
+
+/// ResourceSampler implementation for dedicated monitor connections.
+///
+/// Used by skip_remote_env_detection nodes: opens a single shell channel
+/// on an independent SSH connection. No exec fallback — single-channel
+/// servers only allow one channel per connection.
+impl ResourceSampler for DedicatedMonitorConnection {
+    fn open_shell<'a>(
+        &'a self,
+        init_command: &'a str,
+        timeout: Duration,
+    ) -> ResourceSamplerFuture<'a, Result<Box<dyn ResourceSampleShell>, String>> {
+        Box::pin(async move {
+            match tokio::time::timeout(timeout, self.open_shell_channel(init_command)).await {
+                Ok(Ok(shell)) => Ok(Box::new(DedicatedMonitorShell { shell })
+                    as Box<dyn ResourceSampleShell>),
+                Ok(Err(error)) => Err(error.to_string()),
+                Err(_) => Err("monitor shell open timed out".to_string()),
+            }
+        })
+    }
+}
+
+struct DedicatedMonitorShell {
+    shell: SshShellChannel,
+}
+
+impl ResourceSampleShell for DedicatedMonitorShell {
+    fn sample_until<'a>(
+        &'a mut self,
+        command: &'a str,
+        end_marker: &'a str,
+        timeout: Duration,
+        max_output_size: usize,
+    ) -> ResourceSamplerFuture<'a, Result<String, String>> {
+        Box::pin(async move {
+            self.shell
+                .sample_until(command, end_marker, timeout, max_output_size)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn close<'a>(&'a mut self) -> ResourceSamplerFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            self.shell.close().await.map_err(|error| error.to_string())
+        })
     }
 }

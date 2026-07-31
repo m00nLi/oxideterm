@@ -17,5 +17,4 @@ pub use oxideterm_ide_core::{IdePluginFileSnapshot, IdePluginProjectSnapshot, Id
 pub use oxideterm_ide_fs::NodeAgentMode;
 pub use surface::{
     IdeAiContextSnapshot, IdeLoadState, IdeRuntimeSettings, IdeSurface, IdeSurfaceEvent,
-    IdeSurfaceMount,
 };

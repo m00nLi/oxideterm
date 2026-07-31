@@ -1,12 +1,12 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::ops::Range;
 
 use super::actions::TerminalBroadcastMenuPlacement;
 use super::ime::WorkspaceImeTarget;
 use super::terminal_git::{
-    TerminalGitAiCommitError, TerminalGitBranchError, TerminalGitPanelSection,
-    TerminalGitPathAction, TerminalGitRepositoryAction, terminal_git_path_action_label_key,
-    terminal_git_repository_action_label_key,
+    TerminalGitPanelSection, TerminalGitPathAction, TerminalGitRepositoryAction,
+    terminal_git_path_action_label_key, terminal_git_repository_action_label_key,
 };
 use super::*;
 use oxideterm_connections::LOCAL_SHELL_PRIVILEGE_CONNECTION_ID;
@@ -18,7 +18,11 @@ use oxideterm_gpui_ui::button::{ButtonRadius, IconButtonOptions};
 use oxideterm_gpui_ui::context_menu::{
     ContextMenuActionableStyle, context_menu_event_boundary, context_menu_pointer_event_boundary,
 };
-use oxideterm_gpui_ui::text_input::{TextInputView, text_input, text_input_anchor_probe};
+use oxideterm_gpui_ui::modal::rounded_shell_child_radius;
+use oxideterm_gpui_ui::text_input::{
+    TextInputView, text_caret, text_input, text_input_anchor_probe,
+    text_input_value_segments_with_color,
+};
 use oxideterm_gpui_ui::{
     ActionChipOptions, ActionChipTextTone, CommandPanelOptions, ContextChipOptions,
     EntityListRowOptions, MonospaceDatumOptions, MonospaceDatumTone, StatusPillOptions, StatusTone,
@@ -33,7 +37,6 @@ mod bar;
 mod context;
 mod git;
 mod privilege;
-mod sender;
 
 const TERMINAL_BROADCAST_MENU_WIDTH: f32 = 260.0;
 const TERMINAL_CWD_MENU_WIDTH: f32 = 520.0;
@@ -47,8 +50,23 @@ const TERMINAL_PROJECT_MENU_BODY_MAX_HEIGHT: f32 = 420.0;
 const TERMINAL_PROJECT_MENU_MARGIN: f32 = 12.0;
 const TERMINAL_COMMAND_CONTEXT_CHIP_MAX_WIDTH: f32 = 260.0; // Keep context chips compact beside command-bar actions.
 const TERMINAL_COMMAND_PROJECT_CHIP_MAX_WIDTH: f32 = 240.0; // Project labels are shorter than cwd/git labels in Tauri.
-const TERMINAL_COMMAND_TOOLBAR_HEIGHT: f32 = 32.0;
+const TERMINAL_COMMAND_INPUT_LINE_HEIGHT: f32 = 20.0;
+const TERMINAL_COMMAND_INPUT_MIN_HEIGHT: f32 = 24.0;
+const TERMINAL_COMMAND_INPUT_MAX_VISIBLE_LINES: usize = 6;
 const PRIVILEGE_PROMPT_DEBUG_ENV: &str = "OXIDETERM_PRIVILEGE_DEBUG";
+
+#[derive(Clone, Copy, Debug)]
+struct TerminalCommandInputLine<'a> {
+    text: &'a str,
+    utf16_start: usize,
+    utf16_end: usize,
+}
+
+impl TerminalCommandInputLine<'_> {
+    fn utf16_len(&self) -> usize {
+        self.utf16_end.saturating_sub(self.utf16_start)
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MatchedPrivilegeCredential {
@@ -75,6 +93,70 @@ fn log_privilege_prompt_helper(args: std::fmt::Arguments<'_>) {
     if std::env::var_os(PRIVILEGE_PROMPT_DEBUG_ENV).is_some() {
         eprintln!("[oxideterm:privilege] {args}");
     }
+}
+
+fn terminal_command_input_lines(input: &str) -> Vec<TerminalCommandInputLine<'_>> {
+    // Keep hard line breaks as the editing model so the command bar behaves
+    // like a small textarea without introducing persistent scroll state.
+    let mut lines = Vec::new();
+    let mut byte_start = 0usize;
+    let mut utf16_start = 0usize;
+    let mut utf16_offset = 0usize;
+
+    for (byte_index, ch) in input.char_indices() {
+        if ch == '\n' {
+            lines.push(TerminalCommandInputLine {
+                text: &input[byte_start..byte_index],
+                utf16_start,
+                utf16_end: utf16_offset,
+            });
+            utf16_offset += ch.len_utf16();
+            byte_start = byte_index + ch.len_utf8();
+            utf16_start = utf16_offset;
+        } else {
+            utf16_offset += ch.len_utf16();
+        }
+    }
+
+    lines.push(TerminalCommandInputLine {
+        text: &input[byte_start..],
+        utf16_start,
+        utf16_end: utf16_offset,
+    });
+    lines
+}
+
+fn terminal_command_line_selection(
+    line: TerminalCommandInputLine<'_>,
+    selection: Option<&Range<usize>>,
+) -> Option<Range<usize>> {
+    selection.and_then(|selection| {
+        let start = selection.start.max(line.utf16_start).min(line.utf16_end);
+        let end = selection.end.max(line.utf16_start).min(line.utf16_end);
+        (start < end).then_some(start - line.utf16_start..end - line.utf16_start)
+    })
+}
+
+fn terminal_command_line_caret(
+    line: TerminalCommandInputLine<'_>,
+    caret_offset: Option<usize>,
+) -> Option<usize> {
+    caret_offset
+        .filter(|offset| *offset >= line.utf16_start && *offset <= line.utf16_end)
+        .map(|offset| {
+            offset
+                .saturating_sub(line.utf16_start)
+                .min(line.utf16_len())
+        })
+}
+
+fn terminal_command_placeholder_caret_visible(
+    focused: bool,
+    showing_placeholder: bool,
+    line_index: usize,
+) -> bool {
+    // An empty textarea still owns a caret at its first visual position.
+    focused && showing_placeholder && line_index == 0
 }
 
 fn terminal_git_section_icon(section: TerminalGitPanelSection) -> LucideIcon {
@@ -370,10 +452,7 @@ fn build_privilege_prompt_helper_state(
     credentials: &[SavedPrivilegeCredential],
     visible_text: &str,
 ) -> Option<PrivilegePromptHelperState> {
-    // Pure helper tests synthesize the semantic session event from their text
-    // fixture; production code receives the equivalent tracked prompt.
-    let tracked_prompt = oxideterm_gpui_terminal::detect_privilege_prompt(visible_text);
-    let prompt = choose_privilege_prompt(credentials, visible_text, tracked_prompt)?;
+    let prompt = choose_privilege_prompt(credentials, visible_text, None)?;
     build_privilege_prompt_helper_state_from_prompt(connection_id, credentials, prompt)
 }
 
@@ -428,10 +507,8 @@ fn choose_privilege_prompt(
             detect_custom_prompt_from_credentials(credentials, visible_text).or(Some(prompt))
         }
         Some(prompt @ PrivilegePromptMatch::Custom { .. }) => Some(prompt),
-        // Standard prompts arrive as session-owned semantic events. The
-        // viewport fallback remains only for user-authored custom patterns,
-        // which cannot be classified without credential configuration.
-        None => detect_custom_prompt_from_credentials(credentials, visible_text),
+        None => detect_custom_prompt_from_credentials(credentials, visible_text)
+            .or_else(|| detect_privilege_prompt(visible_text)),
     }
 }
 
@@ -460,6 +537,27 @@ fn terminal_cwd_browse_element_id(path: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     path.hash(&mut hasher);
     hasher.finish()
+}
+
+fn terminal_cwd_entry_signature(entry: &terminal_cwd::TerminalCwdVisibleEntry) -> u64 {
+    // Virtual list state is index-based, so rows need a stable content signature
+    // when filtering or changing directories reshuffles the visible entries.
+    let mut hasher = DefaultHasher::new();
+    terminal_cwd_visible_entry_kind_signature(entry.kind).hash(&mut hasher);
+    entry.name.hash(&mut hasher);
+    entry.path.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn terminal_cwd_visible_entry_kind_signature(
+    kind: terminal_cwd::TerminalCwdVisibleEntryKind,
+) -> u8 {
+    match kind {
+        terminal_cwd::TerminalCwdVisibleEntryKind::Parent => 0,
+        terminal_cwd::TerminalCwdVisibleEntryKind::Directory => 1,
+        terminal_cwd::TerminalCwdVisibleEntryKind::File => 2,
+        terminal_cwd::TerminalCwdVisibleEntryKind::TypedPath => 3,
+    }
 }
 
 fn terminal_project_git_root_disagreement(project_root: &str, git_root: &str) -> Option<String> {
@@ -496,6 +594,18 @@ mod terminal_broadcast_menu_tests {
     #[test]
     fn broadcast_menu_keeps_left_viewport_margin_when_trigger_is_narrow() {
         assert_eq!(terminal_broadcast_menu_left_for_trigger_right(120.0), 12.0);
+    }
+}
+
+#[cfg(test)]
+mod terminal_command_input_tests {
+    use super::*;
+
+    #[test]
+    fn focused_empty_command_input_shows_caret_before_placeholder() {
+        assert!(terminal_command_placeholder_caret_visible(true, true, 0));
+        assert!(!terminal_command_placeholder_caret_visible(false, true, 0));
+        assert!(!terminal_command_placeholder_caret_visible(true, false, 0));
     }
 }
 

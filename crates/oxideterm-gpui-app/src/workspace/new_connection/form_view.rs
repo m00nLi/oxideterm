@@ -5,7 +5,6 @@ use gpui::{
 };
 
 use super::{
-    ConnectionFormState,
     form_state::{
         NewConnectionField, NewConnectionForm, NewConnectionFormMode, NewConnectionProxyHop,
         NewConnectionSelect, NewConnectionSubmitAction, NewConnectionTransport,
@@ -35,13 +34,7 @@ use crate::workspace::{
     session_icons::{SESSION_ICON_CHOICES, session_icon_from_id},
 };
 use gpui::Div;
-use oxideterm_connections::{
-    ConnectionTerminalBackspaceSequence, ConnectionTerminalDeleteSequence,
-    ConnectionTerminalEncoding, SavedUpstreamProxyProtocol,
-};
-use oxideterm_gpui_settings_view::{
-    terminal_backspace_sequence_label, terminal_delete_sequence_label, terminal_encoding_label,
-};
+use oxideterm_connections::SavedUpstreamProxyProtocol;
 use oxideterm_gpui_ui::{
     ButtonTone, CheckboxOptions, TextInputView, button,
     button::{
@@ -49,7 +42,7 @@ use oxideterm_gpui_ui::{
         ToolbarButtonOptions,
     },
     checkbox, checkbox_with, form_field,
-    modal::{dialog_backdrop_color, dismissible_dialog_backdrop, modal_backdrop, popover_backdrop},
+    modal::{dismissible_dialog_backdrop, popover_backdrop},
     modal_body, modal_container, modal_footer, modal_header, segmented_tab, segmented_tabs,
     select::{
         SelectAnchorId, select_anchor_probe, select_option, select_option_action,
@@ -61,6 +54,7 @@ use oxideterm_remote_desktop::{
     RemoteDesktopVncCompression, RemoteDesktopVncImageQuality, RemoteDesktopVncSecurityPolicy,
     RemoteDesktopVncSessionMode,
 };
+
 // Keep the modal, proxy-chain, and field-control implementations in explicit
 // submodules so their dependencies and visibility remain locally auditable.
 mod field_controls;
@@ -87,43 +81,8 @@ const TAURI_PROXY_CHAIN_LINE_WIDTH: f32 = 32.0; // Tauri w-8
 const TAURI_PROXY_CHAIN_CONNECTOR_THICKNESS: f32 = 2.0; // Tauri w-0.5 h-0.5
 const TAURI_PROXY_CHAIN_CARD_PADDING: f32 = 12.0; // Tauri p-3
 const TAURI_SERIAL_GRID_GAP: f32 = 16.0; // Tauri serial grid gap-4
-const TAURI_CONNECTION_PANEL_BG_ALPHA: u32 = 0x66; // Tauri connection panel bg-theme-bg/40
+const TAURI_SERIAL_PANEL_BG_ALPHA: u32 = 0x66; // Tauri serial bg-theme-bg/40
 const NEW_CONNECTION_TYPE_SIDEBAR_WIDTH: f32 = 160.0;
-const CONNECTION_TERMINAL_CONTROL_MIN_WIDTH: f32 = 220.0;
-const CONNECTION_ICON_COLOR_CONTROL_MIN_WIDTH: f32 = 220.0;
-
-// Persistence enums stay independent from the settings crate while sharing user-facing labels.
-fn connection_terminal_encoding_label(encoding: ConnectionTerminalEncoding) -> &'static str {
-    match encoding {
-        ConnectionTerminalEncoding::Utf8 => "UTF-8",
-        ConnectionTerminalEncoding::Gbk => "GBK",
-        ConnectionTerminalEncoding::Gb18030 => "GB18030",
-        ConnectionTerminalEncoding::Big5 => "Big5",
-        ConnectionTerminalEncoding::ShiftJis => "Shift_JIS",
-        ConnectionTerminalEncoding::EucJp => "EUC-JP",
-        ConnectionTerminalEncoding::EucKr => "EUC-KR",
-        ConnectionTerminalEncoding::Windows1252 => "Windows-1252",
-    }
-}
-
-fn connection_terminal_backspace_sequence_label(
-    sequence: ConnectionTerminalBackspaceSequence,
-) -> &'static str {
-    match sequence {
-        ConnectionTerminalBackspaceSequence::Delete => "DEL (0x7F)",
-        ConnectionTerminalBackspaceSequence::ControlH => "Ctrl+H (0x08)",
-    }
-}
-
-fn connection_terminal_delete_sequence_label(
-    sequence: ConnectionTerminalDeleteSequence,
-) -> &'static str {
-    match sequence {
-        ConnectionTerminalDeleteSequence::Csi3Tilde => "CSI 3~",
-        ConnectionTerminalDeleteSequence::Delete => "DEL (0x7F)",
-        ConnectionTerminalDeleteSequence::ControlH => "Ctrl+H (0x08)",
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConnectionButtonAction {
@@ -134,17 +93,6 @@ enum ConnectionButtonAction {
     SaveAndConnect,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ConnectionFormKeyResult {
-    NotHandled,
-    Handled,
-    CloseForm,
-    CloseJumpForm,
-    Submit,
-    AddJumpServer,
-    Paste,
-}
-
 impl WorkspaceApp {
     pub(in crate::workspace) fn handle_new_connection_key(
         &mut self,
@@ -153,183 +101,180 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> bool {
         let saved_connection_form_uses_unloaded_secret =
-            self.saved_connection_form_uses_unloaded_secret(cx);
+            self.saved_connection_form_uses_unloaded_secret();
+        let Some(form) = self.new_connection_form.as_mut() else {
+            return false;
+        };
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
         let text_input = text_from_keystroke(&event.keystroke).map(str::to_string);
 
-        if self.connection_form_state(cx).open_select.is_some()
+        if self.open_new_connection_select.is_some()
             && matches!(key, "escape" | "enter" | "tab")
             && !modifiers.platform
         {
-            self.close_new_connection_select(cx);
+            self.close_new_connection_select();
             cx.notify();
             return true;
         }
 
-        let caret_was_visible = self.input_caret.visible();
-        let uses_text_edit_modifier = keystroke_uses_text_edit_modifier(&event.keystroke);
-        let (result, show_caret) = self.connection_flow.update(cx, |connection_flow, cx| {
-            let Some(form) = connection_flow.form.form.as_mut() else {
-                return (ConnectionFormKeyResult::NotHandled, false);
-            };
-            if !form.field_focused {
-                return match key {
-                    "escape" if form.jump_server_form.is_some() => {
-                        (ConnectionFormKeyResult::CloseJumpForm, false)
+        if !form.field_focused {
+            match key {
+                "escape" => {
+                    if form.jump_server_form.is_some() {
+                        self.begin_jump_server_form_exit(cx);
+                        return true;
                     }
-                    "escape" => (ConnectionFormKeyResult::CloseForm, false),
-                    "enter" if form.jump_server_form.is_some() => {
-                        (ConnectionFormKeyResult::AddJumpServer, false)
+                    self.close_new_connection_form(window, cx);
+                    return true;
+                }
+                "enter" => {
+                    if form.jump_server_form.is_some() {
+                        self.add_pending_jump_server(cx);
+                        return true;
                     }
-                    "enter" => (ConnectionFormKeyResult::Submit, false),
-                    "tab" => {
-                        form.field_focused = true;
-                        cx.notify();
-                        (ConnectionFormKeyResult::Handled, true)
-                    }
-                    _ => (ConnectionFormKeyResult::Handled, false),
-                };
+                    self.submit_new_connection_form(window, cx);
+                    return true;
+                }
+                "tab" => {
+                    form.field_focused = true;
+                    self.new_connection_caret_visible = true;
+                    cx.notify();
+                    return true;
+                }
+                _ => return true,
             }
+        }
 
-            let password_locked = saved_connection_form_uses_unloaded_secret
-                && form.focused_field == NewConnectionField::Password
-                && !form.password_loaded;
-            if password_locked && !matches!(key, "escape" | "enter" | "tab") {
-                return (ConnectionFormKeyResult::Handled, false);
-            }
+        let password_locked = saved_connection_form_uses_unloaded_secret
+            && form.focused_field == NewConnectionField::Password
+            && !form.password_loaded;
+        if password_locked && !matches!(key, "escape" | "enter" | "tab") {
+            return true;
+        }
 
-            let focused_field_accepts_ime = matches!(
-                form.focused_field,
-                NewConnectionField::Name
-                    | NewConnectionField::Host
-                    | NewConnectionField::Username
-                    | NewConnectionField::Group
-                    | NewConnectionField::Color
-                    | NewConnectionField::IdentityAgent
-                    | NewConnectionField::TelnetProfileName
-                    | NewConnectionField::JumpHost
-                    | NewConnectionField::JumpUsername
-                    | NewConnectionField::JumpIdentityAgent
-                    | NewConnectionField::UpstreamProxyHost
-                    | NewConnectionField::UpstreamProxyNoProxy
-                    | NewConnectionField::UpstreamProxyUsername
-            );
+        let focused_field_accepts_ime = matches!(
+            form.focused_field,
+            NewConnectionField::Name
+                | NewConnectionField::Host
+                | NewConnectionField::Username
+                | NewConnectionField::Group
+                | NewConnectionField::Color
+                | NewConnectionField::TelnetProfileName
+                | NewConnectionField::JumpHost
+                | NewConnectionField::JumpUsername
+                | NewConnectionField::UpstreamProxyHost
+                | NewConnectionField::UpstreamProxyNoProxy
+                | NewConnectionField::UpstreamProxyUsername
+        );
 
-            if uses_text_edit_modifier {
-                let mut show_caret = false;
-                match key {
-                    "a" => {
-                        select_current_connection_field(form);
-                        show_caret = true;
-                    }
-                    "c" if form.selected_field == Some(form.focused_field) => {
+        if keystroke_uses_text_edit_modifier(&event.keystroke) {
+            match key {
+                "a" => {
+                    select_current_connection_field(form);
+                    self.new_connection_caret_visible = true;
+                    cx.notify();
+                }
+                "c" => {
+                    if form.selected_field == Some(form.focused_field) {
                         cx.write_to_clipboard(ClipboardItem::new_string(
                             current_connection_field(form).to_string(),
                         ));
                     }
-                    "x" if form.selected_field == Some(form.focused_field) => {
+                }
+                "x" => {
+                    if form.selected_field == Some(form.focused_field) {
                         cx.write_to_clipboard(ClipboardItem::new_string(
                             current_connection_field(form).to_string(),
                         ));
                         clear_current_connection_field(form);
                         form.error = None;
-                        show_caret = true;
-                    }
-                    "v" => return (ConnectionFormKeyResult::Paste, false),
-                    _ => {}
-                }
-                if show_caret {
-                    cx.notify();
-                }
-                return (ConnectionFormKeyResult::Handled, show_caret);
-            }
-
-            match key {
-                "escape" if form.jump_server_form.is_some() => {
-                    (ConnectionFormKeyResult::CloseJumpForm, false)
-                }
-                "escape" => (ConnectionFormKeyResult::CloseForm, false),
-                "enter" if form.jump_server_form.is_some() => {
-                    (ConnectionFormKeyResult::AddJumpServer, false)
-                }
-                "enter" => (ConnectionFormKeyResult::Submit, false),
-                "tab" => {
-                    form.focused_field = if let Some(jump_form) = form.jump_server_form.as_ref() {
-                        next_jump_connection_field(
-                            form.focused_field,
-                            jump_form.auth_tab,
-                            !modifiers.shift,
-                        )
-                    } else {
-                        next_connection_field(
-                            form.focused_field,
-                            form.auth_tab,
-                            form.transport,
-                            form.upstream_proxy_policy,
-                            form.upstream_proxy_auth,
-                            !modifiers.shift,
-                        )
-                    };
-                    form.field_focused = true;
-                    clear_connection_selection(form);
-                    cx.notify();
-                    (ConnectionFormKeyResult::Handled, true)
-                }
-                "backspace" => {
-                    let changed = backspace_current_connection_field(form)
-                        || form.error.take().is_some()
-                        || !caret_was_visible;
-                    if changed {
+                        self.new_connection_caret_visible = true;
                         cx.notify();
                     }
-                    (ConnectionFormKeyResult::Handled, changed)
                 }
-                "space" if !focused_field_accepts_ime => {
-                    insert_text_into_current_connection_field(form, " ");
-                    form.error = None;
-                    cx.notify();
-                    (ConnectionFormKeyResult::Handled, true)
+                "v" => {
+                    self.paste_into_new_connection_field(cx);
                 }
-                _ if focused_field_accepts_ime => (ConnectionFormKeyResult::Handled, false),
-                _ => {
-                    if let Some(text) = text_input.as_deref() {
-                        insert_text_into_current_connection_field(form, text);
-                        form.error = None;
-                        cx.notify();
-                        (ConnectionFormKeyResult::Handled, true)
-                    } else {
-                        (ConnectionFormKeyResult::Handled, false)
-                    }
-                }
+                _ => {}
             }
-        });
-
-        if show_caret {
-            self.show_active_input_caret(cx);
-            cx.notify();
+            return true;
         }
-        match result {
-            ConnectionFormKeyResult::NotHandled => false,
-            ConnectionFormKeyResult::Handled => true,
-            ConnectionFormKeyResult::CloseForm => {
+
+        match key {
+            "escape" => {
+                if form.jump_server_form.is_some() {
+                    self.begin_jump_server_form_exit(cx);
+                    return true;
+                }
                 self.close_new_connection_form(window, cx);
                 true
             }
-            ConnectionFormKeyResult::CloseJumpForm => {
-                self.begin_jump_server_form_exit(cx);
-                true
-            }
-            ConnectionFormKeyResult::Submit => {
+            "enter" => {
+                if form.jump_server_form.is_some() {
+                    self.add_pending_jump_server(cx);
+                    return true;
+                }
                 self.submit_new_connection_form(window, cx);
                 true
             }
-            ConnectionFormKeyResult::AddJumpServer => {
-                self.add_pending_jump_server(cx);
+            "tab" => {
+                form.focused_field = if let Some(jump_form) = form.jump_server_form.as_ref() {
+                    next_jump_connection_field(
+                        form.focused_field,
+                        jump_form.auth_tab,
+                        !modifiers.shift,
+                    )
+                } else {
+                    next_connection_field(
+                        form.focused_field,
+                        form.auth_tab,
+                        form.transport,
+                        form.upstream_proxy_policy,
+                        form.upstream_proxy_auth,
+                        !modifiers.shift,
+                    )
+                };
+                form.field_focused = true;
+                clear_connection_selection(form);
+                self.new_connection_caret_visible = true;
+                cx.notify();
                 true
             }
-            ConnectionFormKeyResult::Paste => {
-                self.paste_into_new_connection_field(cx);
+            "backspace" => {
+                let changed = backspace_current_connection_field(form)
+                    || form.error.take().is_some()
+                    || !self.new_connection_caret_visible;
+                if changed {
+                    // Empty Backspace in an unchanged field is a browser no-op;
+                    // only repaint when text, selection, error, or caret state
+                    // actually changes.
+                    self.new_connection_caret_visible = true;
+                    cx.notify();
+                }
+                true
+            }
+            "space" => {
+                if focused_field_accepts_ime {
+                    return true;
+                }
+                insert_text_into_current_connection_field(form, " ");
+                form.error = None;
+                self.new_connection_caret_visible = true;
+                cx.notify();
+                true
+            }
+            _ => {
+                if focused_field_accepts_ime {
+                    return true;
+                }
+                let Some(text) = text_input else {
+                    return true;
+                };
+                insert_text_into_current_connection_field(form, &text);
+                form.error = None;
+                self.new_connection_caret_visible = true;
+                cx.notify();
                 true
             }
         }
@@ -337,33 +282,28 @@ impl WorkspaceApp {
 
     pub(in crate::workspace) fn paste_into_new_connection_field(&mut self, cx: &mut Context<Self>) {
         let saved_connection_form_uses_unloaded_secret =
-            self.saved_connection_form_uses_unloaded_secret(cx);
+            self.saved_connection_form_uses_unloaded_secret();
+        let Some(form) = self.new_connection_form.as_mut() else {
+            return;
+        };
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
+        if saved_connection_form_uses_unloaded_secret
+            && form.focused_field == NewConnectionField::Password
+            && !form.password_loaded
+        {
+            return;
+        }
         let single_line = text
             .replace("\r\n", "\n")
             .replace('\r', "\n")
             .lines()
             .collect::<Vec<_>>()
             .join(" ");
-        let pasted = self.update_connection_form_state(cx, |state| {
-            let Some(form) = state.form.as_mut() else {
-                return false;
-            };
-            if saved_connection_form_uses_unloaded_secret
-                && form.focused_field == NewConnectionField::Password
-                && !form.password_loaded
-            {
-                return false;
-            }
-            insert_text_into_current_connection_field(form, &single_line);
-            form.error = None;
-            true
-        });
-        if pasted {
-            self.show_active_input_caret(cx);
-            cx.notify();
-        }
+        insert_text_into_current_connection_field(form, &single_line);
+        form.error = None;
+        self.new_connection_caret_visible = true;
+        cx.notify();
     }
 }

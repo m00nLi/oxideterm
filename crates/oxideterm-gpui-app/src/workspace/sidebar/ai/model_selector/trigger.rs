@@ -5,7 +5,7 @@ impl WorkspaceApp {
         anchor_id: SelectAnchorId,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let providers = self.ai_model_selector_providers(cx);
+        let providers = self.ai_model_selector_providers();
         let enabled_providers = providers
             .iter()
             .filter(|provider| provider.enabled)
@@ -44,7 +44,7 @@ impl WorkspaceApp {
                 .ai
                 .active_acp_agent_id
                 .as_deref()
-                .and_then(|agent_id| self.active_ai_acp_session_state(agent_id, cx))
+                .and_then(|agent_id| self.active_ai_acp_session_state(agent_id))
                 .and_then(|state| {
                     let option = oxideterm_ai::acp_model_config_option(&state.config_options)?;
                     oxideterm_ai::acp_selected_config_choice(
@@ -58,7 +58,7 @@ impl WorkspaceApp {
                         .ai
                         .active_acp_agent_id
                         .as_deref()
-                        .map(|agent_id| self.ai_acp_agent_model_fallback_label(agent_id, cx))
+                        .map(|agent_id| self.ai_acp_agent_model_fallback_label(agent_id))
                         .unwrap_or_else(|| {
                             self.i18n.t("ai.model_selector.agent_model_unavailable")
                         })
@@ -67,11 +67,12 @@ impl WorkspaceApp {
             model_selector_display_name(active_model)
                 .unwrap_or_else(|| self.i18n.t("ai.model_selector.select_model"))
         };
-        let selector_open = self.ai_entity.read(cx).model_selector_is_open(scope);
+        let selector_open =
+            self.ai.models.selector_open && self.ai.models.selector_scope == Some(scope);
         let ready = active_provider
             .map(|provider| {
-                self.ai_model_selector_has_key(provider, cx)
-                    && self.ai_model_selector_provider_is_online(provider, cx)
+                self.ai_model_selector_has_key(provider)
+                    && self.ai_model_selector_provider_is_online(provider)
             })
             .unwrap_or(false);
         let trigger = ai_model_selector_trigger_compact(
@@ -81,7 +82,7 @@ impl WorkspaceApp {
             selector_open,
             browser_behavior::browser_focus_visible(
                 selector_open,
-                self.ai_entity.read(cx).model_selector_focus_origin(),
+                self.ai.models.selector_focus_origin,
             ),
             self.render_animated_chevron(
                 (
@@ -96,11 +97,8 @@ impl WorkspaceApp {
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _event, window, cx| {
-                this.ai_entity.update(cx, |ai, _cx| {
-                    ai.set_model_selector_focus_origin(Some(
-                        browser_behavior::BrowserFocusOrigin::Pointer,
-                    ));
-                });
+                this.ai.models.selector_focus_origin =
+                    Some(browser_behavior::BrowserFocusOrigin::Pointer);
                 this.toggle_ai_model_selector(scope, window, cx);
                 cx.stop_propagation();
             }),
@@ -137,7 +135,7 @@ impl WorkspaceApp {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _event, window, cx| {
-                        this.close_ai_model_selector(cx);
+                        this.close_ai_model_selector();
                         this.open_ai_settings(window, cx);
                         cx.stop_propagation();
                     }),
@@ -151,21 +149,14 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let target = WorkspaceImeTarget::AiModelSelectorSearch;
-        let focused = self.ai_entity.read(cx).model_selector_search_focused();
-        let marked_text = self.marked_text_for_target(target, cx).unwrap_or_default();
-        let showing_placeholder = self
-            .ai_entity
-            .read(cx)
-            .model_selector_search_query()
-            .is_empty()
-            && marked_text.is_empty();
+        let focused = self.ai.models.selector_search_focused;
+        let marked_text = self.marked_text_for_target(target).unwrap_or_default();
+        let showing_placeholder =
+            self.ai.models.selector_search_query.is_empty() && marked_text.is_empty();
         let display_text = if showing_placeholder {
             self.i18n.t("ai.model_selector.search_placeholder")
         } else {
-            self.ai_entity
-                .read(cx)
-                .model_selector_search_query()
-                .to_owned()
+            self.ai.models.selector_search_query.clone()
         };
         let input = div()
             .min_w_0()
@@ -182,7 +173,7 @@ impl WorkspaceApp {
             })
             .cursor(CursorStyle::IBeam)
             .when(focused && showing_placeholder, |input| {
-                input.child(text_caret(&self.tokens, self.input_caret.visible()))
+                input.child(text_caret(&self.tokens, self.new_connection_caret_visible))
             })
             .child(div().truncate().child(display_text))
             .when(focused && !marked_text.is_empty(), |input| {
@@ -194,14 +185,12 @@ impl WorkspaceApp {
                 )
             })
             .when(focused && !showing_placeholder, |input| {
-                input.child(text_caret(&self.tokens, self.input_caret.visible()))
+                input.child(text_caret(&self.tokens, self.new_connection_caret_visible))
             })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                    this.ai_entity.update(cx, |ai, _cx| {
-                        ai.set_model_selector_search_focused(true);
-                    });
+                    this.ai.models.selector_search_focused = true;
                     this.ime_marked_text = None;
 window.focus(&this.focus_handle, cx);
                     this.begin_ime_selection_from_mouse_down(target, event, window, cx);
@@ -218,12 +207,7 @@ window.focus(&this.focus_handle, cx);
             input,
             Self::deferred_ai_text_input_anchor_update(cx.entity()),
         );
-        let clear = (!self
-            .ai_entity
-            .read(cx)
-            .model_selector_search_query()
-            .is_empty())
-        .then(|| {
+        let clear = (!self.ai.models.selector_search_query.is_empty()).then(|| {
             div()
                 .size(px(14.0))
                 .flex()
@@ -232,9 +216,8 @@ window.focus(&this.focus_handle, cx);
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _event, _window, cx| {
-                        this.ai_entity.update(cx, |ai, _cx| {
-                            ai.clear_model_selector_search();
-                        });
+                        this.ai.models.selector_search_query.clear();
+                        this.ai.models.selector_highlighted_model = None;
                         cx.stop_propagation();
                         cx.notify();
                     }),

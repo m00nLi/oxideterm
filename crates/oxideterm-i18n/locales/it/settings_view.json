@@ -255,8 +255,6 @@
       "copy_on_select_hint": "Copia automaticamente il testo del terminale negli appunti di sistema quando la selezione del mouse si stabilizza",
       "middle_click_paste": "Incolla con clic centrale",
       "middle_click_paste_hint": "Incolla il contenuto corrente degli appunti con il clic centrale quando il terminale non è in modalità di tracciamento del mouse",
-      "right_click_paste": "Incolla con clic destro",
-      "right_click_paste_hint": "Incolla con un clic destro senza modificatori fuori dalla modalità di tracciamento del mouse; Maiusc+clic destro apre il menu contestuale",
       "open_links_with_modifier": "Richiedi un tasto modificatore per aprire i link",
       "open_links_with_modifier_hint": "Apri i link del terminale solo con Ctrl + clic, o Comando + clic su macOS; disattiva per aprirli con un clic diretto",
       "smart_copy": "Copia intelligente con Ctrl+C",
@@ -267,9 +265,9 @@
       "selection_requires_shift_hint": "Quando è abilitato, il trascinamento normale mantiene intatta l'interazione del terminale e solo Shift + trascinamento avvia una selezione di testo",
       "free_type_mode": "Modalità di input libero",
       "backspace_sequence": "Tasto Backspace",
-      "backspace_sequence_hint": "Valore predefinito dell’applicazione per Backspace. Gli host salvati possono sostituirlo.",
+      "backspace_sequence_hint": "Scegli cosa invia Backspace alle applicazioni terminale legacy. Il valore predefinito è DEL (0x7F)",
       "delete_sequence": "Tasto Canc",
-      "delete_sequence_hint": "Valore predefinito dell’applicazione per Canc. Gli host salvati possono sostituirlo.",
+      "delete_sequence_hint": "Scegli cosa invia Canc alle applicazioni terminale legacy. Il valore predefinito è CSI 3~",
       "free_type_mode_hint": "Modifica il comando shell attivo con il mouse: fai clic per spostare il cursore, fai doppio clic tra parentesi corrispondenti per selezionarne il contenuto, trascina il testo selezionato per spostarlo, tieni premuto Ctrl per copiarlo o Alt per sostituire il comando. Vim, Neovim ed Emacs a schermo intero richiedono il caricamento esplicito dell’adattatore OxideTerm; le altre app a schermo intero o con tracciamento del mouse mantengono il controllo",
       "in_band_transfer": {
         "title": "Trasferimento file in-band",
@@ -419,7 +417,7 @@
         }
       },
       "encoding": "Terminal Encoding",
-      "encoding_hint": "Valore predefinito per terminali locali e host senza override. Ogni host salvato può scegliere la propria codifica.",
+      "encoding_hint": "Text encoding for terminal input/output. Keep UTF-8 unless the remote host uses a legacy locale.",
       "autosuggest_local_history": "Barra comandi: cronologia shell locale",
       "autosuggest_local_history_hint": "Usa la cronologia locale zsh/bash/fish come sorgente del pannello cronologia della barra comandi. Non abilita ghost text nel terminale.",
       "command_bar": "Command Bar",
@@ -448,8 +446,6 @@
       "gpu_canvas_experiments_hint": "Experimental GPU-backed visualizations. Does not replace the terminal renderer.",
       "quick_commands": "Quick Commands",
       "quick_commands_hint": "Show a built-in quick command library in the Command Bar.",
-      "quick_bar": "Barra comandi rapidi",
-      "quick_bar_hint": "Mostra i comandi rapidi salvati in una barra orizzontale facoltativa sopra la barra dei comandi.",
       "quick_commands_confirm": "Confirm Quick Command Run",
       "quick_commands_confirm_hint": "Ask before running a quick command from the Run button.",
       "quick_commands_toast": "Quick Command Toast",
@@ -470,6 +466,7 @@
       "page_awareness": "Percezione e integrazione",
       "page_transfer": "Trasferimento",
       "page_highlight": "Evidenziazione",
+      "page_keepalive": "Keepalive",
       "page_local": "Locale"
     },
     "appearance": {
@@ -967,7 +964,10 @@
       "acp_agent_error_command_not_found": "Comando non trovato",
       "acp_agent_error_config": "Configurazione non valida",
       "acp_agent_error_initialize": "Inizializzazione non riuscita",
-      "acp_agent_error_unknown": "Errore sconosciuto"
+      "acp_agent_error_unknown": "Errore sconosciuto",
+      "acp_agent_auth_token": "Token di autenticazione",
+      "acp_agent_auth_token_placeholder": "Salva il token nel portachiavi",
+      "acp_agent_auth_token_saved": "Token salvato nel portachiavi"
     },
     "sftp": {
       "title": "Trasferimento file",
@@ -1151,8 +1151,8 @@
       "clear_skip": "Cancella",
       "portable_mode": "Modalità portatile",
       "portable_mode_hint": "Questa sessione usa il flusso di bootstrap portatile e conserva i dati accanto all'eseguibile.",
-      "portable_updates": "Aggiornamenti portatili automatici",
-      "portable_updates_hint": "I controlli automatici e gli aggiornamenti nell'app sostituiscono solo i file del programma. I dati portatili, i plugin, il portachiavi, portable.json e le directory dati personalizzate vengono conservati.",
+      "updates_manual_only": "Solo aggiornamenti manuali",
+      "updates_manual_only_hint": "In modalità portatile i controlli automatici degli aggiornamenti e le installazioni interne all'app sono disattivati. Per aggiornare, sostituisci l'intera cartella portatile con una build più recente di OxideTerm.",
       "update_channel": "Canale di aggiornamento",
       "update_channel_hint": "Stabile, Beta e GPUI Preview usano canali di aggiornamento separati",
       "channel_stable": "Stabile",

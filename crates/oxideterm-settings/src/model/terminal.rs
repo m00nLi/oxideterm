@@ -59,8 +59,6 @@ pub struct TerminalCommandBarSettings {
     pub show_current_directory: bool,
     pub smart_completion: bool,
     pub quick_commands_enabled: bool,
-    #[serde(default)]
-    pub quick_bar_enabled: bool,
     pub quick_commands_confirm_before_run: bool,
     pub quick_commands_show_toast: bool,
     pub focus_handoff_commands: Vec<String>,
@@ -106,7 +104,6 @@ impl Default for TerminalCommandBarSettings {
             show_current_directory: true,
             smart_completion: true,
             quick_commands_enabled: true,
-            quick_bar_enabled: false,
             quick_commands_confirm_before_run: false,
             quick_commands_show_toast: true,
             focus_handoff_commands: RECOMMENDED_FOCUS_HANDOFF_COMMANDS
@@ -243,6 +240,64 @@ fn default_detect_file_paths_as_links() -> bool {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TerminalKeepaliveSettings {
+    /// Keepalive interval in seconds. 0 = disabled.
+    #[serde(default)]
+    pub interval_secs: u32,
+    /// Custom string to send through the shell channel (e.g. "\\n").
+    /// Supports escape sequences: \\n \\r \\t \\0 \\\\
+    /// Empty string = use SSH keepalive@openssh.com instead of channel data.
+    #[serde(default)]
+    pub send_string: String,
+    #[serde(flatten)]
+    pub extra: ExtraFields,
+}
+
+impl Default for TerminalKeepaliveSettings {
+    fn default() -> Self {
+        Self {
+            interval_secs: 1800,
+            send_string: String::new(),
+            extra: ExtraFields::new(),
+        }
+    }
+}
+
+/// Parse a keepalive string with escape sequences into raw bytes.
+/// Supports: \n \r \t \0 \\ and \xHH
+pub fn parse_keepalive_string(s: &str) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => result.push(b'\n'),
+                Some('r') => result.push(b'\r'),
+                Some('t') => result.push(b'\t'),
+                Some('0') => result.push(0x00),
+                Some('\\') => result.push(b'\\'),
+                Some('x') => {
+                    let h1 = chars.next().and_then(|c| c.to_digit(16));
+                    let h2 = chars.next().and_then(|c| c.to_digit(16));
+                    if let (Some(h1), Some(h2)) = (h1, h2) {
+                        result.push((h1 * 16 + h2) as u8);
+                    }
+                }
+                Some(other) => {
+                    result.push(b'\\');
+                    result.push(other as u8);
+                }
+                None => result.push(b'\\'),
+            }
+        } else {
+ result.extend_from_slice(c.encode_utf8(&mut [0u8; 4]).as_bytes());
+        }
+    }
+    result
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TerminalSettings {
     pub theme: String,
     pub font_family: FontFamily,
@@ -277,10 +332,6 @@ pub struct TerminalSettings {
     pub osc52_clipboard_read: bool,
     pub copy_on_select: bool,
     pub middle_click_paste: bool,
-    // Right-click paste stays opt-in because right click normally opens the
-    // terminal context menu and can be reported to mouse-aware applications.
-    #[serde(default)]
-    pub right_click_paste: bool,
     #[serde(default = "default_open_links_with_modifier")]
     pub open_links_with_modifier: bool,
     #[serde(default = "default_detect_file_paths_as_links")]
@@ -306,6 +357,8 @@ pub struct TerminalSettings {
     pub in_band_transfer: InBandTransferSettings,
     pub graphics: TerminalGraphicsSettings,
     pub unicode: TerminalUnicodeSettings,
+    #[serde(default)]
+    pub keepalive: TerminalKeepaliveSettings,
     #[serde(flatten)]
     pub extra: ExtraFields,
 }
@@ -340,7 +393,6 @@ impl Default for TerminalSettings {
             osc52_clipboard_read: false,
             copy_on_select: false,
             middle_click_paste: false,
-            right_click_paste: false,
             open_links_with_modifier: true,
             detect_file_paths_as_links: true,
             selection_requires_shift: false,
@@ -360,6 +412,7 @@ impl Default for TerminalSettings {
             in_band_transfer: InBandTransferSettings::default(),
             graphics: TerminalGraphicsSettings::default(),
             unicode: TerminalUnicodeSettings::default(),
+            keepalive: TerminalKeepaliveSettings::default(),
             extra: ExtraFields::new(),
         }
     }
@@ -479,19 +532,6 @@ mod tests {
     }
 
     #[test]
-    fn terminal_settings_default_right_click_paste_when_missing() {
-        let mut value = serde_json::to_value(TerminalSettings::default()).unwrap();
-        value
-            .as_object_mut()
-            .unwrap()
-            .remove("rightClickPaste");
-
-        let settings: TerminalSettings = serde_json::from_value(value).unwrap();
-
-        assert!(!settings.right_click_paste);
-    }
-
-    #[test]
     fn terminal_settings_require_modifier_for_links_when_setting_is_missing() {
         let mut value = serde_json::to_value(TerminalSettings::default()).unwrap();
         value
@@ -556,15 +596,5 @@ mod tests {
         let settings: TerminalCommandBarSettings = serde_json::from_value(value).unwrap();
 
         assert!(settings.project_tasks);
-    }
-
-    #[test]
-    fn command_bar_settings_default_quick_bar_to_disabled_when_missing() {
-        let mut value = serde_json::to_value(TerminalCommandBarSettings::default()).unwrap();
-        value.as_object_mut().unwrap().remove("quickBarEnabled");
-
-        let settings: TerminalCommandBarSettings = serde_json::from_value(value).unwrap();
-
-        assert!(!settings.quick_bar_enabled);
     }
 }

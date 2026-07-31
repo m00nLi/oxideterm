@@ -1,28 +1,24 @@
 // Copyright (C) 2026 AnalyseDeCircuit
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{
-    sync::{Arc, mpsc},
-    time::Duration,
-};
+use std::sync::{Arc, mpsc};
 
 use serde_json::{Value, json};
 
-use super::types::{NativePluginTerminalAction, NativePluginTerminalRequest};
-use crate::workspace::{
-    TerminalInputInterceptorResult, delivery,
-    plugin_host::NativePluginRuntimeTerminalHookContribution, plugin_runtime,
-    plugin_runtime::PluginResponseResult,
+use super::{
+    constants::NATIVE_PLUGIN_TERMINAL_HOOK_TIMEOUT,
+    types::{NativePluginTerminalAction, NativePluginTerminalRequest},
 };
-
-// Terminal hooks fail open when a plugin exceeds the foreground latency budget.
-const NATIVE_PLUGIN_TERMINAL_HOOK_TIMEOUT: Duration = Duration::from_millis(5);
+use crate::workspace::{
+    TerminalInputInterceptorResult, plugin_host::NativePluginRuntimeTerminalHookContribution,
+    plugin_runtime, plugin_runtime::PluginResponseResult,
+};
 
 // Terminal hook execution has a strict timeout and fail-open behavior; keeping
 // it isolated makes that contract easier to audit than burying it in lifecycle.
 pub(super) fn native_plugin_terminal_response(
     call: plugin_runtime::PluginHostCall,
-    terminal_tx: &delivery::ActiveDeliverySender<NativePluginTerminalRequest>,
+    terminal_tx: &mpsc::Sender<NativePluginTerminalRequest>,
 ) -> plugin_runtime::PluginResponse {
     let request_id = call.request_id.clone();
     let action = match native_plugin_terminal_action_from_call(&call) {

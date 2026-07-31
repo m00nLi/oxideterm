@@ -1,12 +1,5 @@
 {
   "ai": {
-    "acp": {
-      "auth_required": "Autenticazione richiesta",
-      "authenticate": "Autentica",
-      "auth_environment_hint": "Imposta le variabili d’ambiente richieste nelle impostazioni dell’agente",
-      "auth_terminal_hint": "Completa esternamente l’autenticazione interattiva del terminale, quindi riprova",
-      "auth_unsupported_hint": "Questo metodo di autenticazione non è supportato"
-    },
     "chat": {
       "header": "Chat",
       "get_started": "Inizia con OxideSens",
@@ -27,11 +20,7 @@
       "start_conversation": "Inizia una conversazione",
       "start_conversation_hint": "Fai domande sui comandi shell, script o ottieni aiuto con le operazioni del terminale.",
       "delete_conversation": "Elimina conversazione",
-      "rename_conversation": "Rinomina conversazione",
-      "save_conversation_title": "Salva titolo",
       "messages_count": "{{count}} messaggi",
-      "today": "Oggi",
-      "yesterday": "Ieri",
       "double_click_rename": "Doppio clic per rinominare",
       "branch_prev": "Versione precedente",
       "branch_next": "Versione successiva"
@@ -132,7 +121,6 @@
       "manage_providers": "Gestisci provider",
       "no_provider": "Nessun provider configurato",
       "select_model": "Seleziona modello",
-      "session_mode": "Modalità sessione",
       "no_model_selected": "Nessun modello selezionato. Selezionane uno dal menu dei modelli della chat.",
       "agent_decides": "Deciso dall’agente",
       "agent_model_unavailable": "Selezione automatica (modello non comunicato dall’agente)",
@@ -157,18 +145,6 @@
       "show_raw_output": "Mostra output completo",
       "hide_raw_output": "Comprimi output",
       "recovery_actions": "Azioni di recupero",
-      "choose_target": "Scegli la destinazione per continuare",
-      "cancel_selection": "Annulla",
-      "recovery": {
-        "stale_target": "La destinazione attiva è cambiata o non è più disponibile.",
-        "state_changed_after_approval": "Non è stato eseguito nulla perché la destinazione è cambiata durante l’attesa dell’approvazione.",
-        "resource_removed": "La risorsa salvata non esiste più.",
-        "resource_disconnected": "La risorsa salvata è disconnessa.",
-        "credential_interaction_required": "Il normale flusso di connessione richiede credenziali o conferma.",
-        "operation_cancelled": "L’operazione è stata annullata senza modifiche.",
-        "rediscover": "Rileva di nuovo",
-        "connect": "Connetti"
-      },
       "copy_session_id": "Copia session_id",
       "recoverable_error": "Errore recuperabile",
       "output_truncated": "L'output è stato troncato",
@@ -333,7 +309,6 @@
       "status": {
         "pending": "In sospeso",
         "pending_approval": "In attesa di approvazione",
-        "pending_selection": "In attesa della selezione della destinazione",
         "approved": "Approvato",
         "running": "In esecuzione",
         "completed": "Completato",

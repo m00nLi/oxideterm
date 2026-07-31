@@ -14,9 +14,16 @@ impl WorkspaceApp {
             .active_provider_id
             .as_deref()
             == Some(provider.id.as_str());
-        let ai = self.ai_entity.read(cx);
-        let expanded = ai.settings_provider_expanded(&provider.id, active_provider);
-        let models_expanded = ai.settings_provider_models_expanded(&provider.id);
+        let expanded = self
+            .settings_page
+            .expanded_ai_providers
+            .get(&provider.id)
+            .copied()
+            .unwrap_or(active_provider);
+        let models_expanded = self
+            .settings_page
+            .expanded_ai_provider_models
+            .contains(&provider.id);
         let visible_model_count = if models_expanded {
             provider.models.len()
         } else {
@@ -56,7 +63,7 @@ impl WorkspaceApp {
                 ));
 
             if self
-                .ai_provider_key_display_state(provider, cx)
+                .ai_provider_key_display_state(provider)
                 .shows_key_control()
             {
                 card = card.child(self.ai_provider_key_input(index, provider, cx));
@@ -74,7 +81,7 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let provider_id = provider.id.clone();
-        let provider_key_state = self.ai_provider_key_display_state(provider, cx);
+        let provider_key_state = self.ai_provider_key_display_state(provider);
         let provider_has_key = provider_key_state.has_usable_key();
         div()
             .w_full()
@@ -185,11 +192,16 @@ impl WorkspaceApp {
                         .active_provider_id
                         .as_deref()
                         == Some(provider_id.as_str());
-                    this.ai_entity.update(cx, |ai, cx| {
-                        ai.toggle_settings_provider_expanded(&provider_id, is_active_provider, cx);
-                    });
+                    let expanded = this
+                        .settings_page
+                        .expanded_ai_providers
+                        .get(&provider_id)
+                        .copied()
+                        .unwrap_or(is_active_provider);
+                    this.settings_page
+                        .expanded_ai_providers
+                        .insert(provider_id.clone(), !expanded);
                     cx.stop_propagation();
-                    // WorkspaceApp renders the AI entity but does not observe its plain notifications.
                     cx.notify();
                 }),
             )

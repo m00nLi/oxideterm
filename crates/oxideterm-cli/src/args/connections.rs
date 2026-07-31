@@ -151,6 +151,8 @@ pub struct ConnectionDirectArgs {
     pub agent_forwarding: Option<bool>,
     #[arg(long, help = "Enable older SSH algorithms for this connection only")]
     pub legacy_ssh_compatibility: Option<bool>,
+    #[arg(long, help = "Skip remote environment detection for single-channel SSH servers")]
+    pub skip_remote_env_detection: Option<bool>,
     #[arg(long, help = "Command to run after connecting")]
     pub post_connect_command: Option<String>,
 }

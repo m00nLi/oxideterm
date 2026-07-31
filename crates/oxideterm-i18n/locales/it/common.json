@@ -115,9 +115,6 @@
   "common": {
     "enabled": "Attivato",
     "disabled": "Disattivato",
-    "status": {
-      "error": "Errore"
-    },
     "confirm": {
       "disconnect_node": "Sei sicuro di voler disconnettere \"{{name}}\" e tutti i suoi nodi figlio?"
     },
@@ -834,7 +831,6 @@
     "enable_success": "{{name}} abilitato.",
     "disable_success": "{{name}} disabilitato.",
     "load_failed_default": "Caricamento del plugin non riuscito.",
-    "runtime_failure": "L’operazione del runtime del plugin non è riuscita.",
     "error_copied": "Errore del plugin copiato.",
     "open_dir_create_failed": "Impossibile creare la directory dei plugin: {{message}}",
     "open_dir_failed": "Impossibile aprire la directory dei plugin: {{message}}",
@@ -1126,6 +1122,9 @@
     "copy_title": "Copia titolo",
     "detach_to_window": "Sposta in nuova finestra",
     "return_to_main_window": "Riporta alla finestra principale",
+    "rename_tab": "Rinomina scheda",
+    "reset_title": "Ripristina titolo",
+    "rename_placeholder": "Nome scheda",
     "detached_tab_closed": "Questa scheda è stata chiusa.",
     "confirm_close_terminal_title": "Chiudi sessione SSH",
     "confirm_close_terminal_desc": "Chiudere questa scheda del terminale SSH? Il lavoro non salvato nella sessione remota potrebbe andare perso.",
@@ -1180,25 +1179,7 @@
     "vnc_legacy_security_description": "Questo metodo non protegge l’identità del server e può esporre la sessione a intercettazioni. Continua solo su una rete attendibile e protetta.",
     "vnc_security_method": "Metodo di sicurezza: {{method}}",
     "vnc_continue_anyway": "Continua comunque",
-    "certificate_save_failed": "Impossibile salvare il record di attendibilità del certificato",
-    "clipboard_file_failed": "Impossibile ricevere i file dagli appunti"
-  },
-  "portable_bootstrap": {
-    "title": "Modalità portatile",
-    "setup_description": "Imposta una password per il keystore portatile locale. All'avvio, OxideTerm la userà per sbloccare i segreti salvati e la configurazione cifrata.",
-    "unlock_description": "Inserisci la password portatile per sbloccare i segreti salvati e continuare verso l'app completa.",
-    "data_dir_label": "Directory dati portatile",
-    "keystore_path_label": "Keystore portatile",
-    "keystore_pending": "Il keystore verrà creato dopo la configurazione",
-    "password_label": "Password portatile",
-    "password_placeholder": "Inserisci una password",
-    "confirm_password_label": "Conferma password portatile",
-    "confirm_password_placeholder": "Inserisci di nuovo la password",
-    "password_too_short": "La password deve contenere almeno 6 caratteri",
-    "password_mismatch": "Le password non coincidono",
-    "setup_submit": "Crea e continua",
-    "setup_pending": "Creazione del keystore portatile...",
-    "unlock_submit": "Sblocca e continua",
-    "unlock_pending": "Sblocco dei dati portatili..."
+    "certificate_save_failed": "Impossibile salvare il record di attendibilità del certificato: {{error}}",
+    "clipboard_file_failed": "Impossibile ricevere i file dagli appunti: {{error}}"
   }
 }

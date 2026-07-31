@@ -5,9 +5,8 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, ExitStatus, Stdio},
-    thread,
-    time::{Duration, Instant, SystemTime},
+    process::{Child, ChildStdin, Command, Stdio},
+    time::SystemTime,
 };
 
 #[cfg(windows)]
@@ -74,29 +73,10 @@ pub(crate) fn write_initial_remote_desktop_connect(
     Ok(())
 }
 
-pub(crate) fn wait_for_remote_desktop_helper_exit(
-    child: &mut Child,
-    graceful_timeout: Duration,
-    poll_interval: Duration,
-) -> Option<ExitStatus> {
-    let started_at = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) if started_at.elapsed() < graceful_timeout => {
-                thread::sleep(
-                    poll_interval.min(graceful_timeout.saturating_sub(started_at.elapsed())),
-                );
-            }
-            Ok(None) | Err(_) => return terminate_remote_desktop_helper(child),
-        }
-    }
-}
-
-fn terminate_remote_desktop_helper(child: &mut Child) -> Option<ExitStatus> {
+fn terminate_remote_desktop_helper(child: &mut Child) {
     // Dropping Child does not terminate or reap the operating-system process.
     let _ = child.kill();
-    child.wait().ok()
+    let _ = child.wait();
 }
 
 pub fn resolve_remote_desktop_helper_command(command: &str) -> ResolvedRemoteDesktopHelper {
@@ -336,21 +316,6 @@ mod tests {
         assert!(
             write_initial_remote_desktop_connect(&mut child, &mut FailingWriter, &request).is_err()
         );
-        assert!(child.try_wait().unwrap().is_some());
-    }
-
-    #[test]
-    #[cfg(any(unix, windows))]
-    fn unresponsive_helper_is_killed_and_reaped_after_grace_period() {
-        let mut child = spawn_sleeping_helper();
-
-        let status = wait_for_remote_desktop_helper_exit(
-            &mut child,
-            Duration::from_millis(20),
-            Duration::from_millis(2),
-        );
-
-        assert!(status.is_some());
         assert!(child.try_wait().unwrap().is_some());
     }
 

@@ -14,8 +14,7 @@ impl WorkspaceApp {
         }
 
         let mut entries: HashMap<String, TerminalHistoryEntry> = HashMap::new();
-        let tab_host = self.tab_host.read(cx);
-        for pane in tab_host.panes().values() {
+        for pane in self.panes.values() {
             for record in pane.read(cx).autosuggest_command_records() {
                 put_terminal_history_entry(
                     &mut entries,

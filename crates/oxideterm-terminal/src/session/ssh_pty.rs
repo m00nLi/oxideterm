@@ -22,7 +22,6 @@ pub struct SshPtySession {
     output_decoder: TerminalOutputDecoder,
     output_processor: Option<TerminalOutputProcessor>,
     output_events_enabled: bool,
-    privilege_prompt: TerminalPrivilegePromptStream,
     input_encoder: TerminalInputEncoder,
     encoding_detector: EncodingMismatchDetector,
     trzsz_consumer: Option<TrzszConsumer>,
@@ -32,7 +31,7 @@ pub struct SshPtySession {
 
 impl SshPtySession {
     pub fn new(
-        mut config: SshSessionConfig,
+        config: SshSessionConfig,
         cols: usize,
         rows: usize,
         graphics_options: GraphicsOptions,
@@ -65,59 +64,41 @@ impl SshPtySession {
         };
         let runtime_handle = config
             .runtime_handle
-            .take()
+            .clone()
             .or_else(|| runtime.as_ref().map(|runtime| runtime.handle().clone()));
         let (connect_tx, connect_rx) = unbounded();
         if let Some(runtime_handle) = runtime_handle {
-            let connection = config.connection.take();
-            let registry = config.registry.take();
-            let consumer = config.consumer.take();
-            let prompt_handler = config.prompt_handler.take();
-            let managed_key_resolver = config.managed_key_resolver.take();
-            let (cols, rows) = if config.defer_pty_until_resize() {
-                (0, 0)
+            let mut ssh_config = config.config.clone();
+            if config.defer_pty_until_resize() {
+                ssh_config.cols = 0;
+                ssh_config.rows = 0;
             } else {
-                (resize.cols as u32, resize.rows as u32)
-            };
+                ssh_config.cols = resize.cols as u32;
+                ssh_config.rows = resize.rows as u32;
+            }
+            let registry = config.registry.clone();
+            let consumer = config.consumer.clone();
+            let prompt_handler = config.prompt_handler.clone();
+            let managed_key_resolver = config.managed_key_resolver.clone();
+            let keepalive_interval_secs = config.keepalive_interval_secs();
+            let keepalive_data = config.keepalive_data().to_vec();
+            let skip_remote_env_detection = ssh_config.skip_remote_env_detection;
             runtime_handle.spawn(async move {
-                let result = match connection {
-                    Some(SshSessionConnection::New(mut ssh_config)) => {
-                        ssh_config.cols = cols;
-                        ssh_config.rows = rows;
-                        let mut client = SshTransportClient::new(ssh_config);
-                        if let Some(prompt_handler) = prompt_handler {
-                            client = client.with_prompt_handler(prompt_handler);
-                        }
-                        if let Some(resolver) = managed_key_resolver {
-                            client = client.with_managed_key_resolver(resolver);
-                        }
-                        match (registry, consumer) {
-                            (Some(registry), Some(consumer)) => {
-                                client.connect_shell_with_registry(registry, consumer).await
-                            }
-                            _ => client.connect_shell().await,
-                        }
+                let mut client = SshTransportClient::new(ssh_config);
+                if let Some(prompt_handler) = prompt_handler {
+                    client = client.with_prompt_handler(prompt_handler);
+                }
+                if let Some(resolver) = managed_key_resolver {
+                    client = client.with_managed_key_resolver(resolver);
+                }
+                if keepalive_interval_secs > 0 && !keepalive_data.is_empty() {
+                    client = client.with_keepalive(keepalive_interval_secs, keepalive_data);
+                }
+                let result = match (registry, consumer) {
+                    (Some(registry), Some(consumer)) if !skip_remote_env_detection => {
+                        client.connect_shell_with_registry(registry, consumer).await
                     }
-                    Some(SshSessionConnection::Existing { connection_id }) => {
-                        match (registry, consumer) {
-                            (Some(registry), Some(consumer)) => {
-                                SshTransportClient::connect_shell_on_existing_connection(
-                                    registry,
-                                    connection_id,
-                                    consumer,
-                                    cols,
-                                    rows,
-                                )
-                                .await
-                            }
-                            _ => Err(oxideterm_ssh::SshTransportError::ConnectionFailed(
-                                "existing SSH terminal requires a connection registry".to_string(),
-                            )),
-                        }
-                    }
-                    None => Err(oxideterm_ssh::SshTransportError::ConnectionFailed(
-                        "SSH terminal connection ownership was already transferred".to_string(),
-                    )),
+                    _ => client.connect_shell().await,
                 }
                 .map_err(|error| error.to_string());
                 let _ = connect_tx.send(result);
@@ -151,7 +132,6 @@ impl SshPtySession {
             output_decoder: TerminalOutputDecoder::new(encoding),
             output_processor: None,
             output_events_enabled: false,
-            privilege_prompt: TerminalPrivilegePromptStream::default(),
             input_encoder: TerminalInputEncoder::new(encoding),
             encoding_detector: EncodingMismatchDetector::new(encoding),
             trzsz_consumer,
@@ -274,10 +254,6 @@ impl SshPtySession {
                         self.pending_events.push(TerminalEvent::EncodingHint(hint));
                     }
                     let decoded = self.output_decoder.decode_to_utf8_bytes(&terminal_bytes);
-                    for event in self.privilege_prompt.observe(decoded.as_ref()) {
-                        self.pending_events
-                            .push(TerminalEvent::PrivilegePrompt(event));
-                    }
                     if self.output_events_enabled && !decoded.is_empty() {
                         // Match the Tauri hook boundary: recording observes UTF-8
                         // display output after terminal decoding, not SSH bytes.
@@ -637,7 +613,6 @@ impl TerminalSessionBackend for SshPtySession {
         self.encoding = encoding;
         self.output_decoder.set_encoding(encoding);
         self.output_decoder.reset();
-        self.privilege_prompt = TerminalPrivilegePromptStream::default();
         self.input_encoder.set_encoding(encoding);
         self.encoding_detector.set_encoding(encoding);
     }
@@ -645,7 +620,6 @@ impl TerminalSessionBackend for SshPtySession {
     fn set_output_processor(&mut self, processor: Option<TerminalOutputProcessor>) {
         self.output_processor = processor;
         self.output_decoder.reset();
-        self.privilege_prompt = TerminalPrivilegePromptStream::default();
         self.encoding_detector.set_encoding(self.encoding);
     }
 

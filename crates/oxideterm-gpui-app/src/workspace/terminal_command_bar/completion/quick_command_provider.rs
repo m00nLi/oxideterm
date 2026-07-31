@@ -5,7 +5,6 @@ impl WorkspaceApp {
         &self,
         input: &str,
         context: &TerminalCommandContext,
-        cx: &mut Context<Self>,
     ) -> Vec<TerminalCommandSuggestion> {
         let command_bar_settings = &self.settings_store.settings().terminal.command_bar;
         if !command_bar_settings.quick_commands_enabled {
@@ -16,10 +15,7 @@ impl WorkspaceApp {
             return Vec::new();
         }
         let target_fields = context.target_fields();
-        self.terminal
-            .read(cx)
-            .quick_commands
-            .store
+        self.quick_commands
             .commands
             .iter()
             .filter(|command| {

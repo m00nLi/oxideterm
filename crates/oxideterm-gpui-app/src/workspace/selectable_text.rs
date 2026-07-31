@@ -151,7 +151,7 @@ impl WorkspaceApp {
         self.selectable_text_autoscroll_position = Some(position);
         self.schedule_selectable_text_autoscroll(cx);
 
-        if self.apply_selectable_text_autoscroll(position, cx) {
+        if self.apply_selectable_text_autoscroll(position) {
             cx.notify();
         }
     }
@@ -172,7 +172,7 @@ impl WorkspaceApp {
                     this.stop_selectable_text_autoscroll();
                     return;
                 }
-                if this.apply_selectable_text_autoscroll(position, cx) {
+                if this.apply_selectable_text_autoscroll(position) {
                     this.update_read_only_selection_drag_at_position(position, cx);
                 }
                 this.schedule_selectable_text_autoscroll(cx);
@@ -181,18 +181,10 @@ impl WorkspaceApp {
         .detach();
     }
 
-    fn apply_selectable_text_autoscroll(
-        &mut self,
-        position: Point<Pixels>,
-        cx: &Context<Self>,
-    ) -> bool {
+    fn apply_selectable_text_autoscroll(&mut self, position: Point<Pixels>) -> bool {
         let mut scrolled = false;
-        if let Some(delta) = self.selectable_text_ai_chat_autoscroll_delta(position, cx) {
-            self.ai_entity
-                .read(cx)
-                .chat_ui()
-                .message_list_state
-                .scroll_by(px(delta));
+        if let Some(delta) = self.selectable_text_ai_chat_autoscroll_delta(position) {
+            self.ai.chat.message_list_state.scroll_by(px(delta));
             scrolled = true;
         }
         let handles = self
@@ -201,40 +193,17 @@ impl WorkspaceApp {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        // IDE page entities own their scroll state; the root selection adapter
-        // borrows those handles only while applying a drag-autoscroll tick.
-        let page_handles = {
-            let file_manager = self.file_manager.read(cx);
-            let sftp = self.sftp_view.read(cx);
-            [
-                file_manager.preview_document_scroll.clone(),
-                file_manager.preview_metadata_scroll.clone(),
-                sftp.diff_document_scroll.clone(),
-                sftp.preview_document_scroll.clone(),
-                sftp.font_preview_scroll.clone(),
-                sftp.drives_scroll.clone(),
-            ]
-        };
-        for handle in handles.into_iter().chain(page_handles) {
+        for handle in handles {
             scrolled |= self.selectable_text_scroll_handle_autoscroll(&handle, position);
         }
         scrolled
     }
 
-    fn selectable_text_ai_chat_autoscroll_delta(
-        &self,
-        position: Point<Pixels>,
-        cx: &App,
-    ) -> Option<f32> {
+    fn selectable_text_ai_chat_autoscroll_delta(&self, position: Point<Pixels>) -> Option<f32> {
         if !self.ai_sidebar_visible() {
             return None;
         }
-        let bounds = self
-            .ai_entity
-            .read(cx)
-            .chat_ui()
-            .message_list_state
-            .viewport_bounds();
+        let bounds = self.ai.chat.message_list_state.viewport_bounds();
         if bounds.size.height <= px(1.0) || bounds.size.width <= px(1.0) {
             return None;
         }
@@ -364,8 +333,8 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> SelectableTextRenderState {
         let active_group_selection =
-            if let Some(WorkspaceImeTarget::ReadOnlyText(group_id)) = self.active_ime_target(cx) {
-                self.ime_selected_range_for_target(WorkspaceImeTarget::ReadOnlyText(group_id), cx)
+            if let Some(WorkspaceImeTarget::ReadOnlyText(group_id)) = self.active_ime_target() {
+                self.ime_selected_range_for_target(WorkspaceImeTarget::ReadOnlyText(group_id))
                     .map(|range| (group_id, range))
             } else {
                 None
@@ -518,7 +487,7 @@ impl WorkspaceApp {
 
         let target = WorkspaceImeTarget::ReadOnlyText(id);
         let selection_range = selected_range_override.or_else(|| {
-            self.ime_selected_range_for_target(target, cx)
+            self.ime_selected_range_for_target(target)
                 .filter(|range| range.start < range.end)
         });
         let workspace = cx.entity();
@@ -655,7 +624,7 @@ impl WorkspaceApp {
         let target = WorkspaceImeTarget::ReadOnlyText(group_id);
         let value = text.to_string();
         let selection_range = self
-            .ime_selected_range_for_target(target, cx)
+            .ime_selected_range_for_target(target)
             .and_then(|range| {
                 self.local_range_for_selectable_fragment(group_id, fragment_id, range)
             })
@@ -790,7 +759,7 @@ impl WorkspaceApp {
                 .retain(|_, fragment| !replaced_groups.contains(&fragment.group_id));
         }
 
-        let active_group = match self.active_ime_target(cx) {
+        let active_group = match self.active_ime_target() {
             Some(WorkspaceImeTarget::ReadOnlyText(group_id)) => Some(group_id),
             _ => None,
         };
@@ -987,6 +956,28 @@ impl SelectableTextRenderState {
                 ),
             SelectableTextRole::NonSelectable => render_non_selectable_styled_text(text, vec![run]),
         }
+    }
+
+    pub(super) fn render_row_safe_display_text_in_group(
+        &self,
+        group_id: u64,
+        scope: &str,
+        key: impl Hash,
+        order: usize,
+        text: impl Into<String>,
+        color: u32,
+        cx: &mut App,
+    ) -> AnyElement {
+        self.render_display_text_with_role_in_group(
+            SelectableTextRole::RowSafe,
+            group_id,
+            scope,
+            key,
+            order,
+            text,
+            color,
+            cx,
+        )
     }
 
     fn render_styled_text_in_group(

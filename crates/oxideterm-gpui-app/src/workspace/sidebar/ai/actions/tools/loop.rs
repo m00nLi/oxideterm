@@ -1,18 +1,72 @@
 const AI_TOOL_CALLS_PER_ROUND_SAFETY_LIMIT: usize = 16;
-const AI_RUNTIME_CONTEXT_MESSAGE_ID: &str = "runtime-context-v2";
+const ACP_BASE_SYSTEM_MESSAGE_ID: &str = "base-system";
+const ACP_CURRENT_CONTEXT_MESSAGE_ID: &str = "current-terminal-context";
+
+pub(in crate::workspace) fn acp_current_turn_prompt(
+    history: &[AiChatMessage],
+) -> Option<String> {
+    let request = history
+        .iter()
+        .rev()
+        .find(|message| message.role == AiChatRole::User)
+        .map(|message| message.content.trim())
+        .filter(|content| !content.is_empty())?;
+    let base_system = history
+        .iter()
+        .find(|message| {
+            message.role == AiChatRole::System && message.id == ACP_BASE_SYSTEM_MESSAGE_ID
+        })
+        .map(|message| message.content.trim())
+        .filter(|content| !content.is_empty());
+    let current_context = history
+        .iter()
+        .find(|message| {
+            message.role == AiChatRole::System && message.id == ACP_CURRENT_CONTEXT_MESSAGE_ID
+        })
+        .map(|message| message.content.trim())
+        .filter(|content| !content.is_empty());
+
+    // ACP owns its conversation history after a session starts. Send only the
+    // freshly built runtime context for this turn so resumed sessions do not
+    // receive duplicate copies of prior user and assistant messages.
+    let mut sections = Vec::with_capacity(3);
+    if let Some(base_system) = base_system {
+        sections.push(format!("## OxideTerm Instructions\n{base_system}"));
+    }
+    if let Some(current_context) = current_context {
+        sections.push(format!("## OxideTerm Current Context\n{current_context}"));
+    }
+    if sections.is_empty() {
+        return Some(oxideterm_ai::sanitize_for_ai(request));
+    }
+    sections.push(format!("## User Request\n{request}"));
+    Some(oxideterm_ai::sanitize_for_ai(&sections.join("\n\n")))
+}
 
 pub(in crate::workspace) async fn run_ai_chat_tool_loop(
     config: AiChatStreamConfig,
     mut history: Vec<AiChatMessage>,
-    model_runtime: AiModelRuntimeState,
-    services: AiModelBackendServices,
+    snapshot: AiOrchestratorRuntimeSnapshot,
     budget_level: u8,
     generation: u64,
-    tool_session_id: ToolSessionId,
     conversation_id: String,
     assistant_id: String,
-    ui_tx: AiStreamDeliverySender,
+    ui_tx: std::sync::mpsc::Sender<AiStreamDelivery>,
 ) {
+    if config.execution_backend == AiExecutionBackend::Acp {
+        run_acp_chat_loop(
+            config,
+            history,
+            snapshot,
+            generation,
+            conversation_id,
+            assistant_id,
+            ui_tx,
+        )
+        .await;
+        return;
+    }
+
     let max_rounds = config
         .tool_policy
         .max_rounds
@@ -31,7 +85,7 @@ pub(in crate::workspace) async fn run_ai_chat_tool_loop(
         .max_response_tokens
         .and_then(|tokens| usize::try_from(tokens).ok())
         .filter(|tokens| *tokens > 0)
-        .unwrap_or_else(|| ai_response_reserve(model_runtime.context_window));
+        .unwrap_or_else(|| ai_response_reserve(snapshot.ai_context_window));
     let transcript_lookup_prompt = ai_find_prompt_transcript_lookup_reference(&history)
         .map(ai_build_transcript_lookup_prompt_reference);
     let available_tool_names = config
@@ -61,18 +115,6 @@ pub(in crate::workspace) async fn run_ai_chat_tool_loop(
     let mut awaiting_summary_round_id: Option<String> = None;
 
     for round_index in 0..=max_rounds {
-        let Some(runtime_context) = request_ai_runtime_context(
-            &ui_tx,
-            generation,
-            &tool_session_id,
-            &conversation_id,
-            &assistant_id,
-        )
-        .await
-        else {
-            return;
-        };
-        replace_ai_runtime_context_message(&mut history, runtime_context);
         let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut provider_config = config.clone();
         if tool_obligation.mode == AiOrchestratorObligationMode::Required
@@ -117,7 +159,6 @@ pub(in crate::workspace) async fn run_ai_chat_tool_loop(
             tool_obligation.mode == AiOrchestratorObligationMode::Required;
         let mut pending_calls = BTreeMap::<String, AiToolCall>::new();
         let mut completed_calls = Vec::<AiToolCall>::new();
-        let mut round_provider_parts = Vec::<serde_json::Value>::new();
 
         while let Some(event) = stream_rx.recv().await {
             match event {
@@ -177,16 +218,6 @@ pub(in crate::workspace) async fn run_ai_chat_tool_loop(
                         {
                             return;
                         }
-                    }
-                }
-                AiStreamEvent::ProviderResponsePart {
-                    provider_type,
-                    part,
-                } => {
-                    if provider_type == config.provider_type {
-                        // Provider-native response parts remain inside this
-                        // live tool loop and are never written to diagnostics.
-                        round_provider_parts.push(part);
                     }
                 }
                 AiStreamEvent::ToolCall {
@@ -515,7 +546,7 @@ pub(in crate::workspace) async fn run_ai_chat_tool_loop(
                     Some(retry_attempt),
                     false,
                 );
-                let mut retry_message = AiChatMessage {
+                history.push(AiChatMessage {
                     id: format!("required-retry-assistant-{retry_attempt}"),
                     role: AiChatRole::Assistant,
                     content: if round_content.trim().is_empty() {
@@ -536,13 +567,7 @@ pub(in crate::workspace) async fn run_ai_chat_tool_loop(
                     summary_ref: None,
                     branches: None,
                     suggestions: Vec::new(),
-                };
-                set_ai_provider_parts(
-                    &mut retry_message,
-                    &config.provider_type,
-                    round_provider_parts,
-                );
-                history.push(retry_message);
+                });
                 history.push(AiChatMessage {
                     id: format!("required-retry-user-{retry_attempt}"),
                     role: AiChatRole::User,
@@ -646,7 +671,7 @@ pub(in crate::workspace) async fn run_ai_chat_tool_loop(
         }
 
         let assistant_round_id = format!("assistant-tool-round-{round_index}");
-        let mut assistant_round = AiChatMessage {
+        history.push(AiChatMessage {
             id: assistant_round_id,
             role: AiChatRole::Assistant,
             content: round_content,
@@ -666,13 +691,7 @@ pub(in crate::workspace) async fn run_ai_chat_tool_loop(
             summary_ref: None,
             branches: None,
             suggestions: Vec::new(),
-        };
-        set_ai_provider_parts(
-            &mut assistant_round,
-            &config.provider_type,
-            round_provider_parts,
-        );
-        history.push(assistant_round);
+        });
 
         let mut round_results = Vec::new();
         for call in completed_calls {
@@ -702,74 +721,14 @@ pub(in crate::workspace) async fn run_ai_chat_tool_loop(
                 has_required_tool_result_this_turn = true;
                 continue;
             }
-            let Some(parsed_args) = parse_ai_tool_args(&call.name, &call.arguments) else {
-                let executed = pre_execution_rejected_ai_tool_result(
-                    call.id.clone(),
-                    call.name.clone(),
-                    "invalid_tool_arguments",
-                    "The application tool arguments do not match the v2 contract.",
-                );
-                send_ai_tool_status(
-                    &ui_tx,
-                    generation,
-                    &conversation_id,
-                    &assistant_id,
-                    &call,
-                    "rejected",
-                    Some(executed.envelope.clone()),
-                    None,
-                    Some(executed_summary(&executed)),
-                )
-                .ok();
-                round_results.push(AiRoundToolResultSummary {
-                    tool_name: call.name.clone(),
-                    success: false,
-                    summary: executed_summary(&executed),
-                });
-                history.push(ai_tool_result_message(executed));
-                has_required_tool_result_this_turn = true;
-                continue;
-            };
-            if let Some(executed) = preflight_ai_tool(
-                &ui_tx,
-                generation,
-                &tool_session_id,
-                &conversation_id,
-                &assistant_id,
-                call.id.clone(),
-                call.name.clone(),
-                parsed_args.clone(),
-            )
-            .await
-            {
-                send_ai_tool_status(
-                    &ui_tx,
-                    generation,
-                    &conversation_id,
-                    &assistant_id,
-                    &call,
-                    "rejected",
-                    Some(executed.envelope.clone()),
-                    None,
-                    Some(executed_summary(&executed)),
-                )
-                .ok();
-                round_results.push(AiRoundToolResultSummary {
-                    tool_name: call.name.clone(),
-                    success: false,
-                    summary: executed_summary(&executed),
-                });
-                history.push(ai_tool_result_message(executed));
-                has_required_tool_result_this_turn = true;
-                continue;
-            }
-            let approval_args = parsed_args.clone();
+            let parsed_args = parse_ai_tool_args(&call.arguments);
+            let approval_args = parsed_args.clone().unwrap_or_else(|| serde_json::json!({}));
             let decision = resolve_ai_policy_decision(
                 &call.name,
                 Some(&approval_args),
                 &config.tool_policy,
                 config.safety_mode,
-                config.profile_id.as_deref(),
+                config.profile_id.clone(),
             );
             let risk = ai_policy_risk_label(decision.risk).to_string();
             let summary = decision.reason_code.clone();
@@ -807,11 +766,9 @@ pub(in crate::workspace) async fn run_ai_chat_tool_loop(
                         AiStreamDeliveryEvent::ToolApprovalRequested {
                             tool_call_id: call.id.clone(),
                             name: call.name.clone(),
-                            arguments: sanitize_ai_tool_arguments_for_approval(
-                                &call.arguments,
-                            ),
+                            arguments: call.arguments.clone(),
                             risk: risk.clone(),
-                            summary: oxideterm_ai::sanitize_for_ai(&summary),
+                            summary: summary.clone(),
                             sender: approval_tx,
                         },
                     )
@@ -864,26 +821,42 @@ pub(in crate::workspace) async fn run_ai_chat_tool_loop(
                             Some("Approved by user.".to_string()),
                         )
                         .ok();
-                        let execution_args = parsed_args.clone();
-                        // Keep the policy outcome out of the canonical model argument object.
-                        let dangerous_command_approved = call.name == "run_command"
-                            && decision.risk == oxideterm_ai::AiActionRisk::Destructive;
-                        execution_summary_args = execution_args.clone();
-                        executed_after_policy = true;
-                        execute_ai_tool(
-                            &services,
-                            &ui_tx,
-                            generation,
-                            &tool_session_id,
-                            &conversation_id,
-                            &assistant_id,
-                            call.id.clone(),
-                            call.name.clone(),
-                            execution_args,
-                            true,
-                            dangerous_command_approved,
-                        )
-                        .await
+                        if let Some(mut execution_args) = parsed_args.clone() {
+                            if call.name == "run_command"
+                                && decision.risk == oxideterm_ai::AiActionRisk::Destructive
+                                && let Some(object) = execution_args.as_object_mut()
+                            {
+                                // Tauri passes this second approval bit to
+                                // local command execution after policy
+                                // approval; native keeps the same
+                                // defense-in-depth contract at the executor
+                                // boundary.
+                                object.insert(
+                                    "dangerousCommandApproved".to_string(),
+                                    serde_json::json!(true),
+                                );
+                            }
+                            execution_summary_args = execution_args.clone();
+                            executed_after_policy = true;
+                            execute_ai_tool(
+                                &snapshot,
+                                &ui_tx,
+                                generation,
+                                &conversation_id,
+                                &assistant_id,
+                                call.id.clone(),
+                                call.name.clone(),
+                                execution_args,
+                            )
+                            .await
+                        } else {
+                            pre_execution_rejected_ai_tool_result(
+                                call.id.clone(),
+                                call.name.clone(),
+                                "invalid_json_arguments",
+                                "Invalid JSON arguments",
+                            )
+                        }
                     }
                 }
                 oxideterm_ai::AiPolicyDecisionKind::Allow => {
@@ -911,37 +884,42 @@ pub(in crate::workspace) async fn run_ai_chat_tool_loop(
                         Some(summary.clone()),
                     )
                     .ok();
-                    let execution_args = parsed_args.clone();
-                    // Bypass mode is prior user consent, represented as backend state only.
-                    let dangerous_command_approved = call.name == "run_command"
-                        && decision.risk == oxideterm_ai::AiActionRisk::Destructive;
-                    execution_summary_args = execution_args.clone();
-                    executed_after_policy = true;
-                    execute_ai_tool(
-                        &services,
-                        &ui_tx,
-                        generation,
-                        &tool_session_id,
-                        &conversation_id,
-                        &assistant_id,
-                        call.id.clone(),
-                        call.name.clone(),
-                        execution_args,
-                        false,
-                        dangerous_command_approved,
-                    )
-                    .await
+                    if let Some(mut execution_args) = parsed_args.clone() {
+                        if call.name == "run_command"
+                            && decision.risk == oxideterm_ai::AiActionRisk::Destructive
+                            && let Some(object) = execution_args.as_object_mut()
+                        {
+                            // Keep the local executor's dangerous-command
+                            // approval bit aligned with Tauri after policy
+                            // approval.
+                            object.insert(
+                                "dangerousCommandApproved".to_string(),
+                                serde_json::json!(true),
+                            );
+                        }
+                        execution_summary_args = execution_args.clone();
+                        executed_after_policy = true;
+                        execute_ai_tool(
+                            &snapshot,
+                            &ui_tx,
+                            generation,
+                            &conversation_id,
+                            &assistant_id,
+                            call.id.clone(),
+                            call.name.clone(),
+                            execution_args,
+                        )
+                        .await
+                    } else {
+                        pre_execution_rejected_ai_tool_result(
+                            call.id.clone(),
+                            call.name.clone(),
+                            "invalid_json_arguments",
+                            "Invalid JSON arguments",
+                        )
+                    }
                 }
             };
-            executed = resolve_ai_candidate_selection_if_needed(
-                &ui_tx,
-                generation,
-                &conversation_id,
-                &assistant_id,
-                &call,
-                executed,
-            )
-            .await;
             if executed_after_policy {
                 if call.name == "run_command" {
                     annotate_ai_run_command_execution_result(
@@ -998,7 +976,7 @@ pub(in crate::workspace) async fn run_ai_chat_tool_loop(
             .collect::<Vec<_>>();
         let summary_eligible_tokens = ai_summary_eligible_tokens(&regular_messages);
         let tool_loop_budget = determine_ai_compression_level(AiPromptBudgetInput {
-            context_window: model_runtime.context_window,
+            context_window: snapshot.ai_context_window,
             response_reserve,
             system_budget,
             history_tokens: total_message_tokens.saturating_sub(system_message_tokens),
@@ -1011,7 +989,7 @@ pub(in crate::workspace) async fn run_ai_chat_tool_loop(
             transcript_lookup_threshold: None,
             tool_loop_stop_threshold: Some(ai_to_usable_budget_threshold(
                 0.9,
-                model_runtime.context_window,
+                snapshot.ai_context_window,
                 system_budget,
                 response_reserve,
             )),
@@ -1097,183 +1075,645 @@ pub(in crate::workspace) async fn run_ai_chat_tool_loop(
     );
 }
 
-async fn request_ai_runtime_context(
-    ui_tx: &AiStreamDeliverySender,
-    generation: u64,
-    tool_session_id: &ToolSessionId,
-    conversation_id: &str,
-    assistant_id: &str,
-) -> Option<String> {
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    send_ai_stream_delivery(
-        ui_tx,
-        generation,
-        conversation_id,
-        assistant_id,
-        AiStreamDeliveryEvent::RuntimeContextRequested {
-            tool_session_id: tool_session_id.clone(),
-            sender,
-        },
-    )
-    .ok()?;
-    receiver.await.ok().flatten()
-}
+const ACP_VISIBLE_TERMINAL_TOOL_NAMES: &[&str] = &[
+    "list_targets",
+    "run_command",
+    "observe_terminal",
+    "send_terminal_input",
+];
 
-fn replace_ai_runtime_context_message(history: &mut Vec<AiChatMessage>, content: String) {
-    let message = AiChatMessage {
-        id: AI_RUNTIME_CONTEXT_MESSAGE_ID.to_string(),
-        role: AiChatRole::System,
-        content,
-        timestamp_ms: ai_now_ms(),
-        model: None,
-        context: None,
-        is_streaming: false,
-        thinking_content: None,
-        metadata: None,
-        tool_call_id: None,
-        tool_calls: Vec::new(),
-        turn: None,
-        transcript_ref: None,
-        summary_ref: None,
-        branches: None,
-        suggestions: Vec::new(),
-    };
-    if let Some(existing) = history
-        .iter_mut()
-        .find(|entry| entry.id == AI_RUNTIME_CONTEXT_MESSAGE_ID)
-    {
-        *existing = message;
-    } else {
-        history.insert(0, message);
+fn acp_visible_terminal_tool_definitions(
+    tool_use_enabled: bool,
+) -> Vec<oxideterm_acp_host_tools::AcpHostToolDefinition> {
+    if !tool_use_enabled {
+        return Vec::new();
     }
-}
-
-
-async fn resolve_ai_candidate_selection_if_needed(
-    ui_tx: &AiStreamDeliverySender,
-    generation: u64,
-    conversation_id: &str,
-    assistant_id: &str,
-    call: &AiToolCall,
-    mut executed: AiExecutedToolResult,
-) -> AiExecutedToolResult {
-    let is_ambiguous = executed
-        .envelope
-        .pointer("/error/code")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|code| {
-            matches!(
-                code,
-                "target_disambiguation_required" | "resource_ambiguous"
-            )
-        });
-    let candidates = executed
-        .envelope
-        .get("targets")
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if !is_ambiguous || candidates.len() < 2 {
-        return executed;
-    }
-
-    let display_candidates = candidates
-        .iter()
-        .enumerate()
-        .map(|(index, candidate)| {
-            serde_json::json!({
-                "index": index,
-                "label": candidate
-                    .get("label")
-                    .and_then(serde_json::Value::as_str)
-                    .map(oxideterm_ai::sanitize_for_ai)
-                    .unwrap_or_else(|| "Target".to_string()),
-                "kind": candidate
-                    .get("kind")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("target"),
-            })
+    oxideterm_ai::orchestrator_tool_definitions()
+        .into_iter()
+        .filter(|definition| {
+            ACP_VISIBLE_TERMINAL_TOOL_NAMES.contains(&definition.name.as_str())
         })
-        .collect::<Vec<_>>();
+        .map(|definition| {
+            oxideterm_acp_host_tools::AcpHostToolDefinition::new(
+                definition.name,
+                definition.description,
+                definition.parameters,
+            )
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_acp_visible_terminal_tool_on_ui(
+    ui_tx: &std::sync::mpsc::Sender<AiStreamDelivery>,
+    generation: u64,
+    conversation_id: &str,
+    assistant_id: &str,
+    tool_call_id: String,
+    tool_name: String,
+    args: serde_json::Value,
+) -> AiExecutedToolResult {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     if send_ai_stream_delivery(
         ui_tx,
         generation,
         conversation_id,
         assistant_id,
-        AiStreamDeliveryEvent::ToolCandidateSelectionRequested {
-            tool_call_id: call.id.clone(),
-            name: call.name.clone(),
-            arguments: sanitize_ai_tool_arguments_for_persistence(&call.arguments),
-            candidates: display_candidates,
+        AiStreamDeliveryEvent::ToolExecutionRequested {
+            tool_call_id: tool_call_id.clone(),
+            name: tool_name.clone(),
+            args,
             sender,
         },
     )
     .is_err()
     {
         return rejected_ai_tool_result(
-            call.id.clone(),
-            call.name.clone(),
+            tool_call_id,
+            tool_name,
             "ui_delivery_failed",
-            "The target selector is no longer available.",
+            "The native UI executor is no longer available.",
         );
     }
-
-    let selected_index = receiver.await.unwrap_or(None);
-    let Some(selected) = selected_index.and_then(|index| candidates.get(index).cloned()) else {
-        executed.success = false;
-        executed.error = Some("Target selection was cancelled.".to_string());
-        executed.output = "Target selection was cancelled.".to_string();
-        if let Some(envelope) = executed.envelope.as_object_mut() {
-            envelope.insert("ok".to_string(), serde_json::json!(false));
-            envelope.insert(
-                "summary".to_string(),
-                serde_json::json!("Target selection was cancelled."),
-            );
-            envelope.insert(
-                "output".to_string(),
-                serde_json::json!("Target selection was cancelled."),
-            );
-            envelope.insert(
-                "error".to_string(),
-                serde_json::json!({
-                    "code": "operation_cancelled",
-                    "message": "Target selection was cancelled.",
-                    "recoverable": true,
-                }),
-            );
-            envelope.insert("recoverable".to_string(), serde_json::json!(true));
-        }
-        return executed;
-    };
-
-    let selected_label = selected
-        .get("label")
-        .and_then(serde_json::Value::as_str)
-        .map(oxideterm_ai::sanitize_for_ai)
-        .unwrap_or_else(|| "Target".to_string());
-    executed.success = true;
-    executed.error = None;
-    executed.output = format!("Selected {selected_label}.");
-    if let Some(envelope) = executed.envelope.as_object_mut() {
-        envelope.insert("ok".to_string(), serde_json::json!(true));
-        envelope.insert(
-            "summary".to_string(),
-            serde_json::json!(format!("Selected {selected_label}.")),
-        );
-        envelope.insert(
-            "output".to_string(),
-            serde_json::json!(format!("Selected {selected_label}.")),
-        );
-        envelope.remove("error");
-        envelope.insert("recoverable".to_string(), serde_json::json!(false));
-        envelope.insert("targets".to_string(), serde_json::json!([selected.clone()]));
-        envelope.insert("selectedTarget".to_string(), selected);
-        envelope.remove("nextActions");
-    }
-    executed
+    receiver.await.unwrap_or_else(|_| {
+        rejected_ai_tool_result(
+            tool_call_id,
+            tool_name,
+            "ui_executor_cancelled",
+            "The native UI executor cancelled the tool call.",
+        )
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn handle_acp_visible_terminal_tool_call(
+    call: oxideterm_acp_host_tools::AcpHostToolCall,
+    config: &AiChatStreamConfig,
+    ui_tx: &std::sync::mpsc::Sender<AiStreamDelivery>,
+    generation: u64,
+    conversation_id: &str,
+    assistant_id: &str,
+) {
+    // Persist and display only a redacted projection while retaining raw arguments for execution.
+    let arguments = serde_json::to_string(&call.arguments)
+        .map(|arguments| oxideterm_ai::sanitize_for_ai(&arguments))
+        .unwrap_or_else(|_| "{}".to_string());
+    let status_call = AiToolCall {
+        id: call.id.clone(),
+        name: call.name.clone(),
+        arguments,
+    };
+    let decision = resolve_ai_policy_decision(
+        &call.name,
+        Some(&call.arguments),
+        &config.tool_policy,
+        config.safety_mode,
+        config.profile_id.clone(),
+    );
+    let risk = ai_policy_risk_label(decision.risk).to_string();
+    let policy_summary = decision.reason_code.clone();
+    let mut execution_args = call.arguments.clone();
+    let mut executed_after_policy = false;
+
+    let mut executed = match decision.decision {
+        oxideterm_ai::AiPolicyDecisionKind::Deny => {
+            send_ai_tool_status(
+                ui_tx,
+                generation,
+                conversation_id,
+                assistant_id,
+                &status_call,
+                "rejected",
+                None,
+                Some(risk.clone()),
+                Some(policy_summary.clone()),
+            )
+            .ok();
+            pre_execution_rejected_ai_tool_result(
+                call.id.clone(),
+                call.name.clone(),
+                "tool_disabled",
+                decision.reason_code.clone(),
+            )
+        }
+        oxideterm_ai::AiPolicyDecisionKind::RequireApproval => {
+            let (approval_tx, approval_rx) = tokio::sync::oneshot::channel();
+            let delivered = send_ai_stream_delivery(
+                ui_tx,
+                generation,
+                conversation_id,
+                assistant_id,
+                AiStreamDeliveryEvent::ToolApprovalRequested {
+                    tool_call_id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments: status_call.arguments.clone(),
+                    risk: risk.clone(),
+                    summary: policy_summary.clone(),
+                    sender: approval_tx,
+                },
+            )
+            .is_ok();
+            let approved = delivered && approval_rx.await.unwrap_or(false);
+            if !approved {
+                send_ai_tool_status(
+                    ui_tx,
+                    generation,
+                    conversation_id,
+                    assistant_id,
+                    &status_call,
+                    "rejected",
+                    None,
+                    Some(risk.clone()),
+                    Some("Rejected by user.".to_string()),
+                )
+                .ok();
+                pre_execution_rejected_ai_tool_result(
+                    call.id.clone(),
+                    call.name.clone(),
+                    "user_rejected",
+                    "Tool call rejected by user.",
+                )
+            } else {
+                send_ai_tool_status(
+                    ui_tx,
+                    generation,
+                    conversation_id,
+                    assistant_id,
+                    &status_call,
+                    "approved",
+                    None,
+                    Some(risk.clone()),
+                    Some("Approved by user.".to_string()),
+                )
+                .ok();
+                send_ai_tool_status(
+                    ui_tx,
+                    generation,
+                    conversation_id,
+                    assistant_id,
+                    &status_call,
+                    "running",
+                    None,
+                    Some(risk.clone()),
+                    Some("Approved by user.".to_string()),
+                )
+                .ok();
+                if call.name == "run_command"
+                    && decision.risk == oxideterm_ai::AiActionRisk::Destructive
+                    && let Some(object) = execution_args.as_object_mut()
+                {
+                    // Preserve the executor's second approval bit after the user approves.
+                    object.insert(
+                        "dangerousCommandApproved".to_string(),
+                        serde_json::json!(true),
+                    );
+                }
+                executed_after_policy = true;
+                execute_acp_visible_terminal_tool_on_ui(
+                    ui_tx,
+                    generation,
+                    conversation_id,
+                    assistant_id,
+                    call.id.clone(),
+                    call.name.clone(),
+                    execution_args.clone(),
+                )
+                .await
+            }
+        }
+        oxideterm_ai::AiPolicyDecisionKind::Allow => {
+            send_ai_tool_status(
+                ui_tx,
+                generation,
+                conversation_id,
+                assistant_id,
+                &status_call,
+                "approved",
+                None,
+                Some(risk.clone()),
+                Some(policy_summary.clone()),
+            )
+            .ok();
+            send_ai_tool_status(
+                ui_tx,
+                generation,
+                conversation_id,
+                assistant_id,
+                &status_call,
+                "running",
+                None,
+                Some(risk.clone()),
+                Some(policy_summary.clone()),
+            )
+            .ok();
+            if call.name == "run_command"
+                && decision.risk == oxideterm_ai::AiActionRisk::Destructive
+                && let Some(object) = execution_args.as_object_mut()
+            {
+                // Bypass mode still requires the executor's explicit approval marker.
+                object.insert(
+                    "dangerousCommandApproved".to_string(),
+                    serde_json::json!(true),
+                );
+            }
+            executed_after_policy = true;
+            execute_acp_visible_terminal_tool_on_ui(
+                ui_tx,
+                generation,
+                conversation_id,
+                assistant_id,
+                call.id.clone(),
+                call.name.clone(),
+                execution_args.clone(),
+            )
+            .await
+        }
+    };
+
+    if executed_after_policy {
+        if call.name == "run_command" {
+            annotate_ai_run_command_execution_result(&mut executed, &execution_args);
+        }
+        annotate_executed_ai_tool_result_policy(&mut executed, &decision);
+    }
+    send_ai_tool_status(
+        ui_tx,
+        generation,
+        conversation_id,
+        assistant_id,
+        &status_call,
+        if executed.success { "completed" } else { "error" },
+        Some(executed.envelope.clone()),
+        Some(risk),
+        Some(executed_summary(&executed)),
+    )
+    .ok();
+
+    // MCP responses bypass provider-message sanitation, so redact at this boundary.
+    let model_content = serde_json::to_string(&executed.envelope)
+        .map(|content| oxideterm_ai::sanitize_for_ai(&content))
+        .unwrap_or_else(|_| "OxideTerm could not serialize the tool result.".to_string());
+    let response = if executed.success {
+        oxideterm_acp_host_tools::AcpHostToolResponse::success(model_content)
+    } else {
+        oxideterm_acp_host_tools::AcpHostToolResponse::error(model_content)
+    };
+    let _ = call.respond(response);
+}
+
+pub(in crate::workspace) async fn run_acp_chat_loop(
+    config: AiChatStreamConfig,
+    history: Vec<AiChatMessage>,
+    snapshot: AiOrchestratorRuntimeSnapshot,
+    generation: u64,
+    conversation_id: String,
+    assistant_id: String,
+    ui_tx: std::sync::mpsc::Sender<AiStreamDelivery>,
+) {
+    let Some(agent_id) = config
+        .acp_agent_id
+        .as_deref()
+        .filter(|agent_id| !agent_id.trim().is_empty())
+    else {
+        let _ = send_ai_stream_delivery(
+            &ui_tx,
+            generation,
+            &conversation_id,
+            &assistant_id,
+            AiStreamDeliveryEvent::Stream(AiStreamEvent::Error(
+                "No ACP agent selected for this execution profile.".to_string(),
+            )),
+        );
+        return;
+    };
+    let Some(prompt) = acp_current_turn_prompt(&history) else {
+        let _ = send_ai_stream_delivery(
+            &ui_tx,
+            generation,
+            &conversation_id,
+            &assistant_id,
+            AiStreamDeliveryEvent::Stream(AiStreamEvent::Error(
+                "Cannot start ACP agent without a user prompt.".to_string(),
+            )),
+        );
+        return;
+    };
+    let agent = match acp_agent_config_from_settings(&snapshot.settings_state, agent_id) {
+        Ok(agent) => agent,
+        Err(error) => {
+            let _ = send_ai_stream_delivery(
+                &ui_tx,
+                generation,
+                &conversation_id,
+                &assistant_id,
+                AiStreamDeliveryEvent::Stream(AiStreamEvent::Error(error)),
+            );
+            return;
+        }
+    };
+    if !agent.enabled {
+        let _ = send_ai_stream_delivery(
+            &ui_tx,
+            generation,
+            &conversation_id,
+            &assistant_id,
+            AiStreamDeliveryEvent::Stream(AiStreamEvent::Error(format!(
+                "ACP agent `{}` is disabled.",
+                agent.id
+            ))),
+        );
+        return;
+    }
+    let launch_config = acp_launch_config_from_agent(&agent);
+    let launcher = match oxideterm_ai::build_acp_stdio_launcher(launch_config) {
+        Ok(launcher) => launcher,
+        Err(error) => {
+            let _ = send_ai_stream_delivery(
+                &ui_tx,
+                generation,
+                &conversation_id,
+                &assistant_id,
+                AiStreamDeliveryEvent::Stream(AiStreamEvent::Error(error.to_string())),
+            );
+            return;
+        }
+    };
+    let session_cwd = acp_session_cwd_from_agent(&agent);
+    let host_policy = acp_host_capability_policy_from_agent(&agent);
+    let mut acp_mcp_servers = Vec::new();
+    let mut host_tools_server = None;
+    let mut host_tools_relay = None;
+    let host_tool_definitions =
+        acp_visible_terminal_tool_definitions(config.tool_policy.enabled && host_policy.terminal);
+    if !host_tool_definitions.is_empty() {
+        let (server, mut call_rx) =
+            match oxideterm_acp_host_tools::start_acp_host_tools_server(host_tool_definitions).await {
+                Ok(started) => started,
+                Err(error) => {
+                    let _ = send_ai_stream_delivery(
+                        &ui_tx,
+                        generation,
+                        &conversation_id,
+                        &assistant_id,
+                        AiStreamDeliveryEvent::Stream(AiStreamEvent::Error(format!(
+                            "Failed to start ACP host tools bridge: {error}"
+                        ))),
+                    );
+                    return;
+                }
+            };
+        acp_mcp_servers.push(server.mcp_server());
+        let tool_config = config.clone();
+        let tool_ui_tx = ui_tx.clone();
+        let tool_conversation_id = conversation_id.clone();
+        let tool_assistant_id = assistant_id.clone();
+        host_tools_relay = Some(tokio::spawn(async move {
+            while let Some(call) = call_rx.recv().await {
+                handle_acp_visible_terminal_tool_call(
+                    call,
+                    &tool_config,
+                    &tool_ui_tx,
+                    generation,
+                    &tool_conversation_id,
+                    &tool_assistant_id,
+                )
+                .await;
+            }
+        }));
+        host_tools_server = Some(server);
+    }
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let bridge_ui_tx = ui_tx.clone();
+    let bridge_conversation_id = conversation_id.clone();
+    let bridge_assistant_id = assistant_id.clone();
+    let bridge_session_cwd = session_cwd.clone();
+    let bridge_host_policy = host_policy.clone();
+    let bridge_terminal_registry = oxideterm_ai::AcpTerminalRegistry::new();
+    let bridge = tokio::spawn(async move {
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                oxideterm_ai::AcpClientEvent::ReadTextFile {
+                    request,
+                    response_tx,
+                } => {
+                    let response = if bridge_host_policy.fs_read_text_file {
+                        oxideterm_ai::resolve_acp_read_text_file_request(
+                            &bridge_session_cwd,
+                            &request,
+                        )
+                        .await
+                    } else {
+                        Err(oxideterm_ai::acp_method_not_found("fs/read_text_file"))
+                    };
+                    let _ = response_tx.send(response);
+                    continue;
+                }
+                oxideterm_ai::AcpClientEvent::WriteTextFile {
+                    request,
+                    response_tx,
+                } => {
+                    let response = if bridge_host_policy.fs_write_text_file {
+                        oxideterm_ai::resolve_acp_write_text_file_request(
+                            &bridge_session_cwd,
+                            &request,
+                        )
+                        .await
+                    } else {
+                        Err(oxideterm_ai::acp_method_not_found("fs/write_text_file"))
+                    };
+                    let _ = response_tx.send(response);
+                    continue;
+                }
+                oxideterm_ai::AcpClientEvent::CreateTerminal {
+                    request,
+                    response_tx,
+                } => {
+                    let response = if bridge_host_policy.terminal {
+                        bridge_terminal_registry
+                            .create_terminal(&bridge_session_cwd, &request)
+                            .await
+                    } else {
+                        Err(oxideterm_ai::acp_method_not_found("terminal/create"))
+                    };
+                    let _ = response_tx.send(response);
+                    continue;
+                }
+                oxideterm_ai::AcpClientEvent::TerminalOutput {
+                    request,
+                    response_tx,
+                } => {
+                    let response = if bridge_host_policy.terminal {
+                        bridge_terminal_registry.terminal_output(&request).await
+                    } else {
+                        Err(oxideterm_ai::acp_method_not_found("terminal/output"))
+                    };
+                    let _ = response_tx.send(response);
+                    continue;
+                }
+                oxideterm_ai::AcpClientEvent::ReleaseTerminal {
+                    request,
+                    response_tx,
+                } => {
+                    let response = if bridge_host_policy.terminal {
+                        bridge_terminal_registry.release_terminal(&request).await
+                    } else {
+                        Err(oxideterm_ai::acp_method_not_found("terminal/release"))
+                    };
+                    let _ = response_tx.send(response);
+                    continue;
+                }
+                oxideterm_ai::AcpClientEvent::WaitForTerminalExit {
+                    request,
+                    response_tx,
+                } => {
+                    let response = if bridge_host_policy.terminal {
+                        bridge_terminal_registry
+                            .wait_for_terminal_exit(&request)
+                            .await
+                    } else {
+                        Err(oxideterm_ai::acp_method_not_found("terminal/wait_for_exit"))
+                    };
+                    let _ = response_tx.send(response);
+                    continue;
+                }
+                oxideterm_ai::AcpClientEvent::KillTerminal {
+                    request,
+                    response_tx,
+                } => {
+                    let response = if bridge_host_policy.terminal {
+                        bridge_terminal_registry.kill_terminal(&request).await
+                    } else {
+                        Err(oxideterm_ai::acp_method_not_found("terminal/kill"))
+                    };
+                    let _ = response_tx.send(response);
+                    continue;
+                }
+                event => {
+                    if send_ai_stream_delivery(
+                        &bridge_ui_tx,
+                        generation,
+                        &bridge_conversation_id,
+                        &bridge_assistant_id,
+                        AiStreamDeliveryEvent::AcpClientEvent(event),
+                    )
+                    .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let result = oxideterm_ai::run_acp_prompt_session_events(
+        launcher,
+        env!("CARGO_PKG_VERSION").to_string(),
+        host_policy,
+        session_cwd,
+        config.acp_session_id.clone(),
+        config.acp_config_selection.clone(),
+        acp_mcp_servers,
+        prompt,
+        event_tx,
+        snapshot.ai_acp_runtime_registry.clone(),
+        conversation_id.clone(),
+        generation.to_string(),
+    )
+    .await;
+    let _ = bridge.await;
+    if let Some(server) = host_tools_server {
+        server.shutdown().await;
+    }
+    if let Some(relay) = host_tools_relay {
+        // The ACP turn owns the relay; cancel any orphaned approval wait after the agent exits.
+        relay.abort();
+        let _ = relay.await;
+    }
+    match result {
+        Ok(outcome) => {
+            // Persist the ACP session identity before the final Done event so a
+            // retry or resumed conversation can load the same agent session.
+            if send_ai_stream_delivery(
+                &ui_tx,
+                generation,
+                &conversation_id,
+                &assistant_id,
+                AiStreamDeliveryEvent::AcpSessionStarted {
+                    session_id: outcome.session_id,
+                    session_metadata: outcome.session_metadata,
+                    session_config_options: outcome.session_config_options,
+                    agent_id: agent.id.clone(),
+                },
+            )
+            .is_err()
+            {
+                return;
+            }
+            let _ = send_ai_stream_delivery(
+                &ui_tx,
+                generation,
+                &conversation_id,
+                &assistant_id,
+                AiStreamDeliveryEvent::Stream(AiStreamEvent::Done),
+            );
+        }
+        Err(error) => {
+            let _ = send_ai_stream_delivery(
+                &ui_tx,
+                generation,
+                &conversation_id,
+                &assistant_id,
+                AiStreamDeliveryEvent::Stream(AiStreamEvent::Error(error.to_string())),
+            );
+        }
+    }
+}
+
+pub(in crate::workspace) fn acp_agent_config_from_settings(
+    settings_state: &serde_json::Value,
+    agent_id: &str,
+) -> Result<oxideterm_settings::AcpAgentConfig, String> {
+    settings_state
+        .get("ai")
+        .and_then(|ai| ai.get("acpAgents"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|agents| {
+            agents
+                .iter()
+                .filter_map(|agent| {
+                    serde_json::from_value::<oxideterm_settings::AcpAgentConfig>(agent.clone()).ok()
+                })
+                .find(|agent| agent.id == agent_id)
+        })
+        .ok_or_else(|| format!("ACP agent `{agent_id}` is not configured."))
+}
+
+pub(in crate::workspace) fn acp_launch_config_from_agent(
+    agent: &oxideterm_settings::AcpAgentConfig,
+) -> oxideterm_ai::AcpLaunchConfig {
+    oxideterm_ai::AcpLaunchConfig {
+        id: agent.id.clone(),
+        display_name: if agent.display_name.trim().is_empty() {
+            agent.id.clone()
+        } else {
+            agent.display_name.clone()
+        },
+        command: agent.command.clone(),
+        args: agent.args.clone(),
+        env: agent.env.clone(),
+        cwd: agent.cwd.as_deref().map(std::path::PathBuf::from),
+    }
+}
+
+pub(in crate::workspace) fn acp_host_capability_policy_from_agent(
+    agent: &oxideterm_settings::AcpAgentConfig,
+) -> oxideterm_ai::AcpHostCapabilityPolicy {
+    oxideterm_ai::AcpHostCapabilityPolicy {
+        fs_read_text_file: agent.capability_policy.fs_read_text_file,
+        fs_write_text_file: agent.capability_policy.fs_write_text_file,
+        terminal: agent.capability_policy.terminal,
+    }
+}
 
 /// Resolves the same local ACP session directory for prompts and pre-prompt discovery.
 pub(in crate::workspace) fn acp_session_cwd_from_agent(
@@ -1289,7 +1729,7 @@ pub(in crate::workspace) fn acp_session_cwd_from_agent(
 }
 
 pub(in crate::workspace) fn flush_ai_required_tool_buffer(
-    ui_tx: &AiStreamDeliverySender,
+    ui_tx: &std::sync::mpsc::Sender<AiStreamDelivery>,
     generation: u64,
     conversation_id: &str,
     assistant_id: &str,

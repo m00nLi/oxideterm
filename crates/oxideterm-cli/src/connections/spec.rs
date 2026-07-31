@@ -30,6 +30,7 @@ pub(super) struct ConnectionSpec {
     proxy_chain: Option<Vec<ConnectionProxyHopSpec>>,
     agent_forwarding: Option<bool>,
     legacy_ssh_compatibility: Option<bool>,
+    skip_remote_env_detection: Option<bool>,
     post_connect_command: Option<Option<String>>,
 }
 
@@ -106,6 +107,7 @@ pub(super) fn connection_spec_from_direct_args(
         proxy_chain: None,
         agent_forwarding: args.agent_forwarding,
         legacy_ssh_compatibility: args.legacy_ssh_compatibility,
+        skip_remote_env_detection: args.skip_remote_env_detection,
         post_connect_command: args.post_connect_command.map(Some),
     }))
 }
@@ -194,12 +196,14 @@ pub(super) fn connection_request_from_spec(
                 .map(|connection| connection.options.legacy_ssh_compatibility)
                 .unwrap_or(false)
         }),
+        skip_remote_env_detection: spec.skip_remote_env_detection.unwrap_or_else(|| {
+            existing
+                .map(|connection| connection.options.skip_remote_env_detection)
+                .unwrap_or(false)
+        }),
         post_connect_command: spec.post_connect_command.unwrap_or_else(|| {
             existing.and_then(|connection| connection.post_connect_command().map(ToOwned::to_owned))
         }),
-        terminal: existing
-            .map(|connection| connection.options.terminal)
-            .unwrap_or_default(),
     })
 }
 
@@ -440,6 +444,7 @@ impl ConnectionDirectArgs {
             || self.passphrase_env.is_some()
             || self.agent_forwarding.is_some()
             || self.legacy_ssh_compatibility.is_some()
+            || self.skip_remote_env_detection.is_some()
             || self.post_connect_command.is_some()
     }
 }

@@ -14,7 +14,7 @@ use anyhow::Result;
 use chrono::Timelike;
 use gpui::{
     App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle, PathPromptOptions, Pixels,
-    Point, SharedString, Subscription, Timer, Window, px,
+    Point, SharedString, Subscription, Window, px,
 };
 use oxideterm_ssh::SshConnectionHandle;
 use oxideterm_terminal::{
@@ -39,14 +39,12 @@ use crate::command_facts::{
     TerminalAutosuggestInputState, TerminalCommandFact,
 };
 use crate::privilege_prompt::{
-    PrivilegeInputObservation, PrivilegePromptMatch, PrivilegePromptSnapshot,
-    PrivilegePromptTracker,
+    PrivilegeInputObservation, PrivilegePromptSnapshot, PrivilegePromptTracker,
 };
 use crate::terminal_ui::*;
 use crate::terminal_view::*;
 use oxideterm_terminal_recording::{
-    TerminalRecorder, TerminalRecordingOptions, TerminalRecordingState, TerminalRecordingStatus,
-    TerminalRecordingTheme,
+    TerminalRecorder, TerminalRecordingOptions, TerminalRecordingStatus, TerminalRecordingTheme,
 };
 
 mod image_cache;
@@ -85,16 +83,6 @@ const EDITOR_CLIPBOARD_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TerminalPaneEvent {
     Exited { exit_code: Option<i32> },
-    // CWD payloads stay pane-owned; Workspace only recomputes the active metadata key.
-    CurrentDirectoryChanged,
-    // Recording contents stay pane-owned; consumers only reschedule visible elapsed chrome.
-    RecordingStatusChanged,
-    // Prompt text and credentials stay pane-owned; consumers only recompute the active hint.
-    PrivilegePromptStateChanged,
-    // The event carries intent only; Workspace resolves any credential in the active scope.
-    PrivilegePromptSubmitRequested,
-    // The requested action remains pane-owned until the active Workspace consumes it.
-    ContextActionRequested,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -258,7 +246,6 @@ pub struct TerminalPane {
     serial_reconnect_config: Option<SerialSessionConfig>,
     serial_port_available: Option<bool>,
     focus_handle: FocusHandle,
-    preference_overrides: TerminalUiPreferenceOverrides,
     preferences: TerminalUiPreferences,
     settings: TerminalUiSettings,
     theme: TerminalUiTheme,
@@ -304,8 +291,6 @@ pub struct TerminalPane {
     command_mark_id_aliases: HashMap<String, String>,
     input_tracker: TerminalInputTracker,
     privilege_prompt_tracker: PrivilegePromptTracker,
-    privilege_prompt_expiry_generation: u64,
-    privilege_prompt_expiry_task: Option<gpui::Task<()>>,
     command_fact_ledger: CommandFactLedger,
     recorder: Option<TerminalRecorder>,
     bell_flash: bool,
@@ -434,11 +419,6 @@ fn command_mark_ui_available(enabled: bool, mode: TermMode) -> bool {
     // Command marks describe normal-screen scrollback. A full-screen application or terminal
     // mouse protocol owns the active grid, so stale shell ranges must not remain interactive.
     enabled && !mode.contains(TermMode::ALT_SCREEN) && !mode.intersects(TermMode::MOUSE_MODE)
-}
-
-fn privilege_prompt_input_tracking_available(mode: TermMode) -> bool {
-    // Full-screen applications own input; their navigation is not shell history.
-    !mode.contains(TermMode::ALT_SCREEN)
 }
 
 include!("app_recording.rs");
@@ -647,7 +627,6 @@ impl TerminalPane {
             serial_reconnect_config: None,
             serial_port_available: None,
             focus_handle,
-            preference_overrides: TerminalUiPreferenceOverrides::default(),
             preferences: preferences.clone(),
             settings: TerminalUiSettings::from_preferences(&preferences),
             theme: preferences.theme.clone(),
@@ -696,8 +675,6 @@ impl TerminalPane {
             command_mark_id_aliases: HashMap::new(),
             input_tracker: TerminalInputTracker::default(),
             privilege_prompt_tracker: PrivilegePromptTracker::default(),
-            privilege_prompt_expiry_generation: 0,
-            privilege_prompt_expiry_task: None,
             command_fact_ledger: CommandFactLedger::default(),
             recorder: None,
             bell_flash: false,
@@ -871,7 +848,6 @@ impl TerminalPane {
         self.cwd = Some(cwd.to_string());
         self.cwd_source = Some(TerminalWorkingDirectorySource::VisibleCommand);
         self.pending_cwd = None;
-        cx.emit(TerminalPaneEvent::CurrentDirectoryChanged);
         cx.notify();
     }
 
@@ -889,7 +865,6 @@ impl TerminalPane {
         // shell; OSC 7 or a visible user `cd` will replace it when available.
         self.cwd = Some(cwd.to_string());
         self.cwd_source = Some(TerminalWorkingDirectorySource::SessionDefault);
-        cx.emit(TerminalPaneEvent::CurrentDirectoryChanged);
         cx.notify();
     }
 
@@ -915,7 +890,6 @@ impl TerminalPane {
             command: command.to_string(),
             created_at: Instant::now(),
         });
-        cx.emit(TerminalPaneEvent::CurrentDirectoryChanged);
         cx.notify();
     }
 
@@ -974,61 +948,6 @@ impl TerminalPane {
             .suppresses_fallback_prompt_detection(Instant::now())
     }
 
-    pub fn has_privilege_prompt_inline_hint(&self) -> bool {
-        self.privilege_prompt_inline_hint.is_some()
-    }
-
-    pub(crate) fn sync_terminal_output_events_enabled(&mut self) {
-        let recording_requires_output = self
-            .recorder
-            .as_ref()
-            .is_some_and(|recorder| recorder.status().state == TerminalRecordingState::Recording);
-        // Privilege prompts use compact semantic events at the session output
-        // boundary. Full decoded output is duplicated only for recording.
-        self.terminal
-            .lock()
-            .set_output_events_enabled(recording_requires_output);
-    }
-
-    fn finish_privilege_prompt_tracker_update(
-        &mut self,
-        previous_state_generation: u64,
-        cx: &mut Context<Self>,
-    ) {
-        if self.privilege_prompt_tracker.state_generation() == previous_state_generation {
-            return;
-        }
-        self.schedule_privilege_prompt_expiry(cx);
-        cx.emit(TerminalPaneEvent::PrivilegePromptStateChanged);
-    }
-
-    fn schedule_privilege_prompt_expiry(&mut self, cx: &mut Context<Self>) {
-        self.privilege_prompt_expiry_generation =
-            self.privilege_prompt_expiry_generation.wrapping_add(1);
-        self.privilege_prompt_expiry_task = None;
-        let Some(deadline) = self.privilege_prompt_tracker.next_expiry_deadline() else {
-            return;
-        };
-        let generation = self.privilege_prompt_expiry_generation;
-        let delay = deadline.saturating_duration_since(Instant::now());
-        self.privilege_prompt_expiry_task = Some(cx.spawn(async move |pane, cx| {
-            Timer::after(delay).await;
-            let _ = pane.update(cx, |pane, cx| {
-                if pane.privilege_prompt_expiry_generation != generation {
-                    return;
-                }
-                if !pane.privilege_prompt_tracker.expire_at(Instant::now()) {
-                    pane.schedule_privilege_prompt_expiry(cx);
-                    return;
-                }
-                // Expiry carries no prompt payload. Workspace reads only the
-                // active pane and clears any now-stale inline hint.
-                cx.emit(TerminalPaneEvent::PrivilegePromptStateChanged);
-                cx.notify();
-            });
-        }));
-    }
-
     pub fn take_privilege_prompt_submit_request(&mut self) -> bool {
         let requested = self.privilege_prompt_submit_requested;
         self.privilege_prompt_submit_requested = false;
@@ -1057,8 +976,6 @@ impl TerminalPane {
     }
 
     pub fn set_preferences(&mut self, preferences: TerminalUiPreferences, cx: &mut Context<Self>) {
-        let mut preferences = preferences;
-        self.preference_overrides.apply_to(&mut preferences);
         if self.preferences.terminal_encoding != preferences.terminal_encoding {
             self.terminal
                 .lock()
@@ -1096,28 +1013,6 @@ impl TerminalPane {
         self.pending_pty_resize = None;
         self.reset_cursor_blink();
         cx.notify();
-    }
-
-    pub fn with_preference_overrides(
-        mut self,
-        preference_overrides: TerminalUiPreferenceOverrides,
-    ) -> Self {
-        // Callers apply these overrides before constructing the backend. The
-        // pane retains them only to preserve host behavior on later refreshes.
-        self.preference_overrides = preference_overrides;
-        self
-    }
-
-    pub fn set_preference_overrides(
-        &mut self,
-        preference_overrides: TerminalUiPreferenceOverrides,
-        application_preferences: TerminalUiPreferences,
-        cx: &mut Context<Self>,
-    ) {
-        // A saved host edit changes only this session-owned protocol behavior;
-        // all unrelated visual preferences continue to come from the app.
-        self.preference_overrides = preference_overrides;
-        self.set_preferences(application_preferences, cx);
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
@@ -1224,11 +1119,6 @@ impl TerminalPane {
         self.command_mark_id_aliases.clear();
         self.input_tracker.reset();
         self.privilege_prompt_tracker = PrivilegePromptTracker::default();
-        self.privilege_prompt_expiry_generation =
-            self.privilege_prompt_expiry_generation.wrapping_add(1);
-        self.privilege_prompt_expiry_task = None;
-        self.sync_terminal_output_events_enabled();
-        cx.emit(TerminalPaneEvent::PrivilegePromptStateChanged);
         self.command_fact_ledger = CommandFactLedger::default();
         self.last_pty_resize = Some(resize);
         self.pending_pty_resize = None;
@@ -1469,81 +1359,6 @@ impl TerminalPane {
         self.send_text(&input, cx);
     }
 
-    pub fn send_command_sender_line(&mut self, line: &str, cx: &mut Context<Self>) -> bool {
-        let mut input = zeroize::Zeroizing::new(line.replace("\r\n", "\r").replace('\n', "\r"));
-        input.push('\r');
-        self.send_command_sender_text(&input, cx)
-    }
-
-    pub fn send_command_sender_text_chunk(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
-        if text.is_empty() {
-            return false;
-        }
-        self.send_command_sender_text(text, cx)
-    }
-
-    pub fn send_command_sender_raw_bytes(&mut self, bytes: &[u8], cx: &mut Context<Self>) -> bool {
-        if bytes.is_empty() || !self.terminal_accepts_input() {
-            return false;
-        }
-        let Some(bytes) = self.apply_plugin_input_interceptor(bytes) else {
-            return false;
-        };
-        let bytes = zeroize::Zeroizing::new(bytes);
-        // Hex input is an opaque protocol payload. Recheck lifecycle after the
-        // plugin hook, then bypass text recording and command observation.
-        let write_result = {
-            let mut terminal = self.terminal.lock();
-            if self.input_locked || self.terminal_exited || !terminal.is_interactive() {
-                return false;
-            }
-            terminal.write_protocol_bytes(&bytes)
-        };
-        if write_result.is_err() {
-            return false;
-        }
-        self.last_terminal_input = Instant::now();
-        self.reset_cursor_blink();
-        self.restore_live_output_after_user_input();
-        cx.notify();
-        true
-    }
-
-    fn send_command_sender_text(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
-        if text.is_empty() || !self.terminal_accepts_input() {
-            return false;
-        }
-        let Some(bytes) = self.apply_plugin_input_interceptor(text.as_bytes()) else {
-            return false;
-        };
-        let bytes = zeroize::Zeroizing::new(bytes);
-        // The plugin can run arbitrary code, so the lifecycle check and write
-        // must share the same terminal-session lock after interception.
-        let write_result = {
-            let mut terminal = self.terminal.lock();
-            if self.input_locked || self.terminal_exited || !terminal.is_interactive() {
-                return false;
-            }
-            match std::str::from_utf8(&bytes) {
-                Ok(text) => terminal.write_text(text),
-                Err(_) => terminal.write_protocol_bytes(&bytes),
-            }
-        };
-        if write_result.is_err() {
-            return false;
-        }
-
-        // Scheduled input does not prove that the remote prompt accepted or
-        // began a command. Keep it out of marks, AI facts, autosuggest, history,
-        // and asciicast input; only update the privilege prompt state safely.
-        self.observe_privilege_input("command-sender-text", &bytes, Instant::now(), cx);
-        self.last_terminal_input = Instant::now();
-        self.reset_cursor_blink();
-        self.restore_live_output_after_user_input();
-        cx.notify();
-        true
-    }
-
     pub fn send_internal_control_command_line(
         &mut self,
         command: &str,
@@ -1577,7 +1392,6 @@ impl TerminalPane {
     pub fn send_privilege_secret_input_bytes(
         &mut self,
         bytes: &[u8],
-        confirmed_prompt: PrivilegePromptMatch,
         cx: &mut Context<Self>,
     ) -> bool {
         if bytes.is_empty() || !self.terminal_accepts_input() {
@@ -1588,10 +1402,8 @@ impl TerminalPane {
         // directly to the PTY. It must not pass through plugin interception,
         // autosuggest/history observation, AI context, or terminal recording.
         if self.terminal.lock().write_protocol_bytes(bytes).is_ok() {
-            let previous_state_generation = self.privilege_prompt_tracker.state_generation();
             self.privilege_prompt_tracker
-                .mark_confirmed_secret_filled(confirmed_prompt, Instant::now());
-            self.finish_privilege_prompt_tracker_update(previous_state_generation, cx);
+                .mark_secret_filled(Instant::now());
             self.clear_privilege_prompt_inline_hint();
             self.last_terminal_input = Instant::now();
             self.reset_cursor_blink();
@@ -1717,18 +1529,9 @@ impl TerminalPane {
         }
 
         let cleared_command_mark_selection = self.clear_command_mark_selection_for_tui_mode(mode);
-        let cleared_privilege_prompt_hint = if mode.contains(TermMode::ALT_SCREEN) {
-            // Full-screen applications own the alternate screen and Enter.
-            // Clear terminal-local ghost text even when no tracker event fires
-            // during the mode transition.
-            self.clear_privilege_prompt_inline_hint()
-        } else {
-            false
-        };
         let mut needs_notify = event_effect.needs_notify || report.changed;
         if (self.preferences.show_performance_overlay && render_stats_changed)
             || cleared_command_mark_selection
-            || cleared_privilege_prompt_hint
         {
             needs_notify = true;
         }
@@ -1736,7 +1539,6 @@ impl TerminalPane {
             needs_notify = true;
         }
         if self.expire_pending_terminal_cwd(now) {
-            cx.emit(TerminalPaneEvent::CurrentDirectoryChanged);
             needs_notify = true;
         }
         if needs_notify {
@@ -1957,16 +1759,11 @@ impl TerminalPane {
     ) -> TerminalEventEffect {
         match event {
             TerminalEvent::Output(bytes) => {
+                self.privilege_prompt_tracker
+                    .observe_output_bytes(&bytes, Instant::now());
                 if let Some(recorder) = self.recorder.as_mut() {
                     recorder.record_output(&bytes);
                 }
-                TerminalEventEffect::default()
-            }
-            TerminalEvent::PrivilegePrompt(event) => {
-                let previous_state_generation = self.privilege_prompt_tracker.state_generation();
-                self.privilege_prompt_tracker
-                    .observe_terminal_prompt_event(event, Instant::now());
-                self.finish_privilege_prompt_tracker_update(previous_state_generation, cx);
                 TerminalEventEffect::default()
             }
             TerminalEvent::TitleChanged(title) => {
@@ -2136,14 +1933,8 @@ impl TerminalPane {
                                 // submitted-command source. Feed it to the
                                 // privilege tracker so bare sudo prompts do not
                                 // depend on lossy key/IME reconstruction.
-                                let previous_state_generation =
-                                    self.privilege_prompt_tracker.state_generation();
                                 self.privilege_prompt_tracker
                                     .observe_submitted_command(command, Instant::now());
-                                self.finish_privilege_prompt_tracker_update(
-                                    previous_state_generation,
-                                    cx,
-                                );
                             }
                             self.command_fact_ledger.create_from_mark(&mark);
                             self.command_marks.push(mark);
@@ -2197,7 +1988,6 @@ impl TerminalPane {
                 self.cwd_shell_integration_status = TerminalCwdShellIntegrationStatus::Active;
                 self.pending_cwd = None;
                 self.cwd_host = host;
-                cx.emit(TerminalPaneEvent::CurrentDirectoryChanged);
                 TerminalEventEffect::notify()
             }
             TerminalEvent::ClipboardStore(text) => {
@@ -2314,6 +2104,11 @@ impl TerminalPane {
         let Some(command) = self.observe_autosuggest_input_bytes(bytes, cx) else {
             return;
         };
+        // The autosuggest input tracker owns the current editable command line.
+        // Arm sudo/su detection from its completed command on Enter so bare
+        // prompts such as macOS `Password:` do not depend on viewport parsing.
+        self.privilege_prompt_tracker
+            .observe_submitted_command(&command, now);
         self.observe_current_directory_submitted_command(&command, cx);
         if self.shell_integration_status.detected
             || !self.settings.command_marks_user_input_observed
@@ -2334,14 +2129,9 @@ impl TerminalPane {
         now: Instant,
         cx: &mut Context<Self>,
     ) -> PrivilegeInputObservation {
-        if !privilege_prompt_input_tracking_available(self.terminal.lock().mode()) {
-            return PrivilegeInputObservation::Normal;
-        }
-        let previous_state_generation = self.privilege_prompt_tracker.state_generation();
         let observation = self
             .privilege_prompt_tracker
             .observe_user_input_bytes(bytes, now);
-        self.finish_privilege_prompt_tracker_update(previous_state_generation, cx);
         log_privilege_prompt_terminal_pane(format_args!(
             "input observed: source={} has_cr={} has_lf={} observation={}",
             source,
@@ -2721,14 +2511,6 @@ mod tests {
         assert!(!command_mark_ui_available(
             true,
             TermMode::MOUSE_REPORT_CLICK
-        ));
-    }
-
-    #[test]
-    fn privilege_prompt_input_tracking_ignores_full_screen_application_keys() {
-        assert!(privilege_prompt_input_tracking_available(TermMode::empty()));
-        assert!(!privilege_prompt_input_tracking_available(
-            TermMode::ALT_SCREEN
         ));
     }
 

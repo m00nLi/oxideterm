@@ -9,4 +9,3 @@ mod preview_editor;
 mod transfers;
 
 pub(in crate::workspace::sftp) use menus_conflicts::sftp_extract_archive_kind;
-pub(in crate::workspace::sftp) use transfers::SftpTransferLaunch;

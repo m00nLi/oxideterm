@@ -255,8 +255,6 @@
       "copy_on_select_hint": "一旦滑鼠選取範圍穩定後，自動將終端機文字複製到系統剪貼簿",
       "middle_click_paste": "中鍵貼上",
       "middle_click_paste_hint": "當終端機未處於滑鼠追蹤模式時，使用中鍵貼上目前剪貼簿內容",
-      "right_click_paste": "右鍵直接貼上",
-      "right_click_paste_hint": "當終端機未處於滑鼠追蹤模式時，直接按右鍵貼上目前剪貼簿內容；使用 Shift+右鍵開啟內容選單",
       "open_links_with_modifier": "按住修飾鍵開啟連結",
       "open_links_with_modifier_hint": "僅在按住 Ctrl 點擊時開啟終端機連結；macOS 使用 Command 點擊。關閉後可直接點擊開啟連結",
       "smart_copy": "智慧 Ctrl+C 複製",
@@ -267,9 +265,9 @@
       "selection_requires_shift_hint": "啟用後，普通拖曳會優先保留終端互動；只有 Shift + 拖曳才會開始文字選取",
       "free_type_mode": "自由輸入模式",
       "backspace_sequence": "退格鍵",
-      "backspace_sequence_hint": "退格鍵傳送序列的應用程式預設值；已儲存的主機可個別覆寫。",
+      "backspace_sequence_hint": "選擇退格鍵傳送給傳統終端程式的序列。預設為 DEL (0x7F)",
       "delete_sequence": "刪除鍵",
-      "delete_sequence_hint": "刪除鍵傳送序列的應用程式預設值；已儲存的主機可個別覆寫。",
+      "delete_sequence_hint": "選擇刪除鍵傳送給傳統終端程式的序列。預設為 CSI 3~",
       "free_type_mode_hint": "在目前 Shell 指令中使用滑鼠編輯：點擊移動游標、在成對括號內雙擊以選取其中內容、拖曳已選指令文字以移動、按住 Ctrl 拖曳以複製，或按住 Alt 拖曳以取代目前指令。全螢幕 Vim、Neovim 與 Emacs 必須明確載入 OxideTerm 轉接器；其他全螢幕與滑鼠追蹤程式仍自行處理輸入",
       "in_band_transfer": {
         "title": "帶內檔案傳輸",
@@ -419,7 +417,7 @@
         }
       },
       "encoding": "Terminal Encoding",
-      "encoding_hint": "本機終端與未個別覆寫主機所用的應用程式預設值；已儲存的主機可選擇自己的編碼。",
+      "encoding_hint": "Text encoding for terminal input/output. Keep UTF-8 unless the remote host uses a legacy locale.",
       "autosuggest_local_history": "命令列：本機 Shell 歷史",
       "autosuggest_local_history_hint": "將本機 zsh/bash/fish 歷史作為命令列歷史面板來源。不會啟用終端內 ghost text。",
       "command_bar": "底部命令列",
@@ -448,8 +446,6 @@
       "gpu_canvas_experiments_hint": "啟用實驗性 GPU 視覺化。不取代主終端機渲染器。",
       "quick_commands": "快捷命令",
       "quick_commands_hint": "在命令栏中显示内置快捷命令库。",
-      "quick_bar": "快捷命令列",
-      "quick_bar_hint": "在命令列上方以可選橫向工具列顯示已儲存的快捷命令。",
       "quick_commands_confirm": "执行快捷命令前确认",
       "quick_commands_confirm_hint": "通过 Run 按钮执行快捷命令前先询问确认。",
       "quick_commands_toast": "快捷命令提示",
@@ -470,6 +466,7 @@
       "page_awareness": "感知與整合",
       "page_transfer": "傳輸",
       "page_highlight": "醒目標示",
+      "page_keepalive": "保活",
       "page_local": "本機"
     },
     "appearance": {
@@ -967,7 +964,10 @@
       "acp_agent_error_command_not_found": "找不到命令",
       "acp_agent_error_config": "設定無效",
       "acp_agent_error_initialize": "初始化失敗",
-      "acp_agent_error_unknown": "未知錯誤"
+      "acp_agent_error_unknown": "未知錯誤",
+      "acp_agent_auth_token": "認證權杖",
+      "acp_agent_auth_token_placeholder": "將權杖儲存到鑰匙圈",
+      "acp_agent_auth_token_saved": "權杖已儲存到鑰匙圈"
     },
     "sftp": {
       "title": "檔案傳輸",
@@ -1151,8 +1151,8 @@
       "clear_skip": "清除",
       "portable_mode": "可攜模式",
       "portable_mode_hint": "目前工作階段正使用可攜模式啟動流程，資料會保存在可執行檔旁邊。",
-      "portable_updates": "可攜版自動更新",
-      "portable_updates_hint": "自動檢查與應用程式內更新只會取代程式檔案，並保留可攜資料、外掛程式、金鑰庫、portable.json 與自訂資料目錄。",
+      "updates_manual_only": "僅支援手動更新",
+      "updates_manual_only_hint": "可攜模式下已停用自動檢查更新與應用內安裝。需要更新時，請以較新的 OxideTerm 版本取代整個可攜資料夾。",
       "update_channel": "更新通道",
       "update_channel_hint": "穩定版、Beta 與 GPUI Preview 使用彼此獨立的更新通道",
       "channel_stable": "穩定版",

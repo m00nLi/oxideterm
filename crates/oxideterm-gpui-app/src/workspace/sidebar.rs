@@ -192,11 +192,9 @@ mod sessions;
 mod state;
 mod titlebar;
 
-#[cfg(test)]
-pub(in crate::workspace) use ai::AiCompactionDeliveryKind;
 pub(in crate::workspace) use ai::{
-    AiCompactionDelivery, AiCompactionDeliverySender, AiInlinePanelState, AiStreamDelivery,
-    AiStreamDeliveryEvent, AiStreamDeliverySender, ai_now_ms,
+    AiCompactionDelivery, AiInlinePanelState, AiModelSelectorProbeDelivery, AiPendingChatStream,
+    AiStreamDelivery,
 };
 use helpers::*;
 pub(in crate::workspace) use state::context_sidebar_panel_visible;

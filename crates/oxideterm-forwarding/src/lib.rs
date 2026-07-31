@@ -46,14 +46,14 @@ pub use error::ForwardingError;
 #[cfg(feature = "runtime")]
 pub(crate) use error::{tauri_dynamic_bind_error, tauri_local_bind_error};
 #[cfg(feature = "runtime")]
-pub use events::{ForwardEvent, ForwardEventDeliverySender};
+pub use events::ForwardEvent;
 #[cfg(feature = "runtime")]
 pub use manager::ForwardingManager;
 pub use model::{ForwardRule, ForwardStats, ForwardStatus, ForwardType, ForwardUpdate};
 #[cfg(feature = "runtime")]
 pub use profiler::PortDetectionProfiler;
 #[cfg(feature = "runtime")]
-pub use registry::{ForwardingRegistry, ForwardingShutdownReport};
+pub use registry::ForwardingRegistry;
 #[cfg(not(feature = "runtime"))]
 pub use registry_saved::ForwardingRegistry;
 pub use saved::{

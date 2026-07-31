@@ -8,8 +8,7 @@ use std::{collections::HashMap, time::Duration};
 use oxideterm_i18n::I18n;
 use oxideterm_notification_center::{EventCategory, EventLogEntry, EventSeverity};
 use oxideterm_ssh::{
-    ConnectionConsumer, ConnectionInfo, ConnectionState, NodeMetadataSnapshot, NodeOrigin,
-    NodeReadiness,
+    ConnectionConsumer, ConnectionInfo, ConnectionState, NodeReadiness, NodeTreeSnapshotNode,
 };
 use serde_json::Value;
 
@@ -29,7 +28,7 @@ pub(super) fn test_terminal_hook(
 
 pub(super) fn test_host_api_snapshot() -> NativePluginHostApiSnapshot {
     NativePluginHostApiSnapshot {
-        registry: super::super::plugin_host::NativePluginRegistry::default().into(),
+        registry: super::super::plugin_host::NativePluginRegistry::default(),
         i18n: I18n::new(oxideterm_i18n::Locale::ZhCn),
         settings: serde_json::to_value(oxideterm_settings::PersistedSettings::default()).unwrap(),
         locale: "zh-CN".to_string(),
@@ -200,37 +199,57 @@ pub(super) fn test_host_api_snapshot_with_sessions() -> NativePluginHostApiSnaps
     let root_id = oxideterm_ssh::NodeId::new("node-1");
     let child_id = oxideterm_ssh::NodeId::new("node-2");
     let nodes = vec![
-        NodeMetadataSnapshot {
+        NodeTreeSnapshotNode {
             id: root_id.clone(),
             parent_id: None,
             children_ids: vec![child_id.clone()],
             depth: 0,
-            origin: NodeOrigin::Direct,
-            host: "example.test".to_string(),
-            port: 22,
-            username: "deploy".to_string(),
-            readiness: NodeReadiness::Ready,
-            error: None,
+            config: oxideterm_ssh::SshConfig {
+                host: "example.test".to_string(),
+                port: 22,
+                username: "deploy".to_string(),
+                ..oxideterm_ssh::SshConfig::default()
+            },
+            origin: oxideterm_ssh::NodeOrigin::Direct,
+            state: oxideterm_ssh::NodeState {
+                readiness: NodeReadiness::Ready,
+                error: None,
+                sftp_ready: false,
+                sftp_cwd: None,
+                ws_endpoint: None,
+            },
             connection_id: Some("conn-1".to_string()),
             terminal_session_id: Some("term-legacy".to_string()),
+            terminal_endpoints: Vec::new(),
             sftp_session_id: None,
             created_at_ms: 1,
+            generation: 1,
         },
-        NodeMetadataSnapshot {
+        NodeTreeSnapshotNode {
             id: child_id,
             parent_id: Some(root_id),
             children_ids: Vec::new(),
             depth: 1,
-            origin: NodeOrigin::Direct,
-            host: "child.test".to_string(),
-            port: 2222,
-            username: "root".to_string(),
-            readiness: NodeReadiness::Connecting,
-            error: None,
+            config: oxideterm_ssh::SshConfig {
+                host: "child.test".to_string(),
+                port: 2222,
+                username: "root".to_string(),
+                ..oxideterm_ssh::SshConfig::default()
+            },
+            origin: oxideterm_ssh::NodeOrigin::DrillDown { timestamp: 1 },
+            state: oxideterm_ssh::NodeState {
+                readiness: NodeReadiness::Connecting,
+                error: None,
+                sftp_ready: false,
+                sftp_cwd: None,
+                ws_endpoint: None,
+            },
             connection_id: None,
             terminal_session_id: None,
+            terminal_endpoints: Vec::new(),
             sftp_session_id: Some("sftp-2".to_string()),
             created_at_ms: 2,
+            generation: 1,
         },
     ];
     let titles = HashMap::from([("node-1".to_string(), "Production".to_string())]);
@@ -279,7 +298,7 @@ pub(super) fn test_host_api_snapshot_with_declared_setting() -> NativePluginHost
     let registry = super::super::plugin_host::NativePluginRegistry::discover(&settings_path);
     let _ = std::fs::remove_dir_all(&temp_dir);
     NativePluginHostApiSnapshot {
-        registry: registry.into(),
+        registry,
         ..test_host_api_snapshot()
     }
 }
@@ -315,7 +334,7 @@ pub(super) fn test_host_api_snapshot_with_declared_api_commands() -> NativePlugi
     let registry = super::super::plugin_host::NativePluginRegistry::discover(&settings_path);
     let _ = std::fs::remove_dir_all(&temp_dir);
     NativePluginHostApiSnapshot {
-        registry: registry.into(),
+        registry,
         ..test_host_api_snapshot()
     }
 }
@@ -354,8 +373,8 @@ pub(super) fn test_connection_store_with_agent_connection(
             identity_agent: None,
             agent_forwarding_socket: None,
             legacy_ssh_compatibility: false,
+            skip_remote_env_detection: false,
             post_connect_command: None,
-            terminal: oxideterm_connections::ConnectionTerminalOptions::default(),
         })
         .unwrap();
     store

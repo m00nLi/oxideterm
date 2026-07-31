@@ -40,4 +40,6 @@ audit-evidence-archive/
 .agents/skills/
 docs/remote-agent-terminal-awareness-design.md
 .qoder/
-.hallmark/
+
+# Development/debug documents (not for remote)
+dev-docs/

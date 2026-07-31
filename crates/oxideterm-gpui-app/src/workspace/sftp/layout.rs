@@ -13,7 +13,7 @@ fn adjusted_sftp_queue_height(start_height: f32, delta_y: f32, viewport_height: 
 }
 
 impl WorkspaceApp {
-    fn sftp_pane_layout_width(&self, window: &Window, cx: &App) -> f32 {
+    fn sftp_pane_layout_width(&self, window: &Window) -> f32 {
         let zen_mode = self.settings_store.settings().sidebar_ui.zen_mode;
         let mut width = f32::from(window.viewport_size().width);
         if !zen_mode {
@@ -22,20 +22,16 @@ impl WorkspaceApp {
                 width -= self.sidebar_panel_width();
             }
             if self.context_sidebar_rendered {
-                width -= self.ai_entity.read(cx).chat_ui().sidebar_width;
+                width -= self.ai.chat.sidebar_width;
             }
         }
         // The split ratio is applied inside the SFTP root padding.
         (width - SFTP_ROOT_PADDING * 2.0).max(1.0)
     }
 
-    pub(in crate::workspace) fn sftp_queue_height_for_window(
-        &self,
-        window: &Window,
-        cx: &App,
-    ) -> f32 {
+    pub(in crate::workspace) fn sftp_queue_height_for_window(&self, window: &Window) -> f32 {
         adjusted_sftp_queue_height(
-            self.sftp_view.read(cx).queue_height,
+            self.sftp_view.queue_height,
             0.0,
             f32::from(window.viewport_size().height),
         )
@@ -46,13 +42,11 @@ impl WorkspaceApp {
         event: &MouseDownEvent,
         cx: &mut Context<Self>,
     ) {
-        self.sftp_view.update(cx, |sftp, cx| {
-            sftp.pane_resize_drag = Some(SftpPaneResizeDrag {
-                start_cursor_x: event.position.x,
-                start_ratio: sftp.pane_split_ratio,
-            });
-            cx.notify();
+        self.sftp_view.pane_resize_drag = Some(SftpPaneResizeDrag {
+            start_cursor_x: event.position.x,
+            start_ratio: self.sftp_view.pane_split_ratio,
         });
+        cx.notify();
     }
 
     pub(in crate::workspace) fn update_sftp_pane_resize(
@@ -61,7 +55,7 @@ impl WorkspaceApp {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(drag) = self.sftp_view.read(cx).pane_resize_drag else {
+        let Some(drag) = self.sftp_view.pane_resize_drag else {
             return;
         };
         if !event.dragging() {
@@ -72,34 +66,28 @@ impl WorkspaceApp {
         let next_ratio = adjusted_sftp_pane_ratio(
             drag.start_ratio,
             f32::from(event.position.x - drag.start_cursor_x),
-            self.sftp_pane_layout_width(window, cx),
+            self.sftp_pane_layout_width(window),
         );
-        self.sftp_view.update(cx, |sftp, cx| {
-            if (next_ratio - sftp.pane_split_ratio).abs() >= f32::EPSILON {
-                sftp.pane_split_ratio = next_ratio;
-                cx.notify();
-            }
-        });
+        if (next_ratio - self.sftp_view.pane_split_ratio).abs() >= f32::EPSILON {
+            self.sftp_view.pane_split_ratio = next_ratio;
+            cx.notify();
+        }
     }
 
     pub(in crate::workspace) fn finish_sftp_pane_resize(&mut self, cx: &mut Context<Self>) {
-        self.sftp_view.update(cx, |sftp, cx| {
-            if sftp.pane_resize_drag.take().is_some() {
-                cx.notify();
-            }
-        });
+        if self.sftp_view.pane_resize_drag.take().is_some() {
+            cx.notify();
+        }
     }
 
     pub(in crate::workspace) fn reset_sftp_pane_split(&mut self, cx: &mut Context<Self>) {
-        self.sftp_view.update(cx, |sftp, cx| {
-            let ratio_changed =
-                (sftp.pane_split_ratio - SFTP_PANE_SPLIT_DEFAULT_RATIO).abs() >= f32::EPSILON;
-            let drag_cleared = sftp.pane_resize_drag.take().is_some();
-            if ratio_changed || drag_cleared {
-                sftp.pane_split_ratio = SFTP_PANE_SPLIT_DEFAULT_RATIO;
-                cx.notify();
-            }
-        });
+        let ratio_changed =
+            (self.sftp_view.pane_split_ratio - SFTP_PANE_SPLIT_DEFAULT_RATIO).abs() >= f32::EPSILON;
+        let drag_cleared = self.sftp_view.pane_resize_drag.take().is_some();
+        if ratio_changed || drag_cleared {
+            self.sftp_view.pane_split_ratio = SFTP_PANE_SPLIT_DEFAULT_RATIO;
+            cx.notify();
+        }
     }
 
     pub(in crate::workspace) fn start_sftp_queue_resize(
@@ -108,15 +96,13 @@ impl WorkspaceApp {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let current_height = self.sftp_queue_height_for_window(window, cx);
-        self.sftp_view.update(cx, |sftp, cx| {
-            sftp.queue_height = current_height;
-            sftp.queue_resize_drag = Some(SftpQueueResizeDrag {
-                start_cursor_y: event.position.y,
-                start_height: current_height,
-            });
-            cx.notify();
+        let current_height = self.sftp_queue_height_for_window(window);
+        self.sftp_view.queue_height = current_height;
+        self.sftp_view.queue_resize_drag = Some(SftpQueueResizeDrag {
+            start_cursor_y: event.position.y,
+            start_height: current_height,
         });
+        cx.notify();
     }
 
     pub(in crate::workspace) fn update_sftp_queue_resize(
@@ -125,7 +111,7 @@ impl WorkspaceApp {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(drag) = self.sftp_view.read(cx).queue_resize_drag else {
+        let Some(drag) = self.sftp_view.queue_resize_drag else {
             return;
         };
         if !event.dragging() {
@@ -137,20 +123,16 @@ impl WorkspaceApp {
             f32::from(event.position.y - drag.start_cursor_y),
             f32::from(window.viewport_size().height),
         );
-        self.sftp_view.update(cx, |sftp, cx| {
-            if (next_height - sftp.queue_height).abs() >= f32::EPSILON {
-                sftp.queue_height = next_height;
-                cx.notify();
-            }
-        });
+        if (next_height - self.sftp_view.queue_height).abs() >= f32::EPSILON {
+            self.sftp_view.queue_height = next_height;
+            cx.notify();
+        }
     }
 
     pub(in crate::workspace) fn finish_sftp_queue_resize(&mut self, cx: &mut Context<Self>) {
-        self.sftp_view.update(cx, |sftp, cx| {
-            if sftp.queue_resize_drag.take().is_some() {
-                cx.notify();
-            }
-        });
+        if self.sftp_view.queue_resize_drag.take().is_some() {
+            cx.notify();
+        }
     }
 
     pub(in crate::workspace) fn reset_sftp_queue_height(
@@ -163,14 +145,12 @@ impl WorkspaceApp {
             0.0,
             f32::from(window.viewport_size().height),
         );
-        self.sftp_view.update(cx, |sftp, cx| {
-            let height_changed = (sftp.queue_height - default_height).abs() >= f32::EPSILON;
-            let drag_cleared = sftp.queue_resize_drag.take().is_some();
-            if height_changed || drag_cleared {
-                sftp.queue_height = default_height;
-                cx.notify();
-            }
-        });
+        let height_changed = (self.sftp_view.queue_height - default_height).abs() >= f32::EPSILON;
+        let drag_cleared = self.sftp_view.queue_resize_drag.take().is_some();
+        if height_changed || drag_cleared {
+            self.sftp_view.queue_height = default_height;
+            cx.notify();
+        }
     }
 }
 

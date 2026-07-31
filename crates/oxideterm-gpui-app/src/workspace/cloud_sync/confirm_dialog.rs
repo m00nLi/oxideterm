@@ -11,16 +11,9 @@ impl WorkspaceApp {
         event: &KeyDownEvent,
         cx: &mut Context<Self>,
     ) -> bool {
-        let (has_confirm, confirm_phase, focused_action) = {
-            let cloud_sync = self.cloud_sync.read(cx);
-            (
-                cloud_sync.view.confirm.is_some(),
-                cloud_sync.view.confirm_presence.phase(),
-                cloud_sync.view.confirm_focused_action,
-            )
-        };
-        if !has_confirm
-            || confirm_phase != oxideterm_gpui_ui::motion::ExitPhase::Visible
+        if self.cloud_sync.view.confirm.is_none()
+            || self.cloud_sync.view.confirm_presence.phase()
+                != oxideterm_gpui_ui::motion::ExitPhase::Visible
             || event.keystroke.modifiers.platform
             || event.keystroke.modifiers.control
         {
@@ -31,7 +24,7 @@ impl WorkspaceApp {
             event.keystroke.key.as_str(),
             event.keystroke.modifiers.shift,
             &CONFIRM_DIALOG_FOOTER_ACTIONS,
-            focused_action,
+            self.cloud_sync.view.confirm_focused_action,
             ConfirmDialogAction::Cancel,
         ) {
             Some(browser_behavior::ModalFooterKeyAction::Cancel) => {
@@ -40,10 +33,8 @@ impl WorkspaceApp {
                 true
             }
             Some(browser_behavior::ModalFooterKeyAction::Focus(action)) => {
-                self.cloud_sync.update(cx, |cloud_sync, cx| {
-                    cloud_sync.view.confirm_focused_action = Some(action);
-                    cx.notify();
-                });
+                self.cloud_sync.view.confirm_focused_action = Some(action);
+                cx.notify();
                 true
             }
             Some(browser_behavior::ModalFooterKeyAction::Activate(action)) => {
@@ -62,15 +53,7 @@ impl WorkspaceApp {
         &self,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (confirm, confirm_phase, focused_action) = {
-            let cloud_sync = self.cloud_sync.read(cx);
-            (
-                cloud_sync.view.confirm.clone(),
-                cloud_sync.view.confirm_presence.phase(),
-                cloud_sync.view.confirm_focused_action,
-            )
-        };
-        let Some(confirm) = confirm else {
+        let Some(confirm) = self.cloud_sync.view.confirm.clone() else {
             return div().into_any_element();
         };
         let copy = cloud_sync_confirm_copy_spec(&confirm);
@@ -104,7 +87,7 @@ impl WorkspaceApp {
         oxideterm_gpui_ui::confirm::confirm_dialog_with_focus_motion(
             &self.tokens,
             "cloud-sync-confirm-motion",
-            confirm_phase,
+            self.cloud_sync.view.confirm_presence.phase(),
             ConfirmDialogView {
                 variant: copy.variant,
                 title: div()
@@ -150,7 +133,7 @@ impl WorkspaceApp {
                     ))
                     .into_any_element(),
             },
-            focused_action,
+            self.cloud_sync.view.confirm_focused_action,
             cx.listener(
                 |this: &mut WorkspaceApp, _event, _window, cx: &mut Context<WorkspaceApp>| {
                     this.cancel_cloud_sync_confirm(cx);

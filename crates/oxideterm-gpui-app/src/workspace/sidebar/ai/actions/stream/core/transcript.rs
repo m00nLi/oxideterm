@@ -4,9 +4,11 @@ impl WorkspaceApp {
         conversation_id: &str,
         message_id: &str,
         status: &str,
-        cx: &App,
     ) {
-        let Some(message) = self.ai_entity.read(cx).conversation_state()
+        let Some(message) = self
+            .ai
+            .chat
+            .conversation_state
             .conversations
             .iter()
             .find(|conversation| conversation.id == conversation_id)
@@ -65,7 +67,7 @@ impl WorkspaceApp {
             Some(message_id.to_string()),
             now,
         ));
-        self.persist_ai_transcript_entries(conversation_id.to_string(), entries, cx);
+        self.persist_ai_transcript_entries(conversation_id.to_string(), entries);
     }
 
     pub(in crate::workspace) fn persist_ai_removed_assistant_turn_end(
@@ -73,7 +75,6 @@ impl WorkspaceApp {
         conversation_id: &str,
         message_id: &str,
         status: &str,
-        cx: &App,
     ) {
         let now = ai_now_ms();
         self.persist_ai_transcript_entries(
@@ -92,7 +93,6 @@ impl WorkspaceApp {
                 Some(message_id.to_string()),
                 now,
             )],
-            cx,
         );
     }
 
@@ -108,7 +108,6 @@ impl WorkspaceApp {
         synthetic: bool,
         retry_attempt: Option<usize>,
         hard_deny_triggered: bool,
-        cx: &App,
     ) {
         let now = ai_now_ms();
         let mut transcript_entries = Vec::new();
@@ -129,11 +128,7 @@ impl WorkspaceApp {
                 now,
             ));
         }
-        self.persist_ai_transcript_entries(
-            conversation_id.to_string(),
-            transcript_entries,
-            cx,
-        );
+        self.persist_ai_transcript_entries(conversation_id.to_string(), transcript_entries);
         self.persist_ai_diagnostic_events(
             conversation_id.to_string(),
             vec![ai_diagnostic_event(
@@ -153,7 +148,6 @@ impl WorkspaceApp {
                     "hardDenyTriggered": hard_deny_triggered,
                 })),
             )],
-            cx,
         );
     }
 
@@ -170,7 +164,6 @@ impl WorkspaceApp {
         compacted_until_message_id: Option<String>,
         source: Option<&str>,
         timestamp: i64,
-        cx: &App,
     ) {
         let round_id_for_diagnostic = round_id.clone();
         self.persist_ai_transcript_entries(
@@ -201,7 +194,6 @@ impl WorkspaceApp {
                 Some(message_id.to_string()),
                 timestamp,
             )],
-            cx,
         );
         self.persist_ai_diagnostic_events(
             conversation_id.to_string(),
@@ -220,7 +212,6 @@ impl WorkspaceApp {
                     "source": source,
                 })),
             )],
-            cx,
         );
     }
 }

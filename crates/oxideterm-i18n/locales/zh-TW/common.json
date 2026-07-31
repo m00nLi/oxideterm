@@ -115,9 +115,6 @@
   "common": {
     "enabled": "已啟用",
     "disabled": "已停用",
-    "status": {
-      "error": "錯誤"
-    },
     "confirm": {
       "disconnect_node": "確定要中斷連線「{{name}}」及其所有子節點嗎？"
     },
@@ -834,7 +831,6 @@
     "enable_success": "{{name}} 已啟用。",
     "disable_success": "{{name}} 已停用。",
     "load_failed_default": "外掛程式載入失敗。",
-    "runtime_failure": "外掛程式執行階段操作失敗。",
     "error_copied": "已複製外掛程式錯誤。",
     "open_dir_create_failed": "無法建立外掛程式目錄：{{message}}",
     "open_dir_failed": "無法開啟外掛程式目錄：{{message}}",
@@ -1126,6 +1122,9 @@
     "copy_title": "複製標題",
     "detach_to_window": "移到新視窗",
     "return_to_main_window": "移回主視窗",
+    "rename_tab": "重新命名分頁",
+    "reset_title": "恢復預設標題",
+    "rename_placeholder": "分頁名稱",
     "detached_tab_closed": "此分頁已關閉。",
     "confirm_close_terminal_title": "關閉 SSH 工作階段",
     "confirm_close_terminal_desc": "要關閉這個 SSH 終端機分頁嗎？遠端工作階段中尚未保存的內容可能會遺失。",
@@ -1180,25 +1179,7 @@
     "vnc_legacy_security_description": "此安全方式無法保護伺服器身分，並可能使工作階段遭到攔截。僅應在可信任且受保護的網路中繼續。",
     "vnc_security_method": "安全方式：{{method}}",
     "vnc_continue_anyway": "仍要繼續",
-    "certificate_save_failed": "無法儲存憑證信任記錄",
-    "clipboard_file_failed": "無法接收剪貼簿檔案"
-  },
-  "portable_bootstrap": {
-    "title": "可攜模式",
-    "setup_description": "為本機可攜金鑰庫設定一組密碼。OxideTerm 會在啟動時用它解鎖已儲存的機密與加密設定。",
-    "unlock_description": "輸入您的可攜模式密碼，以解鎖已儲存的機密並繼續進入完整應用。",
-    "data_dir_label": "可攜資料目錄",
-    "keystore_path_label": "可攜金鑰庫",
-    "keystore_pending": "完成設定後將建立金鑰庫",
-    "password_label": "可攜模式密碼",
-    "password_placeholder": "輸入密碼",
-    "confirm_password_label": "確認可攜模式密碼",
-    "confirm_password_placeholder": "再次輸入密碼",
-    "password_too_short": "密碼長度至少需 6 個字元",
-    "password_mismatch": "兩次輸入的密碼不一致",
-    "setup_submit": "建立並繼續",
-    "setup_pending": "正在建立可攜金鑰庫...",
-    "unlock_submit": "解鎖並繼續",
-    "unlock_pending": "正在解鎖可攜資料..."
+    "certificate_save_failed": "無法儲存憑證信任記錄：{{error}}",
+    "clipboard_file_failed": "無法接收剪貼簿檔案：{{error}}"
   }
 }

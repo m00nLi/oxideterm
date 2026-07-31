@@ -14,189 +14,6 @@ pub(in crate::workspace) struct SettingsPrivilegeScopeRow {
     local: bool,
 }
 
-impl SettingsWorkspaceEntity {
-    pub(in crate::workspace) fn privilege_kind(&self) -> PrivilegeCredentialKind {
-        self.privilege_draft.kind
-    }
-
-    pub(in crate::workspace) fn privilege_snapshot(&self) -> PrivilegeCredentialSnapshot {
-        PrivilegeCredentialSnapshot {
-            credential_id: self.privilege_draft.credential_id.clone(),
-            label: self.privilege_draft.label.clone(),
-            kind: self.privilege_draft.kind,
-            username_hint: self.privilege_draft.username_hint.clone(),
-            prompt_patterns: self.privilege_draft.prompt_patterns.clone(),
-            enabled: self.privilege_draft.enabled,
-            error: self.privilege_error.clone(),
-        }
-    }
-
-    pub(in crate::workspace) fn privilege_layout_flags(&self) -> (Option<&str>, bool, bool, bool) {
-        (
-            self.privilege_scope_id.as_deref(),
-            self.privilege_draft.credential_id.is_some(),
-            self.privilege_editor_open,
-            self.privilege_error.is_some(),
-        )
-    }
-
-    pub(in crate::workspace) fn set_privilege_scope(
-        &mut self,
-        scope_id: String,
-        cx: &mut Context<Self>,
-    ) {
-        self.reset_privilege_draft_state();
-        self.privilege_scope_id = Some(scope_id);
-        cx.notify();
-    }
-
-    pub(in crate::workspace) fn reset_privilege_draft(&mut self, cx: &mut Context<Self>) {
-        self.reset_privilege_draft_state();
-        cx.notify();
-    }
-
-    pub(in crate::workspace) fn begin_new_privilege_credential(&mut self, cx: &mut Context<Self>) {
-        self.reset_privilege_draft_state();
-        self.privilege_editor_open = true;
-        self.settings_focused_input = Some(SettingsInput::LocalPrivilegeLabel);
-        cx.notify();
-    }
-
-    pub(in crate::workspace) fn edit_privilege_credential(
-        &mut self,
-        scope_id: String,
-        credential: SavedPrivilegeCredential,
-        cx: &mut Context<Self>,
-    ) {
-        self.reset_privilege_draft_state();
-        self.privilege_scope_id = Some(scope_id);
-        self.privilege_draft.credential_id = Some(credential.id);
-        self.privilege_draft.label = credential.label;
-        self.privilege_draft.kind = credential.kind;
-        self.privilege_draft.username_hint = credential.username_hint.unwrap_or_default();
-        self.privilege_draft.prompt_patterns = credential.prompt_patterns.join("\n");
-        self.privilege_draft.enabled = credential.enabled;
-        self.privilege_editor_open = true;
-        self.settings_focused_input = Some(SettingsInput::LocalPrivilegeLabel);
-        cx.notify();
-    }
-
-    pub(in crate::workspace) fn set_privilege_kind(
-        &mut self,
-        kind: PrivilegeCredentialKind,
-        cx: &mut Context<Self>,
-    ) {
-        self.privilege_draft.kind = kind;
-        self.privilege_error = None;
-        cx.notify();
-    }
-
-    pub(in crate::workspace) fn toggle_privilege_enabled(&mut self, cx: &mut Context<Self>) {
-        self.privilege_draft.enabled = !self.privilege_draft.enabled;
-        self.privilege_error = None;
-        cx.notify();
-    }
-
-    pub(in crate::workspace) fn take_privilege_save_request(
-        &mut self,
-        connection_id: String,
-    ) -> Option<SavePrivilegeCredentialRequest> {
-        let label = self.privilege_draft.label.trim().to_string();
-        if label.is_empty() {
-            return None;
-        }
-        let prompt_patterns = self
-            .privilege_draft
-            .prompt_patterns
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>();
-        let secret = if self.privilege_draft.secret.is_empty() {
-            None
-        } else {
-            // Move the only UI-owned secret into the store request so retries
-            // cannot retain a second credential copy in the Entity.
-            let secret = std::mem::replace(
-                &mut self.privilege_draft.secret,
-                zeroize::Zeroizing::new(String::new()),
-            );
-            Some(SecretString::from(secret))
-        };
-        self.settings_focused_input = None;
-        Some(SavePrivilegeCredentialRequest {
-            connection_id,
-            credential_id: self.privilege_draft.credential_id.clone(),
-            label,
-            kind: self.privilege_draft.kind,
-            username_hint: optional_trimmed_privilege_value(&self.privilege_draft.username_hint),
-            prompt_patterns,
-            secret,
-            enabled: self.privilege_draft.enabled,
-            require_click_to_send: true,
-        })
-    }
-
-    pub(in crate::workspace) fn finish_privilege_save(
-        &mut self,
-        scope_id: String,
-        error: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(error) = error {
-            self.privilege_error = Some(error);
-        } else {
-            self.reset_privilege_draft_state();
-            self.privilege_scope_id = Some(scope_id);
-        }
-        cx.notify();
-    }
-
-    pub(in crate::workspace) fn finish_privilege_delete(
-        &mut self,
-        scope_id: String,
-        credential_id: &str,
-        error: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(error) = error {
-            self.privilege_error = Some(error);
-        } else {
-            if self.privilege_draft.credential_id.as_deref() == Some(credential_id) {
-                self.reset_privilege_draft_state();
-            }
-            self.privilege_scope_id = Some(scope_id);
-            self.privilege_error = None;
-        }
-        cx.notify();
-    }
-
-    fn reset_privilege_draft_state(&mut self) {
-        self.privilege_draft = PrivilegeCredentialDraft::default();
-        self.privilege_error = None;
-        self.privilege_editor_open = false;
-        if self.settings_focused_input.is_some_and(is_privilege_input) {
-            self.settings_focused_input = None;
-        }
-    }
-}
-
-fn is_privilege_input(input: SettingsInput) -> bool {
-    matches!(
-        input,
-        SettingsInput::LocalPrivilegeLabel
-            | SettingsInput::LocalPrivilegeUsernameHint
-            | SettingsInput::LocalPrivilegeSecret
-            | SettingsInput::LocalPrivilegePromptPatterns
-    )
-}
-
-fn optional_trimmed_privilege_value(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
 impl WorkspaceApp {
     pub(in crate::workspace) fn open_privilege_credentials_settings(
         &mut self,
@@ -204,11 +21,9 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.settings_workspace.update(cx, |settings, cx| {
-            settings.set_active_tab(SettingsTab::Privilege, cx);
-        });
+        self.settings_page.set_active_tab(SettingsTab::Privilege);
         if let Some(scope_id) = scope_id {
-            self.set_settings_privilege_scope(scope_id, cx);
+            self.set_settings_privilege_scope(scope_id);
         }
         self.open_settings(window, cx);
         cx.notify();
@@ -250,13 +65,8 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.tokens.ui;
-        let (selected_scope_id, editor_open) = {
-            let settings = self.settings_workspace.read(cx);
-            let (scope_id, _editing, editor_open, _error) = settings.privilege_layout_flags();
-            (scope_id.map(str::to_string), editor_open)
-        };
         let scopes = self.settings_privilege_scope_rows();
-        let active_scope_id = self.settings_privilege_active_scope_id(selected_scope_id.as_deref());
+        let active_scope_id = self.settings_privilege_active_scope_id();
         let active_scope = scopes
             .iter()
             .find(|scope| scope.id == active_scope_id)
@@ -345,9 +155,7 @@ impl WorkspaceApp {
             );
         }
 
-        let editor_visible = credentials.is_empty() || editor_open;
-        let privilege =
-            editor_visible.then(|| self.settings_workspace.read(cx).privilege_snapshot());
+        let editor_visible = credentials.is_empty() || self.settings_privilege_editor_open;
 
         let body = div()
             .w_full()
@@ -392,7 +200,6 @@ impl WorkspaceApp {
                         detail.child(self.settings_privilege_credential_form(
                             &active_scope,
                             !credentials.is_empty(),
-                            privilege.as_ref().expect("visible privilege editor"),
                             cx,
                         ))
                     }),
@@ -584,11 +391,10 @@ impl WorkspaceApp {
         &self,
         scope: &SettingsPrivilegeScopeRow,
         show_cancel: bool,
-        privilege: &PrivilegeCredentialSnapshot,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.tokens.ui;
-        let editing = privilege.credential_id.is_some();
+        let editing = self.settings_local_privilege_draft.credential_id.is_some();
         let field_slot = |field: AnyElement| {
             div()
                 .min_w(px(0.0))
@@ -629,20 +435,18 @@ impl WorkspaceApp {
                         self.settings_privilege_text_field(
                             "sessionManager.privilege_credentials.label",
                             SettingsInput::LocalPrivilegeLabel,
-                            &privilege.label,
+                            self.settings_local_privilege_draft.label.clone(),
                             self.i18n
                                 .t("sessionManager.privilege_credentials.label_placeholder"),
                             false,
                             cx,
                         ),
                     ))
-                    .child(field_slot(
-                        self.settings_privilege_kind_field(privilege.kind, cx),
-                    ))
+                    .child(field_slot(self.settings_privilege_kind_field(cx)))
                     .child(field_slot(self.settings_privilege_text_field(
                         "sessionManager.privilege_credentials.username_hint",
                         SettingsInput::LocalPrivilegeUsernameHint,
-                        &privilege.username_hint,
+                        self.settings_local_privilege_draft.username_hint.clone(),
                         scope.username_placeholder.clone(),
                         false,
                         cx,
@@ -650,7 +454,7 @@ impl WorkspaceApp {
                     .child(field_slot(self.settings_privilege_text_field(
                         "sessionManager.privilege_credentials.secret",
                         SettingsInput::LocalPrivilegeSecret,
-                        "",
+                        self.settings_local_privilege_draft.secret.clone(),
                         if editing {
                             self.i18n
                                 .t("sessionManager.privilege_credentials.secret_keep_placeholder")
@@ -662,7 +466,7 @@ impl WorkspaceApp {
                         cx,
                     ))),
             )
-            .child(self.settings_privilege_prompt_patterns_field(&privilege.prompt_patterns, cx))
+            .child(self.settings_privilege_prompt_patterns_field(cx))
             .child(
                 self.settings_privilege_hint(
                     self.i18n
@@ -678,13 +482,18 @@ impl WorkspaceApp {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _event, _window, cx| {
-                            this.settings_workspace.update(cx, |settings, cx| {
-                                settings.toggle_privilege_enabled(cx);
-                            });
+                            this.settings_local_privilege_draft.enabled =
+                                !this.settings_local_privilege_draft.enabled;
+                            this.settings_local_privilege_error = None;
                             cx.stop_propagation();
+                            cx.notify();
                         }),
                     )
-                    .child(checkbox(&self.tokens, String::new(), privilege.enabled))
+                    .child(checkbox(
+                        &self.tokens,
+                        String::new(),
+                        self.settings_local_privilege_draft.enabled,
+                    ))
                     .child(
                         div()
                             .text_size(px(self.tokens.metrics.ui_text_sm))
@@ -692,14 +501,17 @@ impl WorkspaceApp {
                             .child(self.i18n.t("sessionManager.privilege_credentials.enabled")),
                     ),
             )
-            .when_some(privilege.error.clone(), |panel, error| {
-                panel.child(
-                    div()
-                        .text_size(px(self.tokens.metrics.ui_text_xs))
-                        .text_color(rgb(theme.error))
-                        .child(error),
-                )
-            })
+            .when_some(
+                self.settings_local_privilege_error.clone(),
+                |panel, error| {
+                    panel.child(
+                        div()
+                            .text_size(px(self.tokens.metrics.ui_text_xs))
+                            .text_color(rgb(theme.error))
+                            .child(error),
+                    )
+                },
+            )
             .child(
                 div()
                     .flex()
@@ -742,7 +554,11 @@ impl WorkspaceApp {
                                 button: ButtonOptions {
                                     variant: ButtonVariant::Default,
                                     size: ButtonSize::Sm,
-                                    disabled: privilege.label.trim().is_empty(),
+                                    disabled: self
+                                        .settings_local_privilege_draft
+                                        .label
+                                        .trim()
+                                        .is_empty(),
                                     ..ButtonOptions::default()
                                 },
                                 ..ToolbarButtonOptions::default()
@@ -761,7 +577,7 @@ impl WorkspaceApp {
         &self,
         label_key: &'static str,
         input: SettingsInput,
-        value: impl AsRef<str>,
+        value: String,
         placeholder: String,
         secret: bool,
         cx: &mut Context<Self>,
@@ -770,8 +586,6 @@ impl WorkspaceApp {
             &self.tokens,
             self.i18n.t(label_key),
             if secret {
-                // Entity-owned secret controls borrow their live value in the shared
-                // input renderer so frame snapshots never duplicate credentials.
                 self.settings_secret_text_input_control_fill(input, value, placeholder, cx)
             } else {
                 self.settings_text_input_control_fill(input, value, placeholder, cx)
@@ -781,7 +595,6 @@ impl WorkspaceApp {
 
     pub(in crate::workspace) fn settings_privilege_kind_field(
         &self,
-        kind: PrivilegeCredentialKind,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         form_field(
@@ -790,7 +603,7 @@ impl WorkspaceApp {
                 .t("sessionManager.privilege_credentials.kind_label"),
             self.settings_select_control(
                 SettingsSelect::LocalPrivilegeKind,
-                self.settings_privilege_kind_label(kind),
+                self.settings_privilege_kind_label(self.settings_local_privilege_draft.kind),
                 false,
                 None,
                 cx,
@@ -800,15 +613,15 @@ impl WorkspaceApp {
 
     pub(in crate::workspace) fn settings_privilege_prompt_patterns_field(
         &self,
-        value: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let input = SettingsInput::LocalPrivilegePromptPatterns;
-        let focused = self
-            .settings_workspace
-            .read(cx)
-            .settings_entity_focused_input()
-            == Some(input);
+        let focused = self.focused_settings_input == Some(input);
+        let value = if focused {
+            self.settings_input_draft.clone()
+        } else {
+            self.settings_local_privilege_draft.prompt_patterns.clone()
+        };
         let target = WorkspaceImeTarget::Settings(input);
         let workspace = cx.entity();
         let theme = self.tokens.ui;
@@ -818,7 +631,7 @@ impl WorkspaceApp {
             self.i18n
                 .t("sessionManager.privilege_credentials.prompt_patterns_placeholder")
         } else {
-            value.to_string()
+            value
         };
         let mut textarea = div()
             .w_full()
@@ -843,7 +656,7 @@ impl WorkspaceApp {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                    let current = this.current_settings_input_value(input, cx);
+                    let current = this.current_settings_input_value(input);
                     this.focus_settings_input(input, current, cx);
                     this.ime_marked_text = None;
                     window.focus(&this.focus_handle, cx);
@@ -862,9 +675,8 @@ impl WorkspaceApp {
             &visible_value,
             placeholder,
             line_height,
-            cx,
         );
-        if let Some(marked) = self.marked_text_for_target(target, cx) {
+        if let Some(marked) = self.marked_text_for_target(target) {
             textarea = textarea.child(
                 div()
                     .underline()
@@ -951,10 +763,8 @@ impl WorkspaceApp {
         }
     }
 
-    pub(in crate::workspace) fn settings_privilege_active_scope_id(
-        &self,
-        selected: Option<&str>,
-    ) -> String {
+    pub(in crate::workspace) fn settings_privilege_active_scope_id(&self) -> String {
+        let selected = self.settings_page.privilege_scope_id.as_deref();
         if let Some(selected) = selected
             && self
                 .settings_privilege_scope_rows()
@@ -966,15 +776,15 @@ impl WorkspaceApp {
         LOCAL_SHELL_PRIVILEGE_CONNECTION_ID.to_string()
     }
 
-    pub(in crate::workspace) fn set_settings_privilege_scope(
-        &mut self,
-        scope_id: String,
-        cx: &mut Context<Self>,
-    ) {
-        self.settings_workspace.update(cx, |settings, cx| {
-            settings.set_privilege_scope(scope_id, cx);
-        });
+    pub(in crate::workspace) fn set_settings_privilege_scope(&mut self, scope_id: String) {
+        zeroize::Zeroize::zeroize(&mut self.settings_local_privilege_draft.secret);
+        self.settings_local_privilege_draft = PrivilegeCredentialDraft::default();
+        self.settings_local_privilege_error = None;
+        self.focused_settings_input = None;
+        self.settings_input_draft.clear();
         self.close_settings_select();
+        self.settings_page.privilege_scope_id = Some(scope_id);
+        self.settings_privilege_editor_open = false;
     }
 
     pub(in crate::workspace) fn select_settings_privilege_scope(
@@ -982,14 +792,8 @@ impl WorkspaceApp {
         scope_id: String,
         cx: &mut Context<Self>,
     ) {
-        let selected_scope = self
-            .settings_workspace
-            .read(cx)
-            .privilege_layout_flags()
-            .0
-            .map(str::to_string);
-        if self.settings_privilege_active_scope_id(selected_scope.as_deref()) != scope_id {
-            self.set_settings_privilege_scope(scope_id, cx);
+        if self.settings_privilege_active_scope_id() != scope_id {
+            self.set_settings_privilege_scope(scope_id);
         }
         cx.notify();
     }
@@ -998,20 +802,30 @@ impl WorkspaceApp {
         &mut self,
         cx: &mut Context<Self>,
     ) {
-        self.settings_workspace.update(cx, |settings, cx| {
-            settings.reset_privilege_draft(cx);
-        });
+        zeroize::Zeroize::zeroize(&mut self.settings_local_privilege_draft.secret);
+        self.settings_local_privilege_draft = PrivilegeCredentialDraft::default();
+        self.settings_local_privilege_error = None;
+        self.focused_settings_input = None;
+        self.settings_input_draft.clear();
         self.close_settings_select();
+        self.settings_privilege_editor_open = false;
+        cx.notify();
     }
 
     pub(in crate::workspace) fn begin_new_settings_privilege_credential(
         &mut self,
         cx: &mut Context<Self>,
     ) {
-        self.settings_workspace.update(cx, |settings, cx| {
-            settings.begin_new_privilege_credential(cx);
-        });
+        // Starting a fresh editor must clear every secret-bearing draft value
+        // before the new form receives focus.
+        zeroize::Zeroize::zeroize(&mut self.settings_local_privilege_draft.secret);
+        self.settings_local_privilege_draft = PrivilegeCredentialDraft::default();
+        self.settings_local_privilege_error = None;
+        self.settings_privilege_editor_open = true;
+        self.focused_settings_input = Some(SettingsInput::LocalPrivilegeLabel);
+        self.settings_input_draft.clear();
         self.close_settings_select();
+        cx.notify();
     }
 
     pub(in crate::workspace) fn edit_settings_privilege_credential(
@@ -1020,42 +834,79 @@ impl WorkspaceApp {
         credential: SavedPrivilegeCredential,
         cx: &mut Context<Self>,
     ) {
-        self.settings_workspace.update(cx, |settings, cx| {
-            settings.edit_privilege_credential(scope_id, credential, cx);
-        });
+        self.set_settings_privilege_scope(scope_id);
+        self.settings_local_privilege_draft.credential_id = Some(credential.id);
+        self.settings_local_privilege_draft.label = credential.label;
+        self.settings_local_privilege_draft.kind = credential.kind;
+        self.settings_local_privilege_draft.username_hint =
+            credential.username_hint.unwrap_or_default();
+        self.settings_local_privilege_draft.prompt_patterns = credential.prompt_patterns.join("\n");
+        self.settings_local_privilege_draft.secret.clear();
+        self.settings_local_privilege_draft.enabled = credential.enabled;
+        self.settings_local_privilege_error = None;
+        self.settings_privilege_editor_open = true;
+        self.focused_settings_input = Some(SettingsInput::LocalPrivilegeLabel);
+        self.settings_input_draft = self.settings_local_privilege_draft.label.clone();
         self.close_settings_select();
+        cx.notify();
     }
 
     pub(in crate::workspace) fn save_settings_privilege_credential(
         &mut self,
         cx: &mut Context<Self>,
     ) {
-        let selected_scope = self
-            .settings_workspace
-            .read(cx)
-            .privilege_layout_flags()
-            .0
-            .map(str::to_string);
-        let scope_id = self.settings_privilege_active_scope_id(selected_scope.as_deref());
-        let Some(request) = self.settings_workspace.update(cx, |settings, _cx| {
-            settings.take_privilege_save_request(scope_id.clone())
-        }) else {
+        let scope_id = self.settings_privilege_active_scope_id();
+        let draft = &self.settings_local_privilege_draft;
+        let label = draft.label.trim().to_string();
+        if label.is_empty() {
             return;
+        }
+        let prompt_patterns = draft
+            .prompt_patterns
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        // The settings draft must stay editable for validation failure. Only
+        // the one temporary password copy that crosses into the connection
+        // store is wrapped for zeroization and then persisted in the dedicated
+        // privilege keychain scope.
+        let secret = (!draft.secret.is_empty())
+            .then(|| SecretString::from(zeroize::Zeroizing::new(draft.secret.clone())));
+        let request = SavePrivilegeCredentialRequest {
+            connection_id: scope_id.clone(),
+            credential_id: draft.credential_id.clone(),
+            label,
+            kind: draft.kind,
+            username_hint: draft
+                .username_hint
+                .trim()
+                .is_empty()
+                .then_some(None)
+                .unwrap_or_else(|| Some(draft.username_hint.trim().to_string())),
+            prompt_patterns,
+            secret,
+            enabled: draft.enabled,
+            require_click_to_send: true,
         };
         match self.connection_store.save_privilege_credential(request) {
             Ok(_) => {
-                self.settings_workspace.update(cx, |settings, cx| {
-                    settings.finish_privilege_save(scope_id, None, cx);
-                });
+                zeroize::Zeroize::zeroize(&mut self.settings_local_privilege_draft.secret);
+                self.settings_local_privilege_draft = PrivilegeCredentialDraft::default();
+                self.settings_local_privilege_error = None;
+                self.settings_privilege_editor_open = false;
+                self.focused_settings_input = None;
+                self.settings_input_draft.clear();
+                self.settings_page.privilege_scope_id = Some(scope_id);
                 self.queue_cloud_sync_dirty_refresh(cx);
             }
             Err(error) => {
-                self.settings_workspace.update(cx, |settings, cx| {
-                    settings.finish_privilege_save(scope_id, Some(error.to_string()), cx);
-                });
+                self.settings_local_privilege_error = Some(error.to_string());
             }
         }
         self.close_settings_select();
+        cx.notify();
     }
 
     pub(in crate::workspace) fn delete_settings_privilege_credential(
@@ -1069,23 +920,23 @@ impl WorkspaceApp {
             .delete_privilege_credential(&scope_id, &credential_id)
         {
             Ok(_) => {
-                self.settings_workspace.update(cx, |settings, cx| {
-                    settings.finish_privilege_delete(scope_id, &credential_id, None, cx);
-                });
+                if self.settings_local_privilege_draft.credential_id.as_deref()
+                    == Some(credential_id.as_str())
+                {
+                    zeroize::Zeroize::zeroize(&mut self.settings_local_privilege_draft.secret);
+                    self.settings_local_privilege_draft = PrivilegeCredentialDraft::default();
+                    self.settings_privilege_editor_open = false;
+                }
+                self.settings_page.privilege_scope_id = Some(scope_id);
+                self.settings_local_privilege_error = None;
                 self.queue_cloud_sync_dirty_refresh(cx);
             }
             Err(error) => {
-                self.settings_workspace.update(cx, |settings, cx| {
-                    settings.finish_privilege_delete(
-                        scope_id,
-                        &credential_id,
-                        Some(error.to_string()),
-                        cx,
-                    );
-                });
+                self.settings_local_privilege_error = Some(error.to_string());
             }
         }
         self.close_settings_select();
+        cx.notify();
     }
 
     pub(in crate::workspace) fn settings_local_username_hint(&self) -> Option<String> {
@@ -1094,62 +945,5 @@ impl WorkspaceApp {
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use gpui::{AppContext, TestAppContext};
-
-    use super::*;
-
-    #[gpui::test]
-    fn privilege_save_request_moves_secret_and_keeps_nonsecret_retry_state(
-        cx: &mut TestAppContext,
-    ) {
-        let settings = cx.new(SettingsWorkspaceEntity::new);
-        settings.update(cx, |settings, cx| {
-            settings.begin_new_privilege_credential(cx);
-            assert!(settings.replace_settings_entity_input(
-                SettingsInput::LocalPrivilegeLabel,
-                None,
-                "Local sudo",
-                cx,
-            ));
-            assert!(settings.focus_settings_entity_input(SettingsInput::LocalPrivilegeSecret, cx));
-            assert!(settings.replace_settings_entity_input(
-                SettingsInput::LocalPrivilegeSecret,
-                None,
-                "privilege-secret",
-                cx,
-            ));
-
-            let request = settings
-                .take_privilege_save_request(LOCAL_SHELL_PRIVILEGE_CONNECTION_ID.to_string())
-                .expect("privilege save request");
-            assert_eq!(
-                request.secret.as_ref().map(SecretString::expose_secret),
-                Some("privilege-secret")
-            );
-            assert!(settings.privilege_draft.secret.is_empty());
-            assert_eq!(settings.privilege_draft.label, "Local sudo");
-
-            settings.finish_privilege_save(
-                LOCAL_SHELL_PRIVILEGE_CONNECTION_ID.to_string(),
-                Some("retry".to_string()),
-                cx,
-            );
-            assert_eq!(settings.privilege_error.as_deref(), Some("retry"));
-            assert_eq!(settings.privilege_draft.label, "Local sudo");
-
-            settings.finish_privilege_save(
-                LOCAL_SHELL_PRIVILEGE_CONNECTION_ID.to_string(),
-                None,
-                cx,
-            );
-            assert!(settings.privilege_draft.label.is_empty());
-            assert!(settings.privilege_draft.secret.is_empty());
-            assert!(!settings.privilege_editor_open);
-        });
     }
 }

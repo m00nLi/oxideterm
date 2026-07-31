@@ -1,3 +1,5 @@
+use std::sync::mpsc::{Receiver, TryRecvError};
+
 pub(in crate::workspace) const AI_INLINE_PANEL_WIDTH: f32 = 520.0;
 pub(in crate::workspace) const AI_INLINE_PANEL_TOP: f32 = 48.0;
 pub(in crate::workspace) const AI_INLINE_PANEL_MARGIN: f32 = 12.0;
@@ -5,6 +7,9 @@ pub(in crate::workspace) const AI_INLINE_PANEL_VERTICAL_OFFSET: f32 = 4.0;
 pub(in crate::workspace) const AI_INLINE_PANEL_COLLAPSED_HEIGHT: f32 = 56.0;
 pub(in crate::workspace) const AI_INLINE_PANEL_EXPANDED_HEIGHT: f32 = 160.0;
 pub(in crate::workspace) const AI_INLINE_PANEL_LOADING_BAR_HEIGHT: f32 = 2.0;
+pub(in crate::workspace) const AI_INLINE_POLL_INTERVAL_MS: u64 = 50;
+pub(in crate::workspace) const AI_INLINE_MAX_EVENTS_PER_POLL: usize = 128;
+
 #[derive(Default)]
 pub(in crate::workspace) struct AiInlinePanelState {
     pub(in crate::workspace) open: bool,
@@ -18,6 +23,15 @@ pub(in crate::workspace) struct AiInlinePanelState {
     pub(in crate::workspace) has_selection: bool,
     pub(in crate::workspace) selection_context: String,
     pub(in crate::workspace) generation: u64,
+    pub(in crate::workspace) rx: Option<Receiver<AiInlinePanelDelivery>>,
+    pub(in crate::workspace) polling: bool,
+}
+
+pub(in crate::workspace) enum AiInlinePanelDelivery {
+    KeyStatus { generation: u64, has_key: bool },
+    Content { generation: u64, chunk: String },
+    Done { generation: u64 },
+    Error { generation: u64, message: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -32,7 +46,7 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.ai_entity.read(cx).terminal_inline_panel().open {
+        if self.ai.chat.inline_panel.open {
             self.close_terminal_ai_inline_panel(window, cx);
         } else {
             self.open_terminal_ai_inline_panel(window, cx);
@@ -45,22 +59,33 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) {
         self.search.visible = false;
+        self.terminal_command_bar_focused = false;
         self.close_terminal_command_overlays(cx);
-        self.close_ai_model_selector(cx);
+        self.close_ai_model_selector();
+        self.ai.chat.inline_panel.open = true;
+        self.ai.chat.inline_panel.prompt.clear();
+        self.ai.chat.inline_panel.response.clear();
+        self.ai.chat.inline_panel.error = None;
+        self.ai.chat.inline_panel.loading = false;
+        self.ai.chat.inline_panel.copied = false;
+        self.ai.chat.inline_panel.prompt_focused = true;
+        self.ai.chat.inline_panel.has_api_key = None;
+        self.ai.chat.inline_panel.generation = self.ai.chat.inline_panel.generation.wrapping_add(1);
+        self.ai.chat.inline_panel.rx = None;
+        self.ai.chat.inline_panel.polling = false;
 
         let selection = self
-            .active_pane(cx)
+            .active_pane()
             .and_then(|pane| pane.read(cx).selected_text_snapshot())
             .unwrap_or_default();
         let sanitized_selection = truncate_ai_inline_context(
             oxideterm_ai::sanitize_for_ai(&selection),
             self.settings_store.settings().ai.context_max_chars,
         );
-        self.ai_entity.update(cx, |ai, _cx| {
-            ai.open_terminal_inline_panel(sanitized_selection);
-        });
+        self.ai.chat.inline_panel.has_selection = !sanitized_selection.trim().is_empty();
+        self.ai.chat.inline_panel.selection_context = sanitized_selection;
 
-        window.focus(&self.focus_handle, cx);
+window.focus(&self.focus_handle, cx);
         self.refresh_terminal_ai_inline_key_status(cx);
         cx.notify();
     }
@@ -70,10 +95,15 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.ai_entity
-            .update(cx, |ai, _cx| ai.close_terminal_inline_panel());
+        self.ai.chat.inline_panel.open = false;
+        self.ai.chat.inline_panel.prompt_focused = false;
+        self.ai.chat.inline_panel.loading = false;
+        self.ai.chat.inline_panel.error = None;
+        self.ai.chat.inline_panel.rx = None;
+        self.ai.chat.inline_panel.polling = false;
+        self.ai.chat.inline_panel.generation = self.ai.chat.inline_panel.generation.wrapping_add(1);
         self.ime_marked_text = None;
-        self.close_ai_model_selector(cx);
+        self.close_ai_model_selector();
         self.focus_active_pane(window, cx);
         cx.notify();
     }
@@ -84,18 +114,12 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let (panel_open, panel_loading, response_is_empty) = {
-            let panel = self.ai_entity.read(cx).terminal_inline_panel();
-            (panel.open, panel.loading, panel.response.trim().is_empty())
-        };
-        if !panel_open || event.keystroke.modifiers.platform {
+        if !self.ai.chat.inline_panel.open || event.keystroke.modifiers.platform {
             return false;
         }
-        if self
-            .ai_entity
-            .read(cx)
-            .model_selector_is_open(AiModelSelectorScope::TerminalInline)
-            && self.ai_entity.read(cx).model_selector_search_focused()
+        if self.ai.models.selector_open
+            && self.ai.models.selector_scope == Some(AiModelSelectorScope::TerminalInline)
+            && self.ai.models.selector_search_focused
         {
             return self.handle_ai_sidebar_key(event, cx);
         }
@@ -107,23 +131,26 @@ impl WorkspaceApp {
             }
             "enter"
                 if self
-                    .marked_text_for_target(WorkspaceImeTarget::AiInlinePrompt, cx)
+                    .marked_text_for_target(WorkspaceImeTarget::AiInlinePrompt)
                     .is_some() =>
             {
                 true
             }
             "enter" if !event.keystroke.modifiers.shift => {
-                if panel_loading {
+                if self.ai.chat.inline_panel.loading {
                     return true;
                 }
-                if response_is_empty {
+                if self.ai.chat.inline_panel.response.trim().is_empty() {
                     self.send_terminal_ai_inline_prompt(cx);
                 } else {
                     self.execute_terminal_ai_inline_response(window, cx);
                 }
                 true
             }
-            "tab" if !response_is_empty && !panel_loading => {
+            "tab"
+                if !self.ai.chat.inline_panel.response.trim().is_empty()
+                    && !self.ai.chat.inline_panel.loading =>
+            {
                 self.insert_terminal_ai_inline_response(window, cx);
                 true
             }
@@ -135,43 +162,18 @@ impl WorkspaceApp {
         &self,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (
-            panel_open,
-            prompt_focused,
-            prompt,
-            response_is_empty,
-            response_command,
-            panel_error,
-            panel_loading,
-            panel_copied,
-            has_api_key,
-            has_selection,
-        ) = {
-            let panel = self.ai_entity.read(cx).terminal_inline_panel();
-            (
-                panel.open,
-                panel.prompt_focused,
-                panel.prompt.clone(),
-                panel.response.is_empty(),
-                extract_terminal_ai_inline_command(&panel.response),
-                panel.error.clone(),
-                panel.loading,
-                panel.copied,
-                panel.has_api_key,
-                panel.has_selection,
-            )
-        };
-        if !panel_open {
+        if !self.ai.chat.inline_panel.open {
             return div().into_any_element();
         }
 
         let theme = self.tokens.ui;
         let target = WorkspaceImeTarget::AiInlinePrompt;
-        let focused = prompt_focused;
-        let marked_text = self.marked_text_for_target(target, cx);
-        let selected_range = self.ime_selected_range_for_target(target, cx);
-        let showing_placeholder = prompt.is_empty() && marked_text.is_none();
-        let placeholder = if has_selection {
+        let focused = self.ai.chat.inline_panel.prompt_focused;
+        let marked_text = self.marked_text_for_target(target);
+        let selected_range = self.ime_selected_range_for_target(target);
+        let showing_placeholder =
+            self.ai.chat.inline_panel.prompt.is_empty() && marked_text.is_none();
+        let placeholder = if self.ai.chat.inline_panel.has_selection {
             self.i18n.t("terminal.ai.selection_placeholder")
         } else {
             self.i18n.t("terminal.ai.inline_placeholder")
@@ -179,16 +181,18 @@ impl WorkspaceApp {
         let prompt_text = if showing_placeholder {
             placeholder
         } else {
-            prompt.clone()
+            self.ai.chat.inline_panel.prompt.clone()
         };
         let prompt_range = selected_range.clone().filter(|_| {
-            focused && !prompt.is_empty() && marked_text.is_none()
+            focused && !self.ai.chat.inline_panel.prompt.is_empty() && marked_text.is_none()
         });
         let selection_range = prompt_range.clone().filter(|range| range.start < range.end);
         let caret_offset = prompt_range
             .as_ref()
             .filter(|range| range.start == range.end)
             .map(|range| range.start);
+        let response_command =
+            extract_terminal_ai_inline_command(&self.ai.chat.inline_panel.response);
         let workspace = cx.entity();
         let placement = self.terminal_ai_inline_panel_placement(cx);
 
@@ -209,7 +213,7 @@ impl WorkspaceApp {
                     .border_color(rgb(theme.border))
                     .bg(rgb(theme.bg_elevated))
                     .shadow_lg()
-                    .when(panel_loading, |panel| {
+                    .when(self.ai.chat.inline_panel.loading, |panel| {
                         panel.child(
                             div()
                                 .absolute()
@@ -263,12 +267,8 @@ impl WorkspaceApp {
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                                                this.ai_entity.update(cx, |ai, _cx| {
-                                                    ai.terminal_inline_panel_mut().prompt_focused = true;
-                                                });
-                                                this.ai_entity.update(cx, |ai, _cx| {
-                                                    ai.set_model_selector_search_focused(false);
-                                                });
+                                                this.ai.chat.inline_panel.prompt_focused = true;
+                                                this.ai.models.selector_search_focused = false;
                                                 this.ime_marked_text = None;
 window.focus(&this.focus_handle, cx);
                                                 this.begin_ime_selection_from_mouse_down(target, event, window, cx);
@@ -281,7 +281,7 @@ window.focus(&this.focus_handle, cx);
                                             }),
                                         )
                                         .when(focused && showing_placeholder, |input| {
-                                            input.child(text_caret(&self.tokens, self.input_caret.visible()))
+                                            input.child(text_caret(&self.tokens, self.new_connection_caret_visible))
                                         })
                                         .child(if showing_placeholder {
                                             div().truncate().child(prompt_text).into_any_element()
@@ -292,7 +292,7 @@ window.focus(&this.focus_handle, cx);
                                                 false,
                                                 selection_range,
                                                 caret_offset,
-                                                self.input_caret.visible(),
+                                                self.new_connection_caret_visible,
                                                 Some(theme.text),
                                             )
                                             .into_any_element()
@@ -313,7 +313,7 @@ window.focus(&this.focus_handle, cx);
                                             |input| {
                                                 input.child(text_caret(
                                                     &self.tokens,
-                                                    self.input_caret.visible(),
+                                                    self.new_connection_caret_visible,
                                                 ))
                                             },
                                         ),
@@ -340,7 +340,7 @@ window.focus(&this.focus_handle, cx);
                             ),
                     )
                     .when(
-                        has_api_key == Some(false) && !panel_loading,
+                        self.ai.chat.inline_panel.has_api_key == Some(false) && !self.ai.chat.inline_panel.loading,
                         |panel| panel.child(self.render_terminal_ai_inline_notice(
                             LucideIcon::AlertCircle,
                             self.i18n.t("terminal.ai.api_key_hint"),
@@ -349,7 +349,7 @@ window.focus(&this.focus_handle, cx);
                             rgb(self.tokens.ui.warning),
                         )),
                     )
-                    .when_some(panel_error.as_ref(), |panel, error| {
+                    .when_some(self.ai.chat.inline_panel.error.as_ref(), |panel, error| {
                         panel.child(self.render_terminal_ai_inline_notice(
                             LucideIcon::AlertCircle,
                             error.clone(),
@@ -359,7 +359,8 @@ window.focus(&this.focus_handle, cx);
                         ))
                     })
                     .when(
-                        (panel_loading || !response_is_empty) && panel_error.is_none(),
+                        (self.ai.chat.inline_panel.loading || !self.ai.chat.inline_panel.response.is_empty())
+                            && self.ai.chat.inline_panel.error.is_none(),
                         |panel| {
                             panel.child(
                                 div()
@@ -383,7 +384,8 @@ window.focus(&this.focus_handle, cx);
                                             }),
                                     )
                                     .when(
-                                        !response_is_empty && !panel_loading,
+                                        !self.ai.chat.inline_panel.response.is_empty()
+                                            && !self.ai.chat.inline_panel.loading,
                                         |preview| {
                                             preview.child(
                                                 div()
@@ -421,12 +423,12 @@ window.focus(&this.focus_handle, cx);
                                                         cx,
                                                     ))
                                                     .child(self.render_terminal_ai_inline_action(
-                                                        if panel_copied {
+                                                        if self.ai.chat.inline_panel.copied {
                                                             LucideIcon::Check
                                                         } else {
                                                             LucideIcon::Copy
                                                         },
-                                                        if panel_copied {
+                                                        if self.ai.chat.inline_panel.copied {
                                                             self.i18n.t("terminal.ai.copied")
                                                         } else {
                                                             self.i18n.t("terminal.ai.copy")
@@ -455,9 +457,9 @@ window.focus(&this.focus_handle, cx);
                         },
                     )
                     .when(
-                        self.ai_entity
-                            .read(cx)
-                            .model_selector_is_open(AiModelSelectorScope::TerminalInline),
+                        self.ai.models.selector_open
+                            && self.ai.models.selector_scope
+                                == Some(AiModelSelectorScope::TerminalInline),
                         |panel| {
                         panel.child(
                             div()
@@ -465,7 +467,7 @@ window.focus(&this.focus_handle, cx);
                                 .top(px(40.0))
                                 .left(px(32.0))
                                 .child(self.render_ai_model_selector_dropdown(
-                                    &self.ai_model_selector_providers(cx),
+                                    &self.ai_model_selector_providers(),
                                     cx,
                                 )),
                         )
@@ -478,34 +480,25 @@ window.focus(&this.focus_handle, cx);
         &self,
         cx: &mut Context<Self>,
     ) -> AiInlinePanelPlacement {
-        let expanded = {
-            let panel = self.ai_entity.read(cx).terminal_inline_panel();
-            panel.loading || panel.error.is_some() || !panel.response.is_empty()
-        };
+        let expanded = self.ai.chat.inline_panel.loading
+            || self.ai.chat.inline_panel.error.is_some()
+            || !self.ai.chat.inline_panel.response.is_empty();
         let estimated_height = if expanded {
             AI_INLINE_PANEL_EXPANDED_HEIGHT
         } else {
             AI_INLINE_PANEL_COLLAPSED_HEIGHT
         };
         let anchor = self
-            .active_pane(cx)
+            .active_pane()
             .and_then(|pane| pane.read(cx).cursor_anchor());
         terminal_ai_inline_panel_placement(anchor, estimated_height)
     }
 
     pub(in crate::workspace) fn render_terminal_ai_inline_hints(
         &self,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.tokens.ui;
-        let (prompt_has_text, response_has_text, loading) = {
-            let panel = self.ai_entity.read(cx).terminal_inline_panel();
-            (
-                !panel.prompt.trim().is_empty(),
-                !panel.response.trim().is_empty(),
-                panel.loading,
-            )
-        };
         div()
             .flex()
             .items_center()
@@ -513,20 +506,26 @@ window.focus(&this.focus_handle, cx);
             .text_size(px(10.0))
             .text_color(rgb(theme.text_muted))
             .when(
-                !response_has_text && !loading && prompt_has_text,
+                self.ai.chat.inline_panel.response.trim().is_empty()
+                    && !self.ai.chat.inline_panel.loading
+                    && !self.ai.chat.inline_panel.prompt.trim().is_empty(),
                 |hints| {
                     hints
                         .child(inline_ai_keycap(&self.tokens, "Enter"))
                         .child(self.i18n.t("terminal.ai.to_send"))
                 },
             )
-            .when(response_has_text && !loading, |hints| {
+            .when(
+                !self.ai.chat.inline_panel.response.trim().is_empty()
+                    && !self.ai.chat.inline_panel.loading,
+                |hints| {
                     hints
                         .child(inline_ai_keycap(&self.tokens, "Tab"))
                         .child(self.i18n.t("terminal.ai.to_insert"))
                         .child(inline_ai_keycap(&self.tokens, "Enter"))
                         .child(self.i18n.t("terminal.ai.to_run"))
-                })
+                },
+            )
             .into_any_element()
     }
 
@@ -600,30 +599,103 @@ window.focus(&this.focus_handle, cx);
     }
 
     pub(in crate::workspace) fn send_terminal_ai_inline_prompt(&mut self, cx: &mut Context<Self>) {
-        let Some((prompt, selection)) = self
-            .ai_entity
-            .read(cx)
-            .terminal_inline_request_context()
-        else {
+        if self.ai.chat.inline_panel.loading || self.ai.chat.inline_panel.prompt.trim().is_empty() {
             return;
+        }
+
+        let generation = self.ai.chat.inline_panel.generation.wrapping_add(1);
+        self.ai.chat.inline_panel.generation = generation;
+        self.ai.chat.inline_panel.response.clear();
+        self.ai.chat.inline_panel.error = None;
+        self.ai.chat.inline_panel.copied = false;
+        self.ai.chat.inline_panel.loading = true;
+        self.ai.chat.inline_panel.has_api_key = None;
+
+        let mut config = match self.resolve_terminal_ai_inline_config() {
+            Ok(config) => config,
+            Err(message) => {
+                self.ai.chat.inline_panel.loading = false;
+                self.ai.chat.inline_panel.error = Some(message);
+                cx.notify();
+                return;
+            }
         };
+        let requires_key = ai_provider_chat_requires_key(&config.provider_type);
+        let provider_id = config.provider_id.clone();
+        let prompt = oxideterm_ai::sanitize_for_ai(&self.ai.chat.inline_panel.prompt);
+        let selection = self.ai.chat.inline_panel.selection_context.clone();
         let messages = terminal_ai_inline_messages(
-            terminal_ai_inline_os_context(self.active_tab(cx)),
+            terminal_ai_inline_os_context(self.active_tab()),
             selection,
             prompt,
         );
-        let config_result = self.resolve_terminal_ai_inline_config();
+        let key_store = self.ai.models.key_store.clone();
         let api_key_not_found = self.i18n.t("ai.model_selector.api_key_not_found");
         let failed_to_get_key = self.i18n.t("ai.model_selector.failed_to_get_api_key");
-        let stream_failed = self.i18n.t("settings_view.ai.acp_agent_error_unknown");
-        self.ai_entity.update(cx, |ai, _cx| {
-            ai.request_terminal_inline(
-                config_result,
-                messages,
-                api_key_not_found,
-                failed_to_get_key,
-                stream_failed,
-            );
+        let (ui_tx, ui_rx) = std::sync::mpsc::channel();
+        self.ai.chat.inline_panel.rx = Some(ui_rx);
+        self.schedule_terminal_ai_inline_poll(cx);
+        self.forwarding_runtime.spawn(async move {
+            if let Some(provider_id) = provider_id {
+                let key_result =
+                    tokio::task::spawn_blocking(move || key_store.get_provider_key(&provider_id))
+                        .await
+                        .map_err(|error| error.to_string())
+                        .and_then(|result| result.map_err(|error| error.to_string()));
+                match key_result {
+                    Ok(api_key) => {
+                        let has_key = api_key.as_ref().is_some_and(|key| !key.trim().is_empty());
+                        let _ = ui_tx.send(AiInlinePanelDelivery::KeyStatus {
+                            generation,
+                            has_key,
+                        });
+                        if requires_key && !has_key {
+                            let _ = ui_tx.send(AiInlinePanelDelivery::Error {
+                                generation,
+                                message: api_key_not_found,
+                            });
+                            return;
+                        }
+                        config.api_key = api_key;
+                    }
+                    Err(_) if requires_key => {
+                        let _ = ui_tx.send(AiInlinePanelDelivery::Error {
+                            generation,
+                            message: failed_to_get_key,
+                        });
+                        return;
+                    }
+                    Err(_) => {}
+                }
+            }
+
+            let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel();
+            tokio::spawn(stream_chat_completion(
+                config,
+                oxideterm_ai::sanitize_api_messages_for_provider(messages),
+                stream_tx,
+            ));
+            while let Some(event) = stream_rx.recv().await {
+                match event {
+                    AiStreamEvent::Content(chunk) => {
+                        let _ = ui_tx.send(AiInlinePanelDelivery::Content { generation, chunk });
+                    }
+                    AiStreamEvent::Done => {
+                        let _ = ui_tx.send(AiInlinePanelDelivery::Done { generation });
+                        break;
+                    }
+                    AiStreamEvent::Error(message) => {
+                        let _ = ui_tx.send(AiInlinePanelDelivery::Error {
+                            generation,
+                            message,
+                        });
+                        break;
+                    }
+                    AiStreamEvent::Thinking(_)
+                    | AiStreamEvent::ToolCall { .. }
+                    | AiStreamEvent::ToolCallComplete { .. } => {}
+                }
+            }
         });
         cx.notify();
     }
@@ -632,14 +704,11 @@ window.focus(&this.focus_handle, cx);
         &mut self,
         cx: &mut Context<Self>,
     ) {
-        if self.ai_entity.read(cx).terminal_inline_panel().loading {
+        if self.ai.chat.inline_panel.loading {
             return;
         }
-        self.ai_entity.update(cx, |ai, _cx| {
-            let panel = ai.terminal_inline_panel_mut();
-            panel.response.clear();
-            panel.error = None;
-        });
+        self.ai.chat.inline_panel.response.clear();
+        self.ai.chat.inline_panel.error = None;
         self.send_terminal_ai_inline_prompt(cx);
     }
 
@@ -648,13 +717,11 @@ window.focus(&this.focus_handle, cx);
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let command = extract_terminal_ai_inline_command(
-            &self.ai_entity.read(cx).terminal_inline_panel().response,
-        );
+        let command = extract_terminal_ai_inline_command(&self.ai.chat.inline_panel.response);
         if command.trim().is_empty() {
             return;
         }
-        if let Some(pane) = self.active_pane(cx) {
+        if let Some(pane) = self.active_pane() {
             let _ = pane.update(cx, |pane, cx| {
                 pane.send_ai_input_bytes(command.as_bytes(), cx);
             });
@@ -667,13 +734,11 @@ window.focus(&this.focus_handle, cx);
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let command = extract_terminal_ai_inline_command(
-            &self.ai_entity.read(cx).terminal_inline_panel().response,
-        );
+        let command = extract_terminal_ai_inline_command(&self.ai.chat.inline_panel.response);
         if command.trim().is_empty() {
             return;
         }
-        if let Some(pane) = self.active_pane(cx) {
+        if let Some(pane) = self.active_pane() {
             let _ = pane.update(cx, |pane, cx| {
                 pane.begin_command_mark(
                     &command,
@@ -690,31 +755,18 @@ window.focus(&this.focus_handle, cx);
         &mut self,
         cx: &mut Context<Self>,
     ) {
-        let command = extract_terminal_ai_inline_command(
-            &self.ai_entity.read(cx).terminal_inline_panel().response,
-        );
+        let command = extract_terminal_ai_inline_command(&self.ai.chat.inline_panel.response);
         if command.trim().is_empty() {
             return;
         }
         cx.write_to_clipboard(ClipboardItem::new_string(command));
-        let generation = self.ai_entity.update(cx, |ai, _cx| {
-            let panel = ai.terminal_inline_panel_mut();
-            panel.copied = true;
-            panel.generation
-        });
+        self.ai.chat.inline_panel.copied = true;
+        let generation = self.ai.chat.inline_panel.generation;
         cx.spawn(async move |weak, cx| {
             Timer::after(Duration::from_millis(1500)).await;
             let _ = weak.update(cx, |this, cx| {
-                let changed = this.ai_entity.update(cx, |ai, _cx| {
-                    let panel = ai.terminal_inline_panel_mut();
-                    if panel.generation == generation {
-                        panel.copied = false;
-                        true
-                    } else {
-                        false
-                    }
-                });
-                if changed {
+                if this.ai.chat.inline_panel.generation == generation {
+                    this.ai.chat.inline_panel.copied = false;
                     cx.notify();
                 }
             });
@@ -727,10 +779,130 @@ window.focus(&this.focus_handle, cx);
         &mut self,
         cx: &mut Context<Self>,
     ) {
-        let config_result = self.resolve_terminal_ai_inline_config();
-        self.ai_entity.update(cx, |ai, _cx| {
-            ai.refresh_terminal_inline_key_status(config_result);
+        let Ok(config) = self.resolve_terminal_ai_inline_config() else {
+            self.ai.chat.inline_panel.has_api_key = Some(false);
+            return;
+        };
+        let requires_key = ai_provider_chat_requires_key(&config.provider_type);
+        let Some(provider_id) = config.provider_id else {
+            self.ai.chat.inline_panel.has_api_key = Some(!requires_key);
+            return;
+        };
+        if !requires_key {
+            self.ai.chat.inline_panel.has_api_key = Some(true);
+            return;
+        }
+        let generation = self.ai.chat.inline_panel.generation;
+        let key_store = self.ai.models.key_store.clone();
+        let (ui_tx, ui_rx) = std::sync::mpsc::channel();
+        self.ai.chat.inline_panel.rx = Some(ui_rx);
+        self.schedule_terminal_ai_inline_poll(cx);
+        self.forwarding_runtime.spawn(async move {
+            // Opening the inline panel only needs the key existence hint; reading
+            // the secret here would trigger Touch ID before the user sends a prompt.
+            let has_key =
+                tokio::task::spawn_blocking(move || key_store.has_provider_key(&provider_id))
+                    .await
+                    .unwrap_or(false);
+            let _ = ui_tx.send(AiInlinePanelDelivery::KeyStatus {
+                generation,
+                has_key,
+            });
         });
+    }
+
+    pub(in crate::workspace) fn poll_terminal_ai_inline_delivery(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(rx) = self.ai.chat.inline_panel.rx.take() else {
+            self.ai.chat.inline_panel.polling = false;
+            return;
+        };
+        let mut keep_rx = true;
+        let mut processed = 0;
+        loop {
+            if processed >= AI_INLINE_MAX_EVENTS_PER_POLL {
+                break;
+            }
+            processed += 1;
+            match rx.try_recv() {
+                Ok(delivery) => self.apply_terminal_ai_inline_delivery(delivery, &mut keep_rx, cx),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    keep_rx = false;
+                    self.ai.chat.inline_panel.loading = false;
+                    break;
+                }
+            }
+        }
+        if keep_rx && self.ai.chat.inline_panel.open {
+            self.ai.chat.inline_panel.rx = Some(rx);
+        } else {
+            self.ai.chat.inline_panel.polling = false;
+        }
+        cx.notify();
+    }
+
+    pub(in crate::workspace) fn apply_terminal_ai_inline_delivery(
+        &mut self,
+        delivery: AiInlinePanelDelivery,
+        keep_rx: &mut bool,
+        _cx: &mut Context<Self>,
+    ) {
+        match delivery {
+            AiInlinePanelDelivery::KeyStatus {
+                generation,
+                has_key,
+            } if generation == self.ai.chat.inline_panel.generation => {
+                self.ai.chat.inline_panel.has_api_key = Some(has_key);
+            }
+            AiInlinePanelDelivery::Content { generation, chunk }
+                if generation == self.ai.chat.inline_panel.generation =>
+            {
+                self.ai.chat.inline_panel.response.push_str(&chunk);
+            }
+            AiInlinePanelDelivery::Done { generation }
+                if generation == self.ai.chat.inline_panel.generation =>
+            {
+                self.ai.chat.inline_panel.loading = false;
+                *keep_rx = false;
+            }
+            AiInlinePanelDelivery::Error {
+                generation,
+                message,
+            } if generation == self.ai.chat.inline_panel.generation => {
+                self.ai.chat.inline_panel.loading = false;
+                self.ai.chat.inline_panel.error = Some(message);
+                *keep_rx = false;
+            }
+            _ => {}
+        }
+    }
+
+    pub(in crate::workspace) fn schedule_terminal_ai_inline_poll(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ai.chat.inline_panel.polling {
+            return;
+        }
+        self.ai.chat.inline_panel.polling = true;
+        cx.spawn(async move |weak, cx| {
+            loop {
+                Timer::after(Duration::from_millis(AI_INLINE_POLL_INTERVAL_MS)).await;
+                let keep_polling = weak
+                    .update(cx, |this, cx| {
+                        this.poll_terminal_ai_inline_delivery(cx);
+                        this.ai.chat.inline_panel.polling
+                    })
+                    .unwrap_or(false);
+                if !keep_polling {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     pub(in crate::workspace) fn resolve_terminal_ai_inline_config(

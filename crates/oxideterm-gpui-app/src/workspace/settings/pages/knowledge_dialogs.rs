@@ -5,15 +5,14 @@ impl WorkspaceApp {
         &self,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !self.ai_entity.read(cx).knowledge_create_dialog_open() {
+        if !self.settings_page.knowledge_create_dialog_open {
             return None;
         }
-        let collection_name = self
-            .ai_entity
-            .read(cx)
-            .knowledge_new_collection_name()
-            .to_string();
-        let can_create = !collection_name.trim().is_empty();
+        let can_create = !self
+            .settings_page
+            .knowledge_new_collection_name
+            .trim()
+            .is_empty();
         let backdrop = dismissible_dialog_backdrop().on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, _event, _window, cx| {
@@ -65,7 +64,7 @@ impl WorkspaceApp {
                             .child(
                                 self.settings_text_input_control(
                                     SettingsInput::KnowledgeCollectionName,
-                                    collection_name,
+                                    self.settings_page.knowledge_new_collection_name.clone(),
                                     self.i18n
                                         .t("settings_view.knowledge.collection_name_placeholder"),
                                     420.0,
@@ -122,7 +121,7 @@ impl WorkspaceApp {
             "knowledge-create-dialog-form",
             backdrop,
             form,
-            self.ai_entity.read(cx).knowledge_create_presence().phase(),
+            self.knowledge_create_presence,
         ))
     }
 
@@ -130,15 +129,14 @@ impl WorkspaceApp {
         &self,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !self.ai_entity.read(cx).knowledge_document_dialog_open() {
+        if !self.settings_page.knowledge_new_document_dialog_open {
             return None;
         }
-        let document_title = self
-            .ai_entity
-            .read(cx)
-            .knowledge_new_document_title()
-            .to_string();
-        let can_create = !document_title.trim().is_empty();
+        let can_create = !self
+            .settings_page
+            .knowledge_new_document_title
+            .trim()
+            .is_empty();
         let backdrop = dismissible_dialog_backdrop().on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, _event, _window, cx| {
@@ -193,7 +191,7 @@ impl WorkspaceApp {
                             .child(
                                 self.settings_text_input_control(
                                     SettingsInput::KnowledgeDocumentTitle,
-                                    document_title,
+                                    self.settings_page.knowledge_new_document_title.clone(),
                                     self.i18n.t(
                                         "settings_view.knowledge.new_document_title_placeholder",
                                     ),
@@ -216,7 +214,7 @@ impl WorkspaceApp {
                             )
                             .child(self.ai_settings_select_control(
                                 SettingsSelect::KnowledgeDocumentFormat,
-                                self.knowledge_document_format_label(cx),
+                                self.knowledge_document_format_label(),
                                 420.0,
                                 cx,
                             )),
@@ -251,48 +249,75 @@ impl WorkspaceApp {
             "knowledge-document-dialog-form",
             backdrop,
             form,
-            self.ai_entity
-                .read(cx)
-                .knowledge_document_presence()
-                .phase(),
+            self.knowledge_document_presence,
         ))
     }
 
     pub(in crate::workspace) fn open_knowledge_create_dialog(&mut self, cx: &mut Context<Self>) {
-        self.ai_entity.update(cx, |entity, cx| {
-            entity.open_knowledge_create_dialog();
-            cx.notify();
-        });
+        self.knowledge_create_presence.reopen();
+        self.settings_page.open_knowledge_create_dialog();
         cx.notify();
     }
 
     pub(in crate::workspace) fn close_knowledge_create_dialog(&mut self, cx: &mut Context<Self>) {
+        let Some(generation) = self.knowledge_create_presence.begin_exit() else {
+            return;
+        };
         let delay = oxideterm_gpui_ui::motion::duration(
             &self.tokens,
             oxideterm_gpui_ui::motion::MotionDuration::Overlay,
         );
-        self.ai_entity.update(cx, |entity, cx| {
-            entity.close_knowledge_create_dialog(delay, cx);
-        });
+        if delay.is_zero() {
+            self.settings_page.close_knowledge_create_dialog();
+            self.knowledge_create_presence.reopen();
+            cx.notify();
+            return;
+        }
+        cx.spawn(async move |weak, cx| {
+            gpui::Timer::after(delay).await;
+            let _ = weak.update(cx, |this, cx| {
+                if this.knowledge_create_presence.finish_exit(generation) {
+                    this.settings_page.close_knowledge_create_dialog();
+                    this.knowledge_create_presence.reopen();
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         cx.notify();
     }
 
     pub(in crate::workspace) fn open_knowledge_document_dialog(&mut self, cx: &mut Context<Self>) {
-        self.ai_entity.update(cx, |entity, cx| {
-            entity.open_knowledge_document_dialog();
-            cx.notify();
-        });
+        self.knowledge_document_presence.reopen();
+        self.settings_page.open_knowledge_new_document_dialog();
         cx.notify();
     }
 
     pub(in crate::workspace) fn close_knowledge_document_dialog(&mut self, cx: &mut Context<Self>) {
+        let Some(generation) = self.knowledge_document_presence.begin_exit() else {
+            return;
+        };
         let delay = oxideterm_gpui_ui::motion::duration(
             &self.tokens,
             oxideterm_gpui_ui::motion::MotionDuration::Overlay,
         );
-        self.ai_entity.update(cx, |entity, cx| {
-            entity.close_knowledge_document_dialog(delay, cx);
-        });
+        if delay.is_zero() {
+            self.settings_page.close_knowledge_new_document_dialog();
+            self.knowledge_document_presence.reopen();
+            cx.notify();
+            return;
+        }
+        cx.spawn(async move |weak, cx| {
+            gpui::Timer::after(delay).await;
+            let _ = weak.update(cx, |this, cx| {
+                if this.knowledge_document_presence.finish_exit(generation) {
+                    this.settings_page.close_knowledge_new_document_dialog();
+                    this.knowledge_document_presence.reopen();
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -300,7 +325,7 @@ impl WorkspaceApp {
         &self,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let confirm = self.ai_entity.read(cx).knowledge_delete_confirm()?.clone();
+        let confirm = self.settings_page.knowledge_delete_confirm.as_ref()?;
         let message_key = match confirm.target {
             KnowledgeDeleteTarget::Collection => {
                 "settings_view.knowledge.delete_collection_confirm"
@@ -315,10 +340,7 @@ impl WorkspaceApp {
                     cx.listener(|this, _event, _window, cx| {
                         // Tauri delete confirm uses onOpenChange(false) to
                         // clear the pending delete target.
-                        this.ai_entity.update(cx, |entity, cx| {
-                            entity.clear_knowledge_delete_confirm();
-                            cx.notify();
-                        });
+                        this.settings_page.clear_knowledge_delete_confirm();
                         this.clear_standard_confirm_focus();
                         cx.stop_propagation();
                         cx.notify();
@@ -348,10 +370,7 @@ impl WorkspaceApp {
                                     ConfirmDialogAction::Cancel,
                                     false,
                                     |this, _event, _window, cx| {
-                                        this.ai_entity.update(cx, |entity, cx| {
-                                            entity.clear_knowledge_delete_confirm();
-                                            cx.notify();
-                                        });
+                                        this.settings_page.clear_knowledge_delete_confirm();
                                         cx.notify();
                                     },
                                     cx,

@@ -24,9 +24,8 @@ impl WorkspaceApp {
     ) -> AnyElement {
         let theme = self.tokens.ui;
         let has_background = self.background_surface_active("file_manager");
-        let (filtered, filtered_rows) = self.file_manager.update(cx, |file_manager, _cx| {
-            (file_manager.sorted_files(), file_manager.sorted_file_rows())
-        });
+        let filtered = self.file_manager.sorted_files();
+        let filtered_rows = self.file_manager.sorted_file_rows();
 
         let mut root = div()
             .id("file-manager-view")
@@ -39,9 +38,9 @@ impl WorkspaceApp {
                 MouseButton::Left,
                 cx.listener(|this, _event, window, cx| {
                     window.focus(&this.focus_handle, cx);
-                    this.dismiss_file_manager_context_menu(cx);
-                    if this.file_manager.read(cx).dialog.is_none() {
-                        this.blur_file_manager_inline_inputs(cx);
+                    this.dismiss_file_manager_context_menu();
+                    if this.file_manager.dialog.is_none() {
+                        this.blur_file_manager_inline_inputs();
                     }
                     cx.notify();
                 }),
@@ -66,36 +65,42 @@ impl WorkspaceApp {
                     )),
             );
 
-        if self
-            .file_manager
-            .read(cx)
-            .context_menu_exit_generation
-            .is_some()
-        {
+        if let Some(generation) = self.file_manager.context_menu_exit_generation {
             let delay = oxideterm_gpui_ui::motion::duration(
                 &self.tokens,
                 oxideterm_gpui_ui::motion::MotionDuration::Micro,
             );
-            self.file_manager.update(cx, |file_manager, cx| {
-                // Dialog-opening actions retain the menu until the entity-owned exit task ends.
-                file_manager.schedule_context_menu_exit(delay, cx);
-            });
+            // Dialog-opening actions still retire their retained menu payload.
+            cx.spawn(async move |weak, cx| {
+                Timer::after(delay).await;
+                let _ = weak.update(cx, |this, cx| {
+                    if this
+                        .file_manager
+                        .context_menu_presence
+                        .finish_exit(generation)
+                    {
+                        this.file_manager.context_menu = None;
+                        this.file_manager.context_menu_exit_generation = None;
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
         }
-        if self.file_manager.read(cx).dialog.is_none()
-            && let Some(menu) = self.file_manager.read(cx).context_menu.clone()
+        if self.file_manager.dialog.is_none()
+            && let Some(menu) = self.file_manager.context_menu.clone()
         {
             root =
                 root.child(self.render_file_manager_context_menu(menu, window, has_background, cx));
         }
-        if self.file_manager.read(cx).dialog.is_none()
-            && self.file_manager.read(cx).focused_input == Some(FileManagerInput::Path)
+        if self.file_manager.dialog.is_none()
+            && self.file_manager.focused_input == Some(FileManagerInput::Path)
             && let Some(completion) =
                 self.render_path_completion_overlay(PathCompletionOwner::FileManager, cx)
         {
             root = root.child(completion);
         }
-        let operation_progress = self.file_manager.read(cx).operation_progress.clone();
-        if let Some(progress) = operation_progress.as_ref()
+        if let Some(progress) = self.file_manager.operation_progress.as_ref()
             && progress.active
         {
             root = root.child(self.render_file_manager_operation_progress(progress, cx));
@@ -110,11 +115,7 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.tokens.ui;
-        let (current_path, bookmarks_visible) = {
-            let file_manager = self.file_manager.read(cx);
-            (file_manager.path.clone(), file_manager.bookmarks_visible)
-        };
-        let bookmarked = self.is_file_manager_path_bookmarked(&current_path, cx);
+        let bookmarked = self.is_file_manager_path_bookmarked(&self.file_manager.path);
         div()
             .h(px(FILE_MANAGER_TOOLBAR_HEIGHT))
             .flex()
@@ -129,18 +130,16 @@ impl WorkspaceApp {
                 has_background,
                 FILE_MANAGER_PANEL_80_ALPHA,
             ))
-            .when(!bookmarks_visible, |toolbar| {
+            .when(!self.file_manager.bookmarks_visible, |toolbar| {
                 // Once the favorites rail is fully hidden, its restore action belongs
                 // to the persistent file-manager toolbar instead of an empty rail.
                 toolbar.child(self.render_file_manager_icon_button(
                     LucideIcon::PanelLeft,
                     self.i18n.t("fileManager.expandSidebar"),
                     cx.listener(|this, _event, _window, cx| {
-                        this.file_manager.update(cx, |file_manager, cx| {
-                            file_manager.bookmarks_visible = true;
-                            cx.notify();
-                        });
+                        this.file_manager.bookmarks_visible = true;
                         cx.stop_propagation();
+                        cx.notify();
                     }),
                     cx.entity(),
                 ))
@@ -163,8 +162,8 @@ impl WorkspaceApp {
                 LucideIcon::FolderPlus,
                 self.i18n.t("fileManager.newFolder"),
                 cx.listener(|this, _event, _window, cx| {
-                    this.blur_file_manager_inline_inputs(cx);
-                    this.open_file_manager_new_folder_dialog(cx);
+                    this.blur_file_manager_inline_inputs();
+                    this.open_file_manager_new_folder_dialog();
                     cx.stop_propagation();
                     cx.notify();
                 }),
@@ -174,8 +173,8 @@ impl WorkspaceApp {
                 LucideIcon::FilePlus,
                 self.i18n.t("fileManager.newFile"),
                 cx.listener(|this, _event, _window, cx| {
-                    this.blur_file_manager_inline_inputs(cx);
-                    this.open_file_manager_new_file_dialog(cx);
+                    this.blur_file_manager_inline_inputs();
+                    this.open_file_manager_new_file_dialog();
                     cx.stop_propagation();
                     cx.notify();
                 }),
@@ -228,7 +227,7 @@ impl WorkspaceApp {
                     "fileManager.addBookmark"
                 }),
                 cx.listener(|this, _event, _window, cx| {
-                    this.blur_file_manager_inline_inputs(cx);
+                    this.blur_file_manager_inline_inputs();
                     this.toggle_file_manager_current_bookmark(cx);
                     cx.stop_propagation();
                 }),
@@ -246,8 +245,8 @@ impl WorkspaceApp {
                 cx.listener(|this, _event, _window, cx| {
                     // Drive switching must remain a primary action for removable
                     // media and Windows volumes, not a context-menu-only command.
-                    this.blur_file_manager_inline_inputs(cx);
-                    this.open_file_manager_drives_dialog(cx);
+                    this.blur_file_manager_inline_inputs();
+                    this.open_file_manager_drives_dialog();
                     cx.stop_propagation();
                     cx.notify();
                 }),
@@ -266,7 +265,7 @@ impl WorkspaceApp {
                 LucideIcon::RefreshCw,
                 self.i18n.t("fileManager.refresh"),
                 cx.listener(|this, _event, _window, cx| {
-                    this.refresh_file_manager_with_drives(cx);
+                    this.refresh_file_manager_with_drives();
                     cx.stop_propagation();
                     cx.notify();
                 }),
@@ -281,15 +280,7 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.tokens.ui;
-        let expanded = self.file_manager.read(cx).bookmarks_visible;
-        let (sidebar_locations, bookmarks, drives) = {
-            let file_manager = self.file_manager.read(cx);
-            (
-                file_manager.sidebar_locations.clone(),
-                file_manager.bookmarks.clone(),
-                file_manager.drives.clone(),
-            )
-        };
+        let expanded = self.file_manager.bookmarks_visible;
         let mut panel = div()
             .h_full()
             .flex_none()
@@ -323,7 +314,7 @@ impl WorkspaceApp {
                 cx,
             ));
         let mut item_geometry = FileManagerSidebarItemGeometry::FIRST;
-        for location in sidebar_locations {
+        for location in self.file_manager.sidebar_locations.clone() {
             let (label_key, icon) = file_manager_sidebar_location_presentation(location.kind);
             navigation = navigation.child(self.render_file_manager_sidebar_path_row(
                 location.path,
@@ -336,7 +327,7 @@ impl WorkspaceApp {
             ));
             item_geometry = item_geometry.next();
         }
-        for bookmark in bookmarks {
+        for bookmark in self.file_manager.bookmarks.clone() {
             navigation = navigation.child(self.render_file_manager_sidebar_bookmark_row(
                 bookmark,
                 has_background,
@@ -354,7 +345,7 @@ impl WorkspaceApp {
             ),
         ));
         item_geometry = item_geometry.after_section_header();
-        for drive in &drives {
+        for drive in &self.file_manager.drives {
             navigation = navigation.child(self.render_file_manager_sidebar_path_row(
                 drive.path.clone(),
                 drive.name.clone(),
@@ -407,7 +398,7 @@ impl WorkspaceApp {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _event, window, cx| {
-                                this.blur_file_manager_inline_inputs(cx);
+                                this.blur_file_manager_inline_inputs();
                                 this.open_terminal_at_file_manager_path(window, cx);
                                 cx.stop_propagation();
                             }),
@@ -434,11 +425,9 @@ impl WorkspaceApp {
                     LucideIcon::PanelLeftClose,
                     self.i18n.t("fileManager.collapseSidebar"),
                     cx.listener(|this, _event, _window, cx| {
-                        this.file_manager.update(cx, |file_manager, cx| {
-                            file_manager.bookmarks_visible = false;
-                            cx.notify();
-                        });
+                        this.file_manager.bookmarks_visible = false;
                         cx.stop_propagation();
+                        cx.notify();
                     }),
                     cx.entity(),
                 ))
@@ -459,8 +448,7 @@ impl WorkspaceApp {
                     LucideIcon::Plus,
                     self.i18n.t("fileManager.addBookmark"),
                     cx.listener(|this, _event, _window, cx| {
-                        let current_path = this.file_manager.read(cx).path.clone();
-                        if !this.is_file_manager_path_bookmarked(&current_path, cx) {
+                        if !this.is_file_manager_path_bookmarked(&this.file_manager.path) {
                             this.toggle_file_manager_current_bookmark(cx);
                         }
                         cx.stop_propagation();
@@ -482,7 +470,7 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.tokens.ui;
-        let active = path == self.file_manager.read(cx).path;
+        let active = path == self.file_manager.path;
         let selection_surface = self.render_file_manager_sidebar_selection(active, item_geometry);
         div()
             .h(px(FILE_MANAGER_SIDEBAR_ROW_HEIGHT))
@@ -518,9 +506,9 @@ impl WorkspaceApp {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, _window, cx| {
-                    this.blur_file_manager_inline_inputs(cx);
+                    this.blur_file_manager_inline_inputs();
                     this.begin_file_manager_sidebar_transition(&path, item_geometry, cx);
-                    this.set_file_manager_path(path.clone(), cx);
+                    this.set_file_manager_path(path.clone());
                     cx.stop_propagation();
                     cx.notify();
                 }),
@@ -536,7 +524,7 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.tokens.ui;
-        let active = bookmark.path == self.file_manager.read(cx).path;
+        let active = bookmark.path == self.file_manager.path;
         let selection_surface = self.render_file_manager_sidebar_selection(active, item_geometry);
         div()
             .h(px(FILE_MANAGER_SIDEBAR_ROW_HEIGHT))
@@ -587,8 +575,8 @@ impl WorkspaceApp {
                         cx.listener({
                             let bookmark = bookmark.clone();
                             move |this, _event, _window, cx| {
-                                this.blur_file_manager_inline_inputs(cx);
-                                this.open_file_manager_edit_bookmark_dialog(bookmark.clone(), cx);
+                                this.blur_file_manager_inline_inputs();
+                                this.open_file_manager_edit_bookmark_dialog(bookmark.clone());
                                 cx.stop_propagation();
                                 cx.notify();
                             }
@@ -613,7 +601,7 @@ impl WorkspaceApp {
                         cx.listener({
                             let id = bookmark.id.clone();
                             move |this, _event, _window, cx| {
-                                this.blur_file_manager_inline_inputs(cx);
+                                this.blur_file_manager_inline_inputs();
                                 this.remove_file_manager_bookmark(&id, cx);
                                 cx.stop_propagation();
                             }
@@ -625,9 +613,9 @@ impl WorkspaceApp {
                 cx.listener({
                     let path = bookmark.path;
                     move |this, _event, _window, cx| {
-                        this.blur_file_manager_inline_inputs(cx);
+                        this.blur_file_manager_inline_inputs();
                         this.begin_file_manager_sidebar_transition(&path, item_geometry, cx);
-                        this.set_file_manager_path(path.clone(), cx);
+                        this.set_file_manager_path(path.clone());
                         cx.stop_propagation();
                         cx.notify();
                     }
@@ -697,12 +685,11 @@ impl WorkspaceApp {
         target_geometry: FileManagerSidebarItemGeometry,
         cx: &mut Context<Self>,
     ) {
-        let current_path = self.file_manager.read(cx).path.clone();
-        if current_path == target_path {
+        if self.file_manager.path == target_path {
             return;
         }
         let vertical_offset_y = self
-            .file_manager_sidebar_geometry_for_path(&current_path, cx)
+            .file_manager_sidebar_geometry_for_path(&self.file_manager.path)
             .map(|source_geometry| source_geometry.top - target_geometry.top);
         self.begin_user_segmented_control_transition_with_vertical_offset(
             selection_motion::FILE_MANAGER_NAVIGATION_ID,
@@ -715,31 +702,22 @@ impl WorkspaceApp {
     fn file_manager_sidebar_geometry_for_path(
         &self,
         path: &str,
-        cx: &App,
     ) -> Option<FileManagerSidebarItemGeometry> {
-        let (sidebar_locations, bookmarks, drives) = {
-            let file_manager = self.file_manager.read(cx);
-            (
-                file_manager.sidebar_locations.clone(),
-                file_manager.bookmarks.clone(),
-                file_manager.drives.clone(),
-            )
-        };
         let mut item_geometry = FileManagerSidebarItemGeometry::FIRST;
-        for location in &sidebar_locations {
+        for location in &self.file_manager.sidebar_locations {
             if location.path == path {
                 return Some(item_geometry);
             }
             item_geometry = item_geometry.next();
         }
-        for bookmark in &bookmarks {
+        for bookmark in &self.file_manager.bookmarks {
             if bookmark.path == path {
                 return Some(item_geometry);
             }
             item_geometry = item_geometry.next();
         }
         item_geometry = item_geometry.after_section_header();
-        for drive in &drives {
+        for drive in &self.file_manager.drives {
             if drive.path == path {
                 return Some(item_geometry);
             }
@@ -848,8 +826,8 @@ impl WorkspaceApp {
                 LucideIcon::ArrowUp,
                 self.i18n.t("fileManager.goUp"),
                 cx.listener(|this, _event, _window, cx| {
-                    this.blur_file_manager_inline_inputs(cx);
-                    this.navigate_file_manager_parent(cx);
+                    this.blur_file_manager_inline_inputs();
+                    this.navigate_file_manager_parent();
                     cx.stop_propagation();
                     cx.notify();
                 }),
@@ -859,8 +837,8 @@ impl WorkspaceApp {
                 LucideIcon::Home,
                 self.i18n.t("fileManager.home"),
                 cx.listener(|this, _event, _window, cx| {
-                    this.blur_file_manager_inline_inputs(cx);
-                    this.set_file_manager_path(home_path(), cx);
+                    this.blur_file_manager_inline_inputs();
+                    this.set_file_manager_path(home_path());
                     cx.stop_propagation();
                     cx.notify();
                 }),
@@ -870,8 +848,8 @@ impl WorkspaceApp {
                 LucideIcon::RefreshCw,
                 self.i18n.t("fileManager.refresh"),
                 cx.listener(|this, _event, _window, cx| {
-                    this.blur_file_manager_inline_inputs(cx);
-                    this.refresh_file_manager_with_drives(cx);
+                    this.blur_file_manager_inline_inputs();
+                    this.refresh_file_manager_with_drives();
                     cx.stop_propagation();
                     cx.notify();
                 }),
@@ -893,17 +871,12 @@ impl WorkspaceApp {
     ) -> AnyElement {
         let theme = self.tokens.ui;
         let input = FileManagerInput::Path;
-        let (editing, focused, value) = {
-            let file_manager = self.file_manager.read(cx);
-            (
-                file_manager.editing_path,
-                file_manager.focused_input == Some(input),
-                if file_manager.editing_path {
-                    file_manager.path_input.clone()
-                } else {
-                    file_manager.path.clone()
-                },
-            )
+        let editing = self.file_manager.editing_path;
+        let focused = self.file_manager.focused_input == Some(input);
+        let value = if self.file_manager.editing_path {
+            self.file_manager.path_input.as_str()
+        } else {
+            self.file_manager.path.as_str()
         };
         div()
             .flex_1()
@@ -926,7 +899,7 @@ impl WorkspaceApp {
             .overflow_hidden()
             .cursor_pointer()
             .when(editing, |bar| {
-                bar.child(self.render_file_manager_inline_text(input, &value, focused, cx))
+                bar.child(self.render_file_manager_inline_text(input, value, focused, cx))
                     .child(
                         div()
                             .size(px(16.0))
@@ -943,7 +916,7 @@ impl WorkspaceApp {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _event, _window, cx| {
-                                    this.commit_file_manager_path_input(cx);
+                                    this.commit_file_manager_path_input();
                                     cx.stop_propagation();
                                     cx.notify();
                                 }),
@@ -951,19 +924,16 @@ impl WorkspaceApp {
                     )
             })
             .when(!editing, |bar| {
-                bar.child(self.render_file_manager_breadcrumb(&value, cx))
+                bar.child(self.render_file_manager_breadcrumb(value, cx))
             })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     window.focus(&this.focus_handle, cx);
                     if editing || event.click_count >= 2 {
-                        this.start_file_manager_path_edit(cx);
+                        this.start_file_manager_path_edit();
                     } else {
-                        this.file_manager.update(cx, |file_manager, cx| {
-                            file_manager.focused_input = None;
-                            cx.notify();
-                        });
+                        this.file_manager.focused_input = None;
                         this.ime_marked_text = None;
                     }
                     cx.stop_propagation();
@@ -1053,7 +1023,7 @@ impl WorkspaceApp {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _event, _window, cx| {
-                            this.set_file_manager_path(full_path.clone(), cx);
+                            this.set_file_manager_path(full_path.clone());
                             cx.stop_propagation();
                             cx.notify();
                         }),
@@ -1069,7 +1039,7 @@ impl WorkspaceApp {
             .flex_row()
             .items_center()
             .overflow_hidden()
-            .track_scroll(&self.file_manager.read(cx).path_scroll)
+            .track_scroll(&self.file_manager.path_scroll)
             .text_size(px(FILE_MANAGER_TEXT_SM))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
                 this.handle_file_manager_breadcrumb_scroll(event, cx);
@@ -1095,11 +1065,11 @@ impl WorkspaceApp {
                     value,
                     placeholder: self.i18n.t("fileManager.pathPlaceholder"),
                     focused,
-                    caret_visible: self.input_caret.visible(),
+                    caret_visible: self.new_connection_caret_visible,
                     secret: false,
                     selected_all: false,
-                    selected_range: self.ime_selected_range_for_target(target, cx),
-                    marked_text: self.marked_text_for_target(target, cx),
+                    selected_range: self.ime_selected_range_for_target(target),
+                    marked_text: self.marked_text_for_target(target),
                 },
             )
             .flex_1()
@@ -1113,11 +1083,8 @@ impl WorkspaceApp {
                 MouseButton::Left,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                     window.focus(&this.focus_handle, cx);
-                    this.file_manager.update(cx, |file_manager, cx| {
-                        file_manager.focused_input = Some(input);
-                        cx.notify();
-                    });
-                    this.dismiss_file_manager_context_menu(cx);
+                    this.file_manager.focused_input = Some(input);
+                    this.dismiss_file_manager_context_menu();
                     this.ime_marked_text = None;
                     this.begin_ime_selection_from_mouse_down(target, event, window, cx);
                     cx.stop_propagation();
@@ -1190,13 +1157,7 @@ impl WorkspaceApp {
         flexible: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (active, sort_direction) = {
-            let file_manager = self.file_manager.read(cx);
-            (
-                file_manager.sort_field == field,
-                file_manager.sort_direction,
-            )
-        };
+        let active = self.file_manager.sort_field == field;
         let field_key = match field {
             LocalSortField::Name => "name",
             LocalSortField::Size => "size",
@@ -1249,7 +1210,7 @@ impl WorkspaceApp {
             )
             .when(active, |col| {
                 col.child(Self::render_lucide_icon(
-                    match sort_direction {
+                    match self.file_manager.sort_direction {
                         LocalSortDirection::Asc => LucideIcon::ArrowUpAZ,
                         LocalSortDirection::Desc => LucideIcon::ArrowDownAZ,
                     },
@@ -1260,7 +1221,7 @@ impl WorkspaceApp {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, _window, cx| {
-                    this.toggle_file_manager_sort(field, cx);
+                    this.toggle_file_manager_sort(field);
                     cx.stop_propagation();
                     cx.notify();
                 }),
@@ -1275,13 +1236,7 @@ impl WorkspaceApp {
     ) -> AnyElement {
         let theme = self.tokens.ui;
         let input = FileManagerInput::Filter;
-        let (focused, filter) = {
-            let file_manager = self.file_manager.read(cx);
-            (
-                file_manager.focused_input == Some(input),
-                file_manager.filter.clone(),
-            )
-        };
+        let focused = self.file_manager.focused_input == Some(input);
         let target = WorkspaceImeTarget::FileManager(input);
         let workspace = cx.entity();
         div()
@@ -1296,14 +1251,14 @@ impl WorkspaceApp {
                 text_input(
                     &self.tokens,
                     TextInputView {
-                        value: &filter,
+                        value: &self.file_manager.filter,
                         placeholder: self.i18n.t("fileManager.filterPlaceholder"),
                         focused,
-                        caret_visible: self.input_caret.visible(),
+                        caret_visible: self.new_connection_caret_visible,
                         secret: false,
                         selected_all: false,
-                        selected_range: self.ime_selected_range_for_target(target, cx),
-                        marked_text: self.marked_text_for_target(target, cx),
+                        selected_range: self.ime_selected_range_for_target(target),
+                        marked_text: self.marked_text_for_target(target),
                     },
                 )
                 .h(px(24.0))
@@ -1312,11 +1267,8 @@ impl WorkspaceApp {
                     MouseButton::Left,
                     cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                         window.focus(&this.focus_handle, cx);
-                        this.file_manager.update(cx, |file_manager, cx| {
-                            file_manager.focused_input = Some(FileManagerInput::Filter);
-                            cx.notify();
-                        });
-                        this.dismiss_file_manager_context_menu(cx);
+                        this.file_manager.focused_input = Some(FileManagerInput::Filter);
+                        this.dismiss_file_manager_context_menu();
                         this.ime_marked_text = None;
                         this.begin_ime_selection_from_mouse_down(target, event, window, cx);
                         cx.stop_propagation();
@@ -1351,20 +1303,12 @@ impl WorkspaceApp {
             .on_scroll_wheel(cx.listener(|this, _event, _window, cx| {
                 // Context-menu coordinates and row payloads describe the
                 // pre-scroll list, so scrolling invalidates both immediately.
-                if this.clear_file_manager_context_menu_immediately(cx) {
+                if this.clear_file_manager_context_menu_immediately() {
                     cx.notify();
                 }
             }))
             .bg(file_manager_bg(theme.bg, has_background));
-        let (loading, error, list_scroll) = {
-            let file_manager = self.file_manager.read(cx);
-            (
-                file_manager.loading,
-                file_manager.error.clone(),
-                file_manager.list_scroll.clone(),
-            )
-        };
-        if loading {
+        if self.file_manager.loading {
             return list
                 .child(
                     div()
@@ -1391,7 +1335,7 @@ impl WorkspaceApp {
                 )
                 .into_any_element();
         }
-        if let Some(error) = error.as_ref() {
+        if let Some(error) = self.file_manager.error.as_ref() {
             return list
                 .child(
                     div()
@@ -1446,24 +1390,25 @@ impl WorkspaceApp {
                 .into_any_element();
         }
 
-        let file_manager = self.file_manager.clone();
+        let workspace = cx.entity();
+        let selected = Arc::new(self.file_manager.selected.clone());
         let row_count = files.len();
         let list_items = files;
         let row_items = rows;
+        let row_selected = selected;
+        let row_workspace = workspace;
         list.child(
             tauri_virtual_uniform_list(
                 "file-manager-list-virtual",
                 row_count,
-                list_scroll,
+                self.file_manager.list_scroll.clone(),
                 file_manager_list_virtual_spec(),
                 move |range, _window, _cx| {
                     range
                         .map(|index| {
                             let file = &list_items[index];
                             let row = &row_items[index];
-                            // Selection remains page-owned and is sampled only
-                            // for rows requested by the virtual-list viewport.
-                            let selected = file_manager.read(_cx).selected.contains(&file.name);
+                            let selected = row_selected.contains(&file.name);
                             let icon_color = if row.icon_color == 0 {
                                 theme.text_muted
                             } else {
@@ -1527,38 +1472,43 @@ impl WorkspaceApp {
                                         .child(row.modified_text.clone()),
                                 )
                                 .on_mouse_down(MouseButton::Left, {
-                                    let file_manager = file_manager.clone();
+                                    let workspace = row_workspace.clone();
                                     let visible = list_items.clone();
-                                    let entry = file.clone();
-                                    move |event: &MouseDownEvent, _window, cx| {
-                                        file_manager.update(cx, |file_manager, cx| {
+                                    move |event: &MouseDownEvent, window, cx| {
+                                        let _ = workspace.update(cx, |this, cx| {
+                                            window.focus(&this.focus_handle, cx);
+                                            this.dismiss_file_manager_context_menu();
+                                            this.blur_file_manager_inline_inputs();
                                             if event.click_count >= 2 {
-                                                file_manager.activate_entry(entry.clone(), cx);
+                                                this.open_file_manager_entry(
+                                                    visible[index].clone(),
+                                                    cx,
+                                                );
                                             } else {
-                                                file_manager.clear_context_menu_immediately();
-                                                file_manager.select_entry(
-                                                    entry.name.clone(),
+                                                this.select_file_manager_entry(
+                                                    visible[index].name.clone(),
                                                     event.modifiers,
                                                     visible.as_ref(),
                                                 );
-                                                cx.notify();
                                             }
                                             cx.stop_propagation();
+                                            cx.notify();
                                         });
                                     }
                                 })
                                 .on_mouse_down(MouseButton::Right, {
-                                    let file_manager = file_manager.clone();
-                                    let entry = file.clone();
-                                    move |event: &MouseDownEvent, _window, cx| {
-                                        file_manager.update(cx, |file_manager, cx| {
-                                            file_manager.open_context_menu(
-                                                Some(entry.clone()),
+                                    let workspace = row_workspace.clone();
+                                    let visible = list_items.clone();
+                                    move |event: &MouseDownEvent, window, cx| {
+                                        let _ = workspace.update(cx, |this, cx| {
+                                            window.focus(&this.focus_handle, cx);
+                                            this.open_file_manager_context_menu(
+                                                Some(visible[index].clone()),
                                                 f32::from(event.position.x),
                                                 f32::from(event.position.y),
-                                                cx,
                                             );
                                             cx.stop_propagation();
+                                            cx.notify();
                                         });
                                     }
                                 })
@@ -1587,9 +1537,9 @@ impl WorkspaceApp {
                 MouseButton::Left,
                 cx.listener(|this, _event, window, cx| {
                     window.focus(&this.focus_handle, cx);
-                    this.dismiss_file_manager_context_menu(cx);
-                    this.blur_file_manager_inline_inputs(cx);
-                    this.clear_file_manager_selection(cx);
+                    this.dismiss_file_manager_context_menu();
+                    this.blur_file_manager_inline_inputs();
+                    this.clear_file_manager_selection();
                     cx.notify();
                 }),
             )
@@ -1601,7 +1551,6 @@ impl WorkspaceApp {
                         None,
                         f32::from(event.position.x),
                         f32::from(event.position.y),
-                        cx,
                     );
                     cx.stop_propagation();
                     cx.notify();

@@ -39,7 +39,7 @@ impl WorkspaceApp {
                         self.i18n.t("sftp.scp.download_path"),
                         false,
                         cx.listener(|this, _event, _window, cx| {
-                            this.queue_quick_scp_download(cx);
+                            this.queue_quick_scp_download();
                             cx.stop_propagation();
                             cx.notify();
                         }),
@@ -48,17 +48,14 @@ impl WorkspaceApp {
                         self.i18n.t("sftp.preview.retry"),
                         false,
                         cx.listener(|this, _event, _window, cx| {
-                            this.sftp_view.update(cx, |sftp, cx| {
-                                sftp.init_error = None;
-                                cx.notify();
-                            });
-                            if let Some(tab_id) = this.active_tab_id(cx)
+                            this.sftp_view.init_error = None;
+                            if let Some(tab_id) = this.main_window_tabs.active_tab_id
                                 && let Some(node_id) = this.sftp_tab_nodes.get(&tab_id).cloned()
                             {
                                 // Retry asks the node owner to rebuild SFTP; SCP remains an
                                 // explicit compatibility action beside this control.
-                                this.ensure_node_connection_started(&node_id, cx);
-                                this.request_sftp_remote_load(cx);
+                                this.ensure_node_connection_started(&node_id);
+                                this.request_sftp_remote_load();
                             }
                             cx.stop_propagation();
                             cx.notify();
@@ -100,7 +97,7 @@ impl WorkspaceApp {
             icon,
             self.i18n.t(label_key),
             cx.listener(move |this, _event, _window, cx| {
-                this.navigate_sftp_path(pane, target, cx);
+                this.navigate_sftp_path(pane, target);
                 cx.stop_propagation();
                 cx.notify();
             }),
@@ -121,14 +118,10 @@ impl WorkspaceApp {
                     SftpPane::Local => {
                         // Local refresh only re-reads the visible directory and
                         // must not disturb the node-owned remote SFTP session.
-                        let path = this.sftp_view.read(cx).local_path.clone();
-                        let files = refreshed_local_files(&path);
-                        this.sftp_view.update(cx, |sftp, cx| {
-                            sftp.local_files = files;
-                            cx.notify();
-                        });
+                        let path = this.sftp_view.local_path.clone();
+                        this.sftp_view.local_files = refreshed_local_files(&path);
                     }
-                    SftpPane::Remote => this.request_sftp_remote_load(cx),
+                    SftpPane::Remote => this.request_sftp_remote_load(),
                 }
                 cx.stop_propagation();
                 cx.notify();
@@ -166,7 +159,7 @@ impl WorkspaceApp {
                 )
             },
             cx.listener(move |this, _event, _window, cx| {
-                this.queue_sftp_transfers(pane, direction, cx);
+                this.queue_sftp_transfers(pane, direction);
                 cx.stop_propagation();
                 cx.notify();
             }),
@@ -254,5 +247,22 @@ impl WorkspaceApp {
             );
         }
         title
+    }
+
+    pub(in crate::workspace::sftp) fn transfer_status_text(
+        &self,
+        transfer: &SftpTransferItem,
+    ) -> String {
+        match transfer.state {
+            SftpTransferState::Pending => self.i18n.t("sftp.queue.status_waiting"),
+            SftpTransferState::Active => format_transfer_speed(transfer.speed),
+            SftpTransferState::Paused => self.i18n.t("sftp.queue.status_paused"),
+            SftpTransferState::Completed => self.i18n.t("sftp.queue.status_completed"),
+            SftpTransferState::Cancelled => self.i18n.t("sftp.queue.status_cancelled"),
+            SftpTransferState::Error => transfer
+                .error
+                .clone()
+                .unwrap_or_else(|| self.i18n.t("sftp.queue.status_error")),
+        }
     }
 }

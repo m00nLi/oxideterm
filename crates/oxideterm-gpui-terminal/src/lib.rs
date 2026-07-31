@@ -28,5 +28,5 @@ pub use terminal_ui::{
     TerminalBackgroundFit, TerminalBackgroundPreferences, TerminalCommandSelectionLabels,
     TerminalHighlightRenderMode, TerminalHighlightRule, TerminalModemLabels, TerminalNotice,
     TerminalNoticeVariant, TerminalPasteLabels, TerminalSerialControlLabels, TerminalTrzszLabels,
-    TerminalUiPreferenceOverrides, TerminalUiPreferences, TerminalUiTheme,
+    TerminalUiPreferences, TerminalUiTheme,
 };

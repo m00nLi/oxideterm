@@ -11,7 +11,7 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(active_pane) = self.active_pane(cx) else {
+        let Some(active_pane) = self.active_pane() else {
             return false;
         };
         let Some(action) = active_pane.update(cx, |pane, _cx| pane.take_context_action_request())
@@ -40,13 +40,14 @@ impl WorkspaceApp {
                     return false;
                 };
                 self.search.visible = false;
-                if self.ai_entity.read(cx).terminal_inline_panel().open {
+                if self.ai.chat.inline_panel.open {
                     self.close_terminal_ai_inline_panel(window, cx);
                 }
                 self.close_terminal_command_overlays(cx);
-                let sender_id = self.replace_terminal_command_sender_text(command, cx);
+                self.terminal_command_bar_draft = command;
+                self.terminal_command_bar_focused = true;
                 self.ime_marked_text = None;
-                self.focus_terminal_command_sender_editor(sender_id, window, cx);
+                window.focus(&self.focus_handle, cx);
                 cx.notify();
                 true
             }

@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{Animation, AnimationExt, App};
+use gpui::{Animation, AnimationExt};
 use oxideterm_settings_model::parse_rgb24_hex;
 
 const NEW_CONNECTION_TRANSPORT_ROW_HEIGHT: f32 = 36.0;
@@ -124,30 +124,8 @@ pub(super) enum AuthSelectorContext {
     Jump,
 }
 
-fn connection_secret_field_value(
-    form: &NewConnectionForm,
-    field: NewConnectionField,
-) -> Option<&str> {
-    // Return a view into the Entity-owned draft so rendering cannot create a
-    // second credential owner before the text input builds its presentation.
-    match field {
-        NewConnectionField::Password => Some(&form.password),
-        NewConnectionField::Passphrase => Some(&form.passphrase),
-        NewConnectionField::UpstreamProxyPassword => Some(&form.upstream_proxy_password),
-        NewConnectionField::JumpPassword => form
-            .jump_server_form
-            .as_ref()
-            .map(|jump_form| jump_form.password.as_str()),
-        NewConnectionField::JumpPassphrase => form
-            .jump_server_form
-            .as_ref()
-            .map(|jump_form| jump_form.passphrase.as_str()),
-        _ => None,
-    }
-}
-
 impl WorkspaceApp {
-    pub(in crate::workspace) fn new_connection_select_anchor_id(
+    pub(super) fn new_connection_select_anchor_id(
         select_id: NewConnectionSelect,
     ) -> SelectAnchorId {
         match select_id {
@@ -177,13 +155,6 @@ impl WorkspaceApp {
             NewConnectionSelect::SerialFlowControl => {
                 SelectAnchorId::NewConnectionSerialFlowControl
             }
-            NewConnectionSelect::TerminalEncoding => SelectAnchorId::NewConnectionTerminalEncoding,
-            NewConnectionSelect::TerminalBackspaceSequence => {
-                SelectAnchorId::NewConnectionTerminalBackspaceSequence
-            }
-            NewConnectionSelect::TerminalDeleteSequence => {
-                SelectAnchorId::NewConnectionTerminalDeleteSequence
-            }
         }
     }
 
@@ -193,9 +164,8 @@ impl WorkspaceApp {
         value: String,
         placeholder: bool,
         disabled: bool,
-        cx: &Context<Self>,
     ) -> Div {
-        let focused = self.connection_form_state(cx).open_select == Some(select_id);
+        let focused = self.open_new_connection_select == Some(select_id);
         // New-connection selects live inside modal forms; keep their keyboard
         // focus ring tied to the same browser focus-origin rule as settings
         // and Cloud Sync selects.
@@ -206,58 +176,67 @@ impl WorkspaceApp {
             disabled,
             browser_behavior::browser_focus_visible(
                 focused,
-                self.connection_form_state(cx).select_focus_origin,
+                self.new_connection_select_focus_origin,
             ),
         )
-    }
-
-    fn track_new_connection_select_anchor(
-        &self,
-        select_id: NewConnectionSelect,
-        trigger: impl IntoElement,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let anchor_id = Self::new_connection_select_anchor_id(select_id);
-        let anchors = self.connection_flow.read(cx).select_anchor_store();
-        let notify_on_change = self.connection_form_state(cx).open_select == Some(select_id);
-        let workspace = cx.entity();
-        select_anchor_probe(anchor_id, trigger, move |anchor, _window, cx| {
-            // Closed triggers only update layout-owned storage. An open popup
-            // needs one follow-up root render because its portal position was
-            // resolved before this frame's prepaint reported the new bounds.
-            if anchors.update(anchor) && notify_on_change {
-                let _ = workspace.update(cx, |_this, cx| cx.notify());
-            }
-        })
-        .into_any_element()
     }
 
     fn open_new_connection_select_from_pointer(
         &mut self,
         select_id: NewConnectionSelect,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) {
         // New-connection selects share browser focus-origin semantics with
         // settings selects: pointer-opened menus should not render a keyboard
         // focus-visible ring on the trigger.
-        if self.connection_form_state(cx).open_select == Some(select_id) {
-            self.close_new_connection_select(cx);
+        if self.open_new_connection_select == Some(select_id) {
+            self.close_new_connection_select();
             return;
         }
-        self.update_connection_form_state(cx, |state| {
-            state.open_select = Some(select_id);
-            state.select_focus_origin = Some(browser_behavior::BrowserFocusOrigin::Pointer);
-        });
+        self.open_new_connection_select = Some(select_id);
+        self.new_connection_select_focus_origin =
+            Some(browser_behavior::BrowserFocusOrigin::Pointer);
     }
 
-    pub(in crate::workspace) fn close_new_connection_select(&mut self, cx: &mut Context<Self>) {
-        self.update_connection_form_state(cx, ConnectionFormState::close_select);
+    pub(in crate::workspace) fn close_new_connection_select(&mut self) {
+        browser_behavior::close_browser_trigger_select(
+            &mut self.open_new_connection_select,
+            &mut self.new_connection_select_focus_origin,
+        );
     }
 
-    pub(super) fn clear_new_connection_select_anchor(&mut self, cx: &App) {
-        // Every entry in this store belongs to the moving form viewport, so a
-        // scroll can invalidate the entire set without enumerating anchor IDs.
-        self.connection_flow.read(cx).select_anchor_store().clear();
+    pub(super) fn clear_new_connection_select_anchor(&mut self) {
+        // The group select overlay is anchored inside the new-connection scroll
+        // body. Drop its cached bounds when the body scrolls so a reopened
+        // overlay cannot reuse pre-scroll coordinates.
+        self.select_anchors
+            .remove(&SelectAnchorId::NewConnectionGroup);
+        self.select_anchors
+            .remove(&SelectAnchorId::NewConnectionKeyAuthSource);
+        self.select_anchors
+            .remove(&SelectAnchorId::NewConnectionManagedKey);
+        self.select_anchors
+            .remove(&SelectAnchorId::NewConnectionJumpSavedConnection);
+        self.select_anchors
+            .remove(&SelectAnchorId::NewConnectionJumpKeyAuthSource);
+        self.select_anchors
+            .remove(&SelectAnchorId::NewConnectionJumpManagedKey);
+        self.select_anchors
+            .remove(&SelectAnchorId::NewConnectionUpstreamProxyPolicy);
+        self.select_anchors
+            .remove(&SelectAnchorId::NewConnectionUpstreamProxyProtocol);
+        self.select_anchors
+            .remove(&SelectAnchorId::NewConnectionUpstreamProxyAuth);
+        self.select_anchors
+            .remove(&SelectAnchorId::NewConnectionSerialPort);
+        self.select_anchors
+            .remove(&SelectAnchorId::NewConnectionSerialDataBits);
+        self.select_anchors
+            .remove(&SelectAnchorId::NewConnectionSerialStopBits);
+        self.select_anchors
+            .remove(&SelectAnchorId::NewConnectionSerialParity);
+        self.select_anchors
+            .remove(&SelectAnchorId::NewConnectionSerialFlowControl);
     }
 
     pub(super) fn render_connection_hint(&self, text: String) -> AnyElement {
@@ -319,8 +298,7 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let secret_visible = self
-            .connection_form_state(cx)
-            .form
+            .new_connection_form
             .as_ref()
             .and_then(|form| connection_secret_field_visible(form, field));
         let input = self.render_connection_input(
@@ -330,74 +308,7 @@ impl WorkspaceApp {
             secret && !secret_visible.unwrap_or(false),
             cx,
         );
-        let control = if secret {
-            self.render_connection_secret_visibility(input, field, secret_visible, cx)
-        } else {
-            input
-        };
-
-        form_field(&self.tokens, label, control)
-    }
-
-    pub(super) fn render_connection_secret_field(
-        &self,
-        label: String,
-        placeholder: String,
-        field: NewConnectionField,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let Some((input, secret_visible)) =
-            self.render_connection_secret_input(placeholder, field, cx)
-        else {
-            return div().into_any_element();
-        };
-        let control = self.render_connection_secret_visibility(input, field, secret_visible, cx);
-        form_field(&self.tokens, label, control)
-    }
-
-    fn render_connection_secret_input(
-        &self,
-        placeholder: String,
-        field: NewConnectionField,
-        cx: &mut Context<Self>,
-    ) -> Option<(AnyElement, Option<bool>)> {
-        let target = WorkspaceImeTarget::NewConnection(field);
-        let selected_range = self.ime_selected_range_for_target(target, cx);
-        let marked_text = self.marked_text_for_target(target, cx);
-        let caret_visible = self.input_caret.visible();
-        let (input, secret_visible) = {
-            let form = self.connection_form_state(cx).form.as_ref()?;
-            let value = connection_secret_field_value(form, field)?;
-            let secret_visible = connection_secret_field_visible(form, field);
-            let focused = form.field_focused && form.focused_field == field;
-            let selected_all = connection_field_is_selected(form, field);
-            let input = text_input(
-                &self.tokens,
-                TextInputView {
-                    value,
-                    placeholder,
-                    focused,
-                    caret_visible,
-                    secret: !secret_visible.unwrap_or(false),
-                    selected_all,
-                    selected_range,
-                    marked_text,
-                },
-            );
-            (input, secret_visible)
-        };
-        let input = self.finish_connection_input(input, field, cx);
-        Some((input, secret_visible))
-    }
-
-    fn render_connection_secret_visibility(
-        &self,
-        input: AnyElement,
-        field: NewConnectionField,
-        secret_visible: Option<bool>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        if let Some(visible) = secret_visible {
+        let control = if secret && let Some(visible) = secret_visible {
             let icon = if visible {
                 LucideIcon::EyeOff
             } else {
@@ -419,12 +330,9 @@ impl WorkspaceApp {
                             )
                         },
                         move |this, _event, _window, cx| {
-                            let toggled = this.update_connection_form_state(cx, |state| {
-                                state.form.as_mut().is_some_and(|form| {
-                                    toggle_connection_secret_field_visibility(form, field)
-                                })
-                            });
-                            if toggled {
+                            if let Some(form) = this.new_connection_form.as_mut()
+                                && toggle_connection_secret_field_visibility(form, field)
+                            {
                                 cx.notify();
                             }
                             cx.stop_propagation();
@@ -438,75 +346,89 @@ impl WorkspaceApp {
                 .into_any_element()
         } else {
             input
-        }
+        };
+
+        form_field(&self.tokens, label, control)
     }
 
     pub(super) fn render_edit_saved_password_field(
         &self,
-        password_visible: bool,
-        password_loading: bool,
+        form: &NewConnectionForm,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some((input, _)) = self.render_connection_secret_input(
-            self.i18n
-                .t("sessionManager.edit_properties.password_placeholder"),
-            NewConnectionField::Password,
-            cx,
-        ) else {
-            return div().into_any_element();
+        let value = if form.password_loaded {
+            form.password.as_str()
+        } else {
+            ""
         };
-        let icon = if password_visible {
+        let icon = if form.password_visible {
             LucideIcon::EyeOff
         } else {
             LucideIcon::Eye
         };
+        let secret = form.password_loaded && !form.password_visible;
         form_field(
             &self.tokens,
             self.i18n.t("sessionManager.edit_properties.saved_password"),
-            div().relative().child(input).child(
-                if password_loading {
-                    oxideterm_gpui_ui::button::icon_button(
-                        &self.tokens,
-                        self.render_loading_icon(
-                            "saved-password-loading",
+            div()
+                .relative()
+                .child(
+                    self.render_connection_input(
+                        value,
+                        self.i18n
+                            .t("sessionManager.edit_properties.password_placeholder"),
+                        NewConnectionField::Password,
+                        secret,
+                        cx,
+                    ),
+                )
+                .child(
+                    if form.password_loading {
+                        oxideterm_gpui_ui::button::icon_button(
+                            &self.tokens,
+                            self.render_loading_icon(
+                                "saved-password-loading",
+                                SECRET_VISIBILITY_ICON_SIZE,
+                                rgb(self.tokens.ui.text_muted),
+                            ),
+                            IconButtonOptions {
+                                loading: true,
+                                hover_background: Some(rgba((self.tokens.ui.bg_hover << 8) | 0x99)),
+                                ..IconButtonOptions::opaque_toolbar(
+                                    SECRET_VISIBILITY_BUTTON_SIZE,
+                                    ButtonRadius::Sm,
+                                )
+                            },
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            |_event, _window, cx| {
+                                cx.stop_propagation();
+                            },
+                        )
+                    } else {
+                        self.workspace_icon_action_button(
+                            icon,
                             SECRET_VISIBILITY_ICON_SIZE,
                             rgb(self.tokens.ui.text_muted),
-                        ),
-                        IconButtonOptions {
-                            loading: true,
-                            hover_background: Some(rgba((self.tokens.ui.bg_hover << 8) | 0x99)),
-                            ..IconButtonOptions::opaque_toolbar(
-                                SECRET_VISIBILITY_BUTTON_SIZE,
-                                ButtonRadius::Sm,
-                            )
-                        },
-                    )
-                    .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                        cx.stop_propagation();
-                    })
-                } else {
-                    self.workspace_icon_action_button(
-                        icon,
-                        SECRET_VISIBILITY_ICON_SIZE,
-                        rgb(self.tokens.ui.text_muted),
-                        IconButtonOptions {
-                            hover_background: Some(rgba((self.tokens.ui.bg_hover << 8) | 0x99)),
-                            ..IconButtonOptions::opaque_toolbar(
-                                SECRET_VISIBILITY_BUTTON_SIZE,
-                                ButtonRadius::Sm,
-                            )
-                        },
-                        |this, _event, _window, cx| {
-                            this.toggle_edit_saved_password_visibility(cx);
-                            cx.stop_propagation();
-                        },
-                        cx,
-                    )
-                }
-                .absolute()
-                .right(px(SECRET_VISIBILITY_BUTTON_OFFSET))
-                .top(px(SECRET_VISIBILITY_BUTTON_OFFSET)),
-            ),
+                            IconButtonOptions {
+                                hover_background: Some(rgba((self.tokens.ui.bg_hover << 8) | 0x99)),
+                                ..IconButtonOptions::opaque_toolbar(
+                                    SECRET_VISIBILITY_BUTTON_SIZE,
+                                    ButtonRadius::Sm,
+                                )
+                            },
+                            |this, _event, _window, cx| {
+                                this.toggle_edit_saved_password_visibility(cx);
+                                cx.stop_propagation();
+                            },
+                            cx,
+                        )
+                    }
+                    .absolute()
+                    .right(px(SECRET_VISIBILITY_BUTTON_OFFSET))
+                    .top(px(SECRET_VISIBILITY_BUTTON_OFFSET)),
+                ),
         )
     }
 
@@ -547,7 +469,7 @@ impl WorkspaceApp {
                             ..ToolbarButtonOptions::default()
                         },
                         cx.listener(move |this, _event, _window, cx| {
-                            this.close_new_connection_select(cx);
+                            this.close_new_connection_select();
                             this.pick_new_connection_path(field, cx);
                             cx.stop_propagation();
                         }),
@@ -567,24 +489,18 @@ impl WorkspaceApp {
         } else {
             value.trim().to_string()
         };
+        let anchor_id = SelectAnchorId::NewConnectionGroup;
+        let workspace = cx.entity();
         let trigger = self
-            .new_connection_select_trigger(
-                NewConnectionSelect::Group,
-                selected_label,
-                false,
-                false,
-                cx,
-            )
+            .new_connection_select_trigger(NewConnectionSelect::Group, selected_label, false, false)
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, window, cx| {
-                    this.update_connection_form_state(cx, |state| {
-                        if let Some(form) = state.form.as_mut() {
-                            form.field_focused = false;
-                            form.selected_field = None;
-                        }
-                    });
+                    if let Some(form) = this.new_connection_form.as_mut() {
+                        form.field_focused = false;
+                        form.selected_field = None;
+                    }
                     this.ime_marked_text = None;
                     this.open_new_connection_select_from_pointer(NewConnectionSelect::Group, cx);
                     window.focus(&this.focus_handle, cx);
@@ -596,19 +512,21 @@ impl WorkspaceApp {
         form_field(
             &self.tokens,
             label,
-            self.track_new_connection_select_anchor(NewConnectionSelect::Group, trigger, cx),
+            select_anchor_probe(anchor_id, trigger, move |anchor, _window, cx| {
+                let _ = workspace.update(cx, |this, cx| {
+                    this.update_select_anchor(anchor, cx);
+                });
+            }),
         )
     }
 
     pub(super) fn set_new_connection_group(&mut self, group: String, cx: &mut Context<Self>) {
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                form.group = group;
-                form.field_focused = false;
-                form.selected_field = None;
-                form.error = None;
-            }
-        });
+        if let Some(form) = self.new_connection_form.as_mut() {
+            form.group = group;
+            form.field_focused = false;
+            form.selected_field = None;
+            form.error = None;
+        }
         self.ime_marked_text = None;
         cx.notify();
     }
@@ -634,13 +552,18 @@ impl WorkspaceApp {
         } else {
             NewConnectionSelect::ManagedKey
         };
+        let anchor_id = if jump_form {
+            SelectAnchorId::NewConnectionJumpManagedKey
+        } else {
+            SelectAnchorId::NewConnectionManagedKey
+        };
+        let workspace = cx.entity();
         let trigger = self
             .new_connection_select_trigger(
                 select_id,
                 selected_label,
                 selected_id.trim().is_empty(),
                 keys.is_empty(),
-                cx,
             )
             .cursor_pointer()
             .on_mouse_down(
@@ -650,12 +573,10 @@ impl WorkspaceApp {
                         cx.stop_propagation();
                         return;
                     }
-                    this.update_connection_form_state(cx, |state| {
-                        if let Some(form) = state.form.as_mut() {
-                            form.field_focused = false;
-                            form.selected_field = None;
-                        }
-                    });
+                    if let Some(form) = this.new_connection_form.as_mut() {
+                        form.field_focused = false;
+                        form.selected_field = None;
+                    }
                     this.ime_marked_text = None;
                     this.open_new_connection_select_from_pointer(select_id, cx);
                     window.focus(&this.focus_handle, cx);
@@ -667,7 +588,11 @@ impl WorkspaceApp {
         form_field(
             &self.tokens,
             label,
-            self.track_new_connection_select_anchor(select_id, trigger, cx),
+            select_anchor_probe(anchor_id, trigger, move |anchor, _window, cx| {
+                let _ = workspace.update(cx, |this, cx| {
+                    this.update_select_anchor(anchor, cx);
+                });
+            }),
         )
         .into_any_element()
     }
@@ -692,24 +617,22 @@ impl WorkspaceApp {
                 })
                 .unwrap_or_else(|| selected_id.to_string())
         };
+        let workspace = cx.entity();
         let trigger = self
             .new_connection_select_trigger(
                 NewConnectionSelect::JumpSavedConnection,
                 selected_label,
                 selected_id.trim().is_empty(),
                 false,
-                cx,
             )
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, window, cx| {
-                    this.update_connection_form_state(cx, |state| {
-                        if let Some(form) = state.form.as_mut() {
-                            form.field_focused = false;
-                            form.selected_field = None;
-                        }
-                    });
+                    if let Some(form) = this.new_connection_form.as_mut() {
+                        form.field_focused = false;
+                        form.selected_field = None;
+                    }
                     this.ime_marked_text = None;
                     this.open_new_connection_select_from_pointer(
                         NewConnectionSelect::JumpSavedConnection,
@@ -724,10 +647,14 @@ impl WorkspaceApp {
         form_field(
             &self.tokens,
             self.i18n.t("ssh.form.proxy_jump_saved_connection"),
-            self.track_new_connection_select_anchor(
-                NewConnectionSelect::JumpSavedConnection,
+            select_anchor_probe(
+                SelectAnchorId::NewConnectionJumpSavedConnection,
                 trigger,
-                cx,
+                move |anchor, _window, cx| {
+                    let _ = workspace.update(cx, |this, cx| {
+                        this.update_select_anchor(anchor, cx);
+                    });
+                },
             ),
         )
         .into_any_element()
@@ -739,56 +666,49 @@ impl WorkspaceApp {
         key_id: String,
         cx: &mut Context<Self>,
     ) {
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                match select_id {
-                    NewConnectionSelect::ManagedKey => {
-                        form.managed_key_id = key_id;
-                        form.focused_field = NewConnectionField::ManagedKeyId;
-                    }
-                    NewConnectionSelect::JumpManagedKey => {
-                        let Some(jump_form) = form.jump_server_form.as_mut() else {
-                            return;
-                        };
-                        jump_form.managed_key_id = key_id;
-                        form.focused_field = NewConnectionField::JumpManagedKeyId;
-                    }
-                    NewConnectionSelect::Group
-                    | NewConnectionSelect::KeyAuthSource
-                    | NewConnectionSelect::JumpSavedConnection
-                    | NewConnectionSelect::JumpKeyAuthSource
-                    | NewConnectionSelect::UpstreamProxyPolicy
-                    | NewConnectionSelect::UpstreamProxyProtocol
-                    | NewConnectionSelect::UpstreamProxyAuth
-                    | NewConnectionSelect::SerialPort
-                    | NewConnectionSelect::SerialDataBits
-                    | NewConnectionSelect::SerialStopBits
-                    | NewConnectionSelect::SerialParity
-                    | NewConnectionSelect::SerialFlowControl
-                    | NewConnectionSelect::TerminalEncoding
-                    | NewConnectionSelect::TerminalBackspaceSequence
-                    | NewConnectionSelect::TerminalDeleteSequence => return,
+        if let Some(form) = self.new_connection_form.as_mut() {
+            match select_id {
+                NewConnectionSelect::ManagedKey => {
+                    form.managed_key_id = key_id;
+                    form.focused_field = NewConnectionField::ManagedKeyId;
                 }
-                form.field_focused = false;
-                form.selected_field = None;
-                form.error = None;
+                NewConnectionSelect::JumpManagedKey => {
+                    let Some(jump_form) = form.jump_server_form.as_mut() else {
+                        return;
+                    };
+                    jump_form.managed_key_id = key_id;
+                    form.focused_field = NewConnectionField::JumpManagedKeyId;
+                }
+                NewConnectionSelect::Group
+                | NewConnectionSelect::KeyAuthSource
+                | NewConnectionSelect::JumpSavedConnection
+                | NewConnectionSelect::JumpKeyAuthSource
+                | NewConnectionSelect::UpstreamProxyPolicy
+                | NewConnectionSelect::UpstreamProxyProtocol
+                | NewConnectionSelect::UpstreamProxyAuth
+                | NewConnectionSelect::SerialPort
+                | NewConnectionSelect::SerialDataBits
+                | NewConnectionSelect::SerialStopBits
+                | NewConnectionSelect::SerialParity
+                | NewConnectionSelect::SerialFlowControl => return,
             }
-        });
+            form.field_focused = false;
+            form.selected_field = None;
+            form.error = None;
+        }
         self.ime_marked_text = None;
         cx.notify();
     }
 
     pub(super) fn clear_new_connection_jump_saved_connection(&mut self, cx: &mut Context<Self>) {
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                if let Some(jump_form) = form.jump_server_form.as_mut() {
-                    jump_form.saved_connection_id.clear();
-                }
-                form.field_focused = false;
-                form.selected_field = None;
-                form.error = None;
+        if let Some(form) = self.new_connection_form.as_mut() {
+            if let Some(jump_form) = form.jump_server_form.as_mut() {
+                jump_form.saved_connection_id.clear();
             }
-        });
+            form.field_focused = false;
+            form.selected_field = None;
+            form.error = None;
+        }
         self.ime_marked_text = None;
         cx.notify();
     }
@@ -803,18 +723,16 @@ impl WorkspaceApp {
             .connection_infos()
             .into_iter()
             .find(|connection| connection.id == connection_id);
-        if let Some(connection) = selected_connection.as_ref() {
-            self.update_connection_form_state(cx, |state| {
-                let Some(form) = state.form.as_mut() else {
-                    return;
-                };
-                if let Some(jump_form) = form.jump_server_form.as_mut() {
-                    jump_form.apply_saved_connection(connection);
-                }
-                form.field_focused = false;
-                form.selected_field = None;
-                form.error = None;
-            });
+        if let (Some(form), Some(connection)) = (
+            self.new_connection_form.as_mut(),
+            selected_connection.as_ref(),
+        ) {
+            if let Some(jump_form) = form.jump_server_form.as_mut() {
+                jump_form.apply_saved_connection(connection);
+            }
+            form.field_focused = false;
+            form.selected_field = None;
+            form.error = None;
         }
         self.ime_marked_text = None;
         cx.notify();
@@ -865,59 +783,99 @@ impl WorkspaceApp {
                 self.i18n.t("sessionManager.edit_properties.browse"),
             )),
         });
-        let selection = async move {
+        cx.spawn(async move |weak, cx| {
             let Ok(Ok(Some(paths))) = receiver.await else {
-                return None;
+                return;
             };
             let Some(path) = paths.into_iter().next() else {
-                return None;
+                return;
             };
-            Some(path.to_string_lossy().to_string())
-        };
-        self.connection_flow.update(cx, |connection_flow, cx| {
-            connection_flow.start_path_picker(field, selection, cx);
-        });
+            let path = path.to_string_lossy().to_string();
+            let _ = weak.update(cx, |this, cx| {
+                if let Some(form) = this.new_connection_form.as_mut() {
+                    match field {
+                        NewConnectionField::KeyPath => form.key_path = path,
+                        NewConnectionField::CertPath => form.cert_path = path,
+                        NewConnectionField::JumpKeyPath => {
+                            let Some(jump_form) = form.jump_server_form.as_mut() else {
+                                return;
+                            };
+                            jump_form.key_path = path;
+                        }
+                        NewConnectionField::JumpCertPath => {
+                            let Some(jump_form) = form.jump_server_form.as_mut() else {
+                                return;
+                            };
+                            jump_form.cert_path = path;
+                        }
+                        _ => return,
+                    }
+                    form.focused_field = field;
+                    form.field_focused = true;
+                    form.error = None;
+                    clear_connection_selection(form);
+                }
+                this.new_connection_caret_visible = true;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn toggle_edit_saved_password_visibility(&mut self, cx: &mut Context<Self>) {
         let source_connection_id = self
-            .saved_connection_form_source_id(cx)
+            .saved_connection_form_source_id()
             .map(|connection_id| connection_id.to_string());
-        let should_load = self.update_connection_form_state(cx, |state| {
-            let Some(form) = state.form.as_mut() else {
-                return false;
-            };
-            if form.password_loading {
-                return false;
-            }
-            if form.password_loaded {
-                form.password_visible = !form.password_visible;
-                form.password_error = None;
-                return false;
-            }
-            form.password_loading = true;
+        let Some(form) = self.new_connection_form.as_mut() else {
+            return;
+        };
+        if form.password_loading {
+            return;
+        }
+        if form.password_loaded {
+            form.password_visible = !form.password_visible;
             form.password_error = None;
-            true
-        });
-        if !should_load {
             cx.notify();
             return;
         }
+
         let Some(connection_id) = source_connection_id else {
-            self.update_connection_form_state(cx, |state| {
-                if let Some(form) = state.form.as_mut() {
-                    form.password_loading = false;
-                }
-            });
             return;
         };
+        form.password_loading = true;
+        form.password_error = None;
         cx.notify();
 
         let store = self.connection_store.clone();
-        let load = async move { store.get_connection_password(&connection_id) };
-        self.connection_flow.update(cx, |connection_flow, cx| {
-            connection_flow.start_password_load(load, cx);
-        });
+        cx.spawn(async move |weak, cx| {
+            let result = store.get_connection_password(&connection_id);
+            let _ = weak.update(cx, |this, cx| {
+                if let Some(form) = this.new_connection_form.as_mut() {
+                    form.password_loading = false;
+                    match result {
+                        Ok(password) => {
+                            // Replacing an editable password draft should wipe
+                            // the previous buffer before the newly loaded value
+                            // is exposed for user editing.
+                            zeroize::Zeroize::zeroize(&mut form.password);
+                            form.password = password.expose_secret().to_string();
+                            form.password_loaded = true;
+                            form.password_visible = true;
+                            form.password_error = None;
+                            form.focused_field = NewConnectionField::Password;
+                            form.field_focused = true;
+                            clear_connection_selection(form);
+                            this.new_connection_caret_visible = true;
+                        }
+                        Err(error) => {
+                            form.password_error = Some(error.to_string());
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn render_connection_input(
@@ -929,72 +887,56 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let focused = self
-            .connection_form_state(cx)
-            .form
+            .new_connection_form
             .as_ref()
             .is_some_and(|form| form.field_focused && form.focused_field == field);
         let selected_all = self
-            .connection_form_state(cx)
-            .form
+            .new_connection_form
             .as_ref()
             .is_some_and(|form| connection_field_is_selected(form, field));
         let target = WorkspaceImeTarget::NewConnection(field);
-        let input = text_input(
-            &self.tokens,
-            TextInputView {
-                value,
-                placeholder,
-                focused,
-                caret_visible: self.input_caret.visible(),
-                secret,
-                selected_all,
-                selected_range: self.ime_selected_range_for_target(target, cx),
-                marked_text: self.marked_text_for_target(target, cx),
-            },
-        );
-        self.finish_connection_input(input, field, cx)
-    }
-
-    fn finish_connection_input(
-        &self,
-        input: Div,
-        field: NewConnectionField,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let target = WorkspaceImeTarget::NewConnection(field);
-        let anchors = self.text_input_anchors.clone();
+        let workspace = cx.entity();
         text_input_anchor_probe(
             target.anchor_id(),
-            input
-                .id(("connection-field", field as u32))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                        this.update_connection_form_state(cx, |state| {
-                            if let Some(form) = state.form.as_mut() {
-                                form.field_focused = true;
-                                form.focused_field = field;
-                                clear_connection_selection(form);
-                            }
-                        });
-                        this.close_new_connection_select(cx);
-                        this.ime_marked_text = None;
-                        this.show_active_input_caret(cx);
-                        window.focus(&this.focus_handle, cx);
-                        this.begin_ime_selection_from_mouse_down(target, event, window, cx);
-                        cx.stop_propagation();
-                    }),
-                )
-                .on_mouse_move(
-                    cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
-                        this.update_ime_selection_drag_from_mouse_move(event, window, cx);
-                    }),
-                ),
-            move |anchor, _window, _cx| {
-                // Text geometry is layout-only state. Writing the shared store
-                // directly avoids re-entering WorkspaceApp once per input on
-                // every frame of an inertial form scroll.
-                anchors.update(anchor);
+            text_input(
+                &self.tokens,
+                TextInputView {
+                    value,
+                    placeholder,
+                    focused,
+                    caret_visible: self.new_connection_caret_visible,
+                    secret,
+                    selected_all,
+                    selected_range: self.ime_selected_range_for_target(target),
+                    marked_text: self.marked_text_for_target(target),
+                },
+            )
+            .id(("connection-field", field as u32))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    if let Some(form) = this.new_connection_form.as_mut() {
+                        form.field_focused = true;
+                        form.focused_field = field;
+                        clear_connection_selection(form);
+                    }
+                    this.close_new_connection_select();
+                    this.ime_marked_text = None;
+                    this.new_connection_caret_visible = true;
+                    window.focus(&this.focus_handle, cx);
+                    this.begin_ime_selection_from_mouse_down(target, event, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_move(cx.listener(
+                |this, event: &gpui::MouseMoveEvent, window, cx| {
+                    this.update_ime_selection_drag_from_mouse_move(event, window, cx);
+                },
+            )),
+            move |anchor, _window, cx| {
+                let _ = workspace.update(cx, |this, cx| {
+                    this.update_text_input_anchor(anchor, cx);
+                });
             },
         )
         .into_any_element()
@@ -1198,16 +1140,13 @@ impl WorkspaceApp {
         }
     }
 
-    pub(super) fn current_main_auth_selector_context(
-        &self,
-        cx: &Context<Self>,
-    ) -> AuthSelectorContext {
-        let mode = self.connection_form_state(cx).mode();
-        if self
-            .connection_form_state(cx)
-            .drill_down_parent_node_id
-            .is_some()
-        {
+    pub(super) fn current_main_auth_selector_context(&self) -> AuthSelectorContext {
+        let mode = new_connection_form_mode(
+            self.editing_saved_connection_id.as_deref(),
+            self.duplicating_saved_connection_id.as_deref(),
+            self.saved_connection_prompt_action,
+        );
+        if self.drill_down_parent_node_id.is_some() {
             AuthSelectorContext::DrillDown
         } else if mode == NewConnectionFormMode::SavedConnectionPrompt {
             AuthSelectorContext::Prompt
@@ -1254,24 +1193,23 @@ impl WorkspaceApp {
         } else {
             NewConnectionSelect::KeyAuthSource
         };
+        let anchor_id = Self::new_connection_select_anchor_id(select_id);
+        let workspace = cx.entity();
         let trigger = self
             .new_connection_select_trigger(
                 select_id,
                 self.key_auth_source_label(source),
                 false,
                 false,
-                cx,
             )
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, window, cx| {
-                    this.update_connection_form_state(cx, |state| {
-                        if let Some(form) = state.form.as_mut() {
-                            form.field_focused = false;
-                            form.selected_field = None;
-                        }
-                    });
+                    if let Some(form) = this.new_connection_form.as_mut() {
+                        form.field_focused = false;
+                        form.selected_field = None;
+                    }
                     this.ime_marked_text = None;
                     this.open_new_connection_select_from_pointer(select_id, cx);
                     window.focus(&this.focus_handle, cx);
@@ -1283,7 +1221,11 @@ impl WorkspaceApp {
         form_field(
             &self.tokens,
             self.i18n.t("ssh.auth.key_source"),
-            self.track_new_connection_select_anchor(select_id, trigger, cx),
+            select_anchor_probe(anchor_id, trigger, move |anchor, _window, cx| {
+                let _ = workspace.update(cx, |this, cx| {
+                    this.update_select_anchor(anchor, cx);
+                });
+            }),
         )
         .into_any_element()
     }
@@ -1295,31 +1237,29 @@ impl WorkspaceApp {
         jump_form: bool,
         cx: &mut Context<Self>,
     ) {
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                let current_tab = if jump_form {
-                    form.jump_server_form
-                        .as_ref()
-                        .map(|jump_form| jump_form.auth_tab)
-                        .unwrap_or(SshAuthTab::Password)
-                } else {
-                    form.auth_tab
-                };
-                let next_tab = Self::auth_tab_for_family_selection(family, current_tab, context);
-                if jump_form {
-                    if let Some(jump_form) = form.jump_server_form.as_mut() {
-                        jump_form.auth_tab = next_tab;
-                    }
-                } else {
-                    form.auth_tab = next_tab;
+        if let Some(form) = self.new_connection_form.as_mut() {
+            let current_tab = if jump_form {
+                form.jump_server_form
+                    .as_ref()
+                    .map(|jump_form| jump_form.auth_tab)
+                    .unwrap_or(SshAuthTab::Password)
+            } else {
+                form.auth_tab
+            };
+            let next_tab = Self::auth_tab_for_family_selection(family, current_tab, context);
+            if jump_form {
+                if let Some(jump_form) = form.jump_server_form.as_mut() {
+                    jump_form.auth_tab = next_tab;
                 }
-                form.focused_field = Self::focus_field_for_auth_tab(next_tab, jump_form);
-                form.field_focused = false;
-                clear_connection_selection(form);
-                form.error = None;
+            } else {
+                form.auth_tab = next_tab;
             }
-        });
-        self.close_new_connection_select(cx);
+            form.focused_field = Self::focus_field_for_auth_tab(next_tab, jump_form);
+            form.field_focused = false;
+            clear_connection_selection(form);
+            form.error = None;
+        }
+        self.close_new_connection_select();
         self.ime_marked_text = None;
         cx.notify();
     }
@@ -1355,27 +1295,25 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) {
         let tab = auth_tab_from_key_source(source);
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                match select_id {
-                    NewConnectionSelect::KeyAuthSource => form.auth_tab = tab,
-                    NewConnectionSelect::JumpKeyAuthSource => {
-                        let Some(jump_form) = form.jump_server_form.as_mut() else {
-                            return;
-                        };
-                        jump_form.auth_tab = tab;
-                    }
-                    _ => return,
+        if let Some(form) = self.new_connection_form.as_mut() {
+            match select_id {
+                NewConnectionSelect::KeyAuthSource => form.auth_tab = tab,
+                NewConnectionSelect::JumpKeyAuthSource => {
+                    let Some(jump_form) = form.jump_server_form.as_mut() else {
+                        return;
+                    };
+                    jump_form.auth_tab = tab;
                 }
-                form.focused_field = Self::focus_field_for_auth_tab(
-                    tab,
-                    select_id == NewConnectionSelect::JumpKeyAuthSource,
-                );
-                form.field_focused = false;
-                clear_connection_selection(form);
-                form.error = None;
+                _ => return,
             }
-        });
+            form.focused_field = Self::focus_field_for_auth_tab(
+                tab,
+                select_id == NewConnectionSelect::JumpKeyAuthSource,
+            );
+            form.field_focused = false;
+            clear_connection_selection(form);
+            form.error = None;
+        }
         self.ime_marked_text = None;
         cx.notify();
     }
@@ -1441,18 +1379,16 @@ impl WorkspaceApp {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _event, _window, cx| {
-                                this.update_connection_form_state(cx, |state| {
-                                    if let Some(form) = state.form.as_mut() {
-                                        match field {
-                                            NewConnectionField::Color => form.color.clear(),
-                                            NewConnectionField::IconBackgroundColor => {
-                                                form.icon_background_color.clear()
-                                            }
-                                            _ => {}
+                                if let Some(form) = this.new_connection_form.as_mut() {
+                                    match field {
+                                        NewConnectionField::Color => form.color.clear(),
+                                        NewConnectionField::IconBackgroundColor => {
+                                            form.icon_background_color.clear()
                                         }
-                                        clear_connection_selection(form);
+                                        _ => {}
                                     }
-                                });
+                                    clear_connection_selection(form);
+                                }
                                 cx.notify();
                             }),
                         ),
@@ -1511,12 +1447,10 @@ impl WorkspaceApp {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _event, _window, cx| {
-                            this.update_connection_form_state(cx, |state| {
-                                if let Some(form) = state.form.as_mut() {
-                                    form.icon = icon_id.clone();
-                                    clear_connection_selection(form);
-                                }
-                            });
+                            if let Some(form) = this.new_connection_form.as_mut() {
+                                form.icon = icon_id.clone();
+                                clear_connection_selection(form);
+                            }
                             cx.notify();
                         }),
                     ),
@@ -1565,12 +1499,10 @@ impl WorkspaceApp {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _event, _window, cx| {
-                                    this.update_connection_form_state(cx, |state| {
-                                        if let Some(form) = state.form.as_mut() {
-                                            form.icon_picker_expanded = !form.icon_picker_expanded;
-                                            clear_connection_selection(form);
-                                        }
-                                    });
+                                    if let Some(form) = this.new_connection_form.as_mut() {
+                                        form.icon_picker_expanded = !form.icon_picker_expanded;
+                                        clear_connection_selection(form);
+                                    }
                                     cx.notify();
                                 }),
                             ),
@@ -1585,12 +1517,10 @@ impl WorkspaceApp {
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _event, _window, cx| {
-                                        this.update_connection_form_state(cx, |state| {
-                                            if let Some(form) = state.form.as_mut() {
-                                                form.icon.clear();
-                                                clear_connection_selection(form);
-                                            }
-                                        });
+                                        if let Some(form) = this.new_connection_form.as_mut() {
+                                            form.icon.clear();
+                                            clear_connection_selection(form);
+                                        }
                                         cx.notify();
                                     }),
                                 ),
@@ -1618,8 +1548,7 @@ impl WorkspaceApp {
     pub(super) fn render_transport_selector(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.tokens.ui;
         let active_transport = self
-            .connection_form_state(cx)
-            .form
+            .new_connection_form
             .as_ref()
             .map(|form| form.transport)
             .unwrap_or(NewConnectionTransport::Ssh);
@@ -1769,7 +1698,7 @@ impl WorkspaceApp {
                     cx.listener(move |this, _event, _window, cx| {
                         let mut should_refresh_ports = false;
                         let mut selection_offset = None;
-                        this.update_connection_form_state(cx, |state| {     if let Some(form) = state.form.as_mut() {
+                        if let Some(form) = this.new_connection_form.as_mut() {
                             let previous_transport = form.transport;
                             if previous_transport != transport {
                                 selection_offset = Some(new_connection_transport_vertical_offset(
@@ -1787,7 +1716,7 @@ impl WorkspaceApp {
                             should_refresh_ports = transport == NewConnectionTransport::Serial
                                 && form.serial_ports.is_empty()
                                 && !form.serial_ports_loading;
-                            } });
+                        }
                         if let Some(vertical_offset_y) = selection_offset {
                             this.begin_user_segmented_control_transition_with_vertical_offset(
                                 crate::workspace::selection_motion::NEW_CONNECTION_TRANSPORT_SELECTOR_ID,
@@ -1796,7 +1725,7 @@ impl WorkspaceApp {
                                 cx,
                             );
                         }
-                        this.close_new_connection_select(cx);
+                        this.close_new_connection_select();
                         if should_refresh_ports {
                             this.refresh_serial_ports(cx);
                         }
@@ -1859,28 +1788,15 @@ impl WorkspaceApp {
         protocol: oxideterm_remote_desktop::RemoteDesktopProtocol,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some((name, host, port, username, keeps_saved_password, save_password, group)) =
-            self.connection_form_state(cx).form.as_ref().map(|form| {
-                (
-                    form.name.clone(),
-                    form.host.clone(),
-                    form.port.clone(),
-                    form.username.clone(),
-                    form.remote_desktop_profile_id.is_some()
-                        && form.saved_password_keychain_id.is_some(),
-                    form.save_password,
-                    form.group.clone(),
-                )
-            })
-        else {
+        let Some(form) = self.new_connection_form.as_ref() else {
             return div().into_any_element();
         };
         let port_placeholder = match protocol {
             oxideterm_remote_desktop::RemoteDesktopProtocol::Rdp => RDP_DEFAULT_PORT_TEXT,
             oxideterm_remote_desktop::RemoteDesktopProtocol::Vnc => VNC_DEFAULT_PORT_TEXT,
         };
-        let port_invalid =
-            !port.trim().is_empty() && !port.trim().parse::<u16>().is_ok_and(|port| port > 0);
+        let port_invalid = !form.port.trim().is_empty()
+            && !form.port.trim().parse::<u16>().is_ok_and(|port| port > 0);
         let capabilities =
             oxideterm_remote_desktop::builtin_provider_manifest(protocol).capabilities;
 
@@ -1890,7 +1806,7 @@ impl WorkspaceApp {
             .gap(px(self.tokens.metrics.modal_section_gap))
             .child(self.render_connection_field(
                 self.i18n.t("ssh.form.name"),
-                &name,
+                &form.name,
                 self.i18n.t("ssh.form.name_placeholder"),
                 NewConnectionField::Name,
                 false,
@@ -1903,7 +1819,7 @@ impl WorkspaceApp {
                     .gap(px(self.tokens.metrics.form_host_port_gap))
                     .child(div().flex_1().child(self.render_connection_field(
                         self.i18n.t("ssh.form.host"),
-                        &host,
+                        &form.host,
                         self.i18n.t("ssh.form.host_placeholder"),
                         NewConnectionField::Host,
                         false,
@@ -1912,7 +1828,7 @@ impl WorkspaceApp {
                     .child(div().w(px(self.tokens.metrics.form_port_width)).child(
                         self.render_connection_field(
                             self.i18n.t("ssh.form.port"),
-                            &port,
+                            &form.port,
                             port_placeholder.to_string(),
                             NewConnectionField::Port,
                             false,
@@ -1934,7 +1850,7 @@ impl WorkspaceApp {
                 |section| {
                     section.child(self.render_connection_field(
                         self.i18n.t("modals.new_connection.remote_desktop_username"),
-                        &username,
+                        &form.username,
                         "Administrator".to_string(),
                         NewConnectionField::Username,
                         false,
@@ -1942,9 +1858,12 @@ impl WorkspaceApp {
                     ))
                 },
             )
-            .child(self.render_connection_secret_field(
+            .child(self.render_connection_field(
                 self.i18n.t("ssh.form.password"),
-                if keeps_saved_password {
+                &form.password,
+                if form.remote_desktop_profile_id.is_some()
+                    && form.saved_password_keychain_id.is_some()
+                {
                     self.i18n
                         .t("modals.new_connection.remote_desktop_password_keep_placeholder")
                 } else if protocol == oxideterm_remote_desktop::RemoteDesktopProtocol::Rdp {
@@ -1954,15 +1873,20 @@ impl WorkspaceApp {
                     self.i18n.t("ssh.form.password")
                 },
                 NewConnectionField::Password,
+                true,
                 cx,
             ))
             .child(self.render_connection_checkbox(
                 self.i18n.t("ssh.form.save_password"),
-                save_password,
+                form.save_password,
                 |form| form.save_password = !form.save_password,
                 cx,
             ))
-            .child(self.render_connection_group_select(self.i18n.t("ssh.form.group"), &group, cx))
+            .child(self.render_connection_group_select(
+                self.i18n.t("ssh.form.group"),
+                &form.group,
+                cx,
+            ))
             .when(
                 protocol == oxideterm_remote_desktop::RemoteDesktopProtocol::Vnc,
                 |section| section.child(self.render_vnc_connection_preferences(cx)),
@@ -2030,8 +1954,7 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let current = self
-            .connection_form_state(cx)
-            .form
+            .new_connection_form
             .as_ref()
             .map(|form| form.remote_desktop_session_options.vnc)
             .unwrap_or_default();
@@ -2053,14 +1976,12 @@ impl WorkspaceApp {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _event, _window, cx| {
-                        this.update_connection_form_state(cx, |state| {
-                            if let Some(form) = state.form.as_mut() {
-                                apply_remote_desktop_vnc_preference(
-                                    &mut form.remote_desktop_session_options.vnc,
-                                    preference,
-                                );
-                            }
-                        });
+                        if let Some(form) = this.new_connection_form.as_mut() {
+                            apply_remote_desktop_vnc_preference(
+                                &mut form.remote_desktop_session_options.vnc,
+                                preference,
+                            );
+                        }
                         cx.notify();
                     }),
                 )
@@ -2172,17 +2093,10 @@ impl WorkspaceApp {
         feature: RemoteDesktopSessionFeature,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let selected = self
-            .connection_form_state(cx)
-            .form
-            .as_ref()
-            .is_some_and(|form| {
-                supported
-                    && remote_desktop_feature_selected(
-                        &form.remote_desktop_session_options,
-                        feature,
-                    )
-            });
+        let selected = self.new_connection_form.as_ref().is_some_and(|form| {
+            supported
+                && remote_desktop_feature_selected(&form.remote_desktop_session_options, feature)
+        });
         let hint = if supported {
             hint
         } else {
@@ -2210,18 +2124,14 @@ impl WorkspaceApp {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _event, _window, cx| {
-                        if supported {
-                            this.update_connection_form_state(cx, |state| {
-                                if let Some(form) = state.form.as_mut() {
-                                    // Session feature choices are immutable once the helper starts.
-                                    toggle_remote_desktop_feature(
-                                        &mut form.remote_desktop_session_options,
-                                        feature,
-                                    );
-                                }
-                            });
+                        if supported && let Some(form) = this.new_connection_form.as_mut() {
+                            // Session feature choices are immutable once the helper starts.
+                            toggle_remote_desktop_feature(
+                                &mut form.remote_desktop_session_options,
+                                feature,
+                            );
                         }
-                        this.close_new_connection_select(cx);
+                        this.close_new_connection_select();
                         cx.notify();
                     }),
                 ),
@@ -2243,18 +2153,11 @@ impl WorkspaceApp {
     }
 
     pub(super) fn render_telnet_form_branch(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some((host, port, profile_name)) =
-            self.connection_form_state(cx).form.as_ref().map(|form| {
-                (
-                    form.host.clone(),
-                    form.port.clone(),
-                    form.telnet_profile_name.clone(),
-                )
-            })
-        else {
+        let Some(form) = self.new_connection_form.as_ref() else {
             return div().into_any_element();
         };
-        let telnet_port_invalid = !port.trim().is_empty() && port.trim().parse::<u16>().is_err();
+        let telnet_port_invalid =
+            !form.port.trim().is_empty() && form.port.trim().parse::<u16>().is_err();
         div()
             .flex()
             .flex_col()
@@ -2264,9 +2167,7 @@ impl WorkspaceApp {
                     .rounded(px(self.tokens.radii.lg))
                     .border_1()
                     .border_color(rgb(self.tokens.ui.border))
-                    .bg(rgba(
-                        (self.tokens.ui.bg << 8) | TAURI_CONNECTION_PANEL_BG_ALPHA,
-                    ))
+                    .bg(rgba((self.tokens.ui.bg << 8) | TAURI_SERIAL_PANEL_BG_ALPHA))
                     .p(px(self.tokens.spacing.three))
                     .child(
                         div()
@@ -2290,7 +2191,7 @@ impl WorkspaceApp {
                     .gap(px(self.tokens.metrics.form_host_port_gap))
                     .child(div().flex_1().child(self.render_connection_field(
                         self.i18n.t("modals.new_connection.telnet_host"),
-                        &host,
+                        &form.host,
                         self.i18n.t("modals.new_connection.telnet_host_placeholder"),
                         NewConnectionField::Host,
                         false,
@@ -2299,7 +2200,7 @@ impl WorkspaceApp {
                     .child(div().w(px(self.tokens.metrics.form_port_width)).child(
                         self.render_connection_field(
                             self.i18n.t("modals.new_connection.telnet_port"),
-                            &port,
+                            &form.port,
                             TELNET_DEFAULT_PORT_TEXT.to_string(),
                             NewConnectionField::Port,
                             false,
@@ -2316,7 +2217,7 @@ impl WorkspaceApp {
             .child(
                 self.render_connection_field(
                     self.i18n.t("modals.new_connection.telnet_profile_name"),
-                    &profile_name,
+                    &form.telnet_profile_name,
                     self.i18n
                         .t("modals.new_connection.telnet_profile_name_placeholder"),
                     NewConnectionField::TelnetProfileName,
@@ -2324,63 +2225,51 @@ impl WorkspaceApp {
                     cx,
                 ),
             )
-            .child(self.render_connection_terminal_options(cx))
             .into_any_element()
     }
 
     pub(in crate::workspace) fn refresh_serial_ports(&mut self, cx: &mut Context<Self>) {
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                form.serial_ports_loading = true;
-                form.error = None;
-            }
-        });
+        if let Some(form) = self.new_connection_form.as_mut() {
+            form.serial_ports_loading = true;
+            form.error = None;
+        }
         cx.notify();
 
         let result = oxideterm_terminal::serial_list_ports();
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                form.serial_ports_loading = false;
-                match result {
-                    Ok(ports) => {
-                        if form.serial_port_path.trim().is_empty()
-                            && let Some(first_port) = ports.first()
-                        {
-                            form.serial_port_path = first_port.port_path.clone();
-                        }
-                        form.serial_ports = ports;
+        if let Some(form) = self.new_connection_form.as_mut() {
+            form.serial_ports_loading = false;
+            match result {
+                Ok(ports) => {
+                    if form.serial_port_path.trim().is_empty()
+                        && let Some(first_port) = ports.first()
+                    {
+                        form.serial_port_path = first_port.port_path.clone();
                     }
-                    Err(error) => {
-                        form.error = Some(format!(
-                            "{}: {error}",
-                            self.i18n
-                                .t("modals.new_connection.serial_load_ports_failed")
-                        ));
-                    }
+                    form.serial_ports = ports;
+                }
+                Err(error) => {
+                    form.error = Some(format!(
+                        "{}: {error}",
+                        self.i18n
+                            .t("modals.new_connection.serial_load_ports_failed")
+                    ));
                 }
             }
-        });
+        }
         cx.notify();
     }
 
     pub(super) fn render_serial_form_branch(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some((ports, baud_rate, data_bits, stop_bits, parity, flow_control, profile_name)) =
-            self.connection_form_state(cx).form.as_ref().map(|form| {
-                (
-                    form.serial_ports.clone(),
-                    form.serial_baud_rate.clone(),
-                    form.serial_data_bits,
-                    form.serial_stop_bits,
-                    form.serial_parity,
-                    form.serial_flow_control,
-                    form.serial_profile_name.clone(),
-                )
-            })
-        else {
+        let Some(form) = self.new_connection_form.as_ref() else {
             return div().into_any_element();
         };
-        let serial_baud_rate_invalid = !baud_rate.trim().is_empty()
-            && !baud_rate.trim().parse::<u32>().is_ok_and(|baud| baud > 0);
+        let ports = form.serial_ports.clone();
+        let serial_baud_rate_invalid = !form.serial_baud_rate.trim().is_empty()
+            && !form
+                .serial_baud_rate
+                .trim()
+                .parse::<u32>()
+                .is_ok_and(|baud| baud > 0);
         div()
             .flex()
             .flex_col()
@@ -2390,9 +2279,7 @@ impl WorkspaceApp {
                     .rounded(px(self.tokens.radii.lg))
                     .border_1()
                     .border_color(rgb(self.tokens.ui.border))
-                    .bg(rgba(
-                        (self.tokens.ui.bg << 8) | TAURI_CONNECTION_PANEL_BG_ALPHA,
-                    ))
+                    .bg(rgba((self.tokens.ui.bg << 8) | TAURI_SERIAL_PANEL_BG_ALPHA))
                     .p(px(self.tokens.spacing.three))
                     .child(
                         div()
@@ -2422,7 +2309,7 @@ impl WorkspaceApp {
                             .gap(px(self.tokens.spacing.two))
                             .child(self.render_connection_field(
                                 self.i18n.t("modals.new_connection.serial_baud_rate"),
-                                &baud_rate,
+                                &form.serial_baud_rate,
                                 "115200".to_string(),
                                 NewConnectionField::SerialBaudRate,
                                 false,
@@ -2442,7 +2329,7 @@ impl WorkspaceApp {
                         self.i18n.t("modals.new_connection.serial_data_bits"),
                         NewConnectionSelect::SerialDataBits,
                         &[(5, "5"), (6, "6"), (7, "7"), (8, "8")],
-                        data_bits,
+                        form.serial_data_bits,
                         cx,
                     )),
             )
@@ -2455,16 +2342,16 @@ impl WorkspaceApp {
                         self.i18n.t("modals.new_connection.serial_stop_bits"),
                         NewConnectionSelect::SerialStopBits,
                         &[(1, "1"), (2, "2")],
-                        stop_bits,
+                        form.serial_stop_bits,
                         cx,
                     ))
-                    .child(self.render_serial_parity_select(parity, cx))
-                    .child(self.render_serial_flow_select(flow_control, cx)),
+                    .child(self.render_serial_parity_select(form.serial_parity, cx))
+                    .child(self.render_serial_flow_select(form.serial_flow_control, cx)),
             )
             .child(
                 self.render_connection_field(
                     self.i18n.t("modals.new_connection.serial_profile_name"),
-                    &profile_name,
+                    &form.serial_profile_name,
                     self.i18n
                         .t("modals.new_connection.serial_profile_name_placeholder"),
                     NewConnectionField::SerialProfileName,
@@ -2480,7 +2367,7 @@ impl WorkspaceApp {
         ports: &[oxideterm_terminal::SerialPortInfo],
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(form) = self.connection_form_state(cx).form.as_ref() else {
+        let Some(form) = self.new_connection_form.as_ref() else {
             return div().into_any_element();
         };
         let loading = form.serial_ports_loading;
@@ -2584,18 +2471,18 @@ impl WorkspaceApp {
         disabled: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let anchor_id = Self::new_connection_select_anchor_id(select_id);
+        let workspace = cx.entity();
         let trigger = self
-            .new_connection_select_trigger(select_id, value, placeholder, disabled, cx)
+            .new_connection_select_trigger(select_id, value, placeholder, disabled)
             .when(!disabled, |trigger| {
                 trigger.cursor_pointer().on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _event, window, cx| {
-                        this.update_connection_form_state(cx, |state| {
-                            if let Some(form) = state.form.as_mut() {
-                                form.field_focused = false;
-                                form.selected_field = None;
-                            }
-                        });
+                        if let Some(form) = this.new_connection_form.as_mut() {
+                            form.field_focused = false;
+                            form.selected_field = None;
+                        }
                         this.ime_marked_text = None;
                         this.open_new_connection_select_from_pointer(select_id, cx);
                         window.focus(&this.focus_handle, cx);
@@ -2605,180 +2492,12 @@ impl WorkspaceApp {
                 )
             });
 
-        self.track_new_connection_select_anchor(select_id, trigger, cx)
-    }
-
-    pub(super) fn render_connection_terminal_options(&self, cx: &mut Context<Self>) -> AnyElement {
-        // Saved host controls are optional overrides so application defaults
-        // continue to govern legacy records and temporary local terminals.
-        let Some(terminal) = self
-            .connection_form_state(cx)
-            .form
-            .as_ref()
-            .map(|form| form.terminal)
-        else {
-            return div().into_any_element();
-        };
-        let application_defaults = &self.settings_store.settings().terminal;
-        let default_encoding = terminal_encoding_label(application_defaults.terminal_encoding);
-        let default_backspace =
-            terminal_backspace_sequence_label(application_defaults.backspace_sequence);
-        let default_delete = terminal_delete_sequence_label(application_defaults.delete_sequence);
-        let inherited_label = |value: &str| {
-            self.i18n
-                .t("ssh.form.terminal_use_application_default")
-                .replace("{{value}}", value)
-        };
-        let encoding_label = terminal
-            .encoding
-            .map(connection_terminal_encoding_label)
-            .map(str::to_string)
-            .unwrap_or_else(|| inherited_label(&default_encoding));
-        let backspace_label = terminal
-            .backspace_sequence
-            .map(connection_terminal_backspace_sequence_label)
-            .map(str::to_string)
-            .unwrap_or_else(|| inherited_label(default_backspace));
-        let delete_label = terminal
-            .delete_sequence
-            .map(connection_terminal_delete_sequence_label)
-            .map(str::to_string)
-            .unwrap_or_else(|| inherited_label(default_delete));
-
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(self.tokens.spacing.three))
-            .border_t_1()
-            .border_color(rgb(self.tokens.ui.border))
-            .pt(px(self.tokens.spacing.three))
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_baseline()
-                    .gap(px(self.tokens.spacing.two))
-                    .child(
-                        div()
-                            .text_size(px(self.tokens.metrics.ui_text_sm))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(rgb(self.tokens.ui.text))
-                            .child(self.i18n.t("ssh.form.terminal_options")),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(self.tokens.metrics.ui_text_xs))
-                            .text_color(rgb(self.tokens.ui.text_muted))
-                            .child(self.i18n.t("ssh.form.terminal_options_hint")),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_wrap()
-                    .gap(px(self.tokens.spacing.three))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(CONNECTION_TERMINAL_CONTROL_MIN_WIDTH))
-                            .child(form_field(
-                                &self.tokens,
-                                self.i18n.t("settings_view.terminal.encoding"),
-                                self.render_new_connection_select_control(
-                                    NewConnectionSelect::TerminalEncoding,
-                                    encoding_label,
-                                    false,
-                                    false,
-                                    cx,
-                                ),
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(CONNECTION_TERMINAL_CONTROL_MIN_WIDTH))
-                            .child(form_field(
-                                &self.tokens,
-                                self.i18n.t("settings_view.terminal.backspace_sequence"),
-                                self.render_new_connection_select_control(
-                                    NewConnectionSelect::TerminalBackspaceSequence,
-                                    backspace_label,
-                                    false,
-                                    false,
-                                    cx,
-                                ),
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(CONNECTION_TERMINAL_CONTROL_MIN_WIDTH))
-                            .child(form_field(
-                                &self.tokens,
-                                self.i18n.t("settings_view.terminal.delete_sequence"),
-                                self.render_new_connection_select_control(
-                                    NewConnectionSelect::TerminalDeleteSequence,
-                                    delete_label,
-                                    false,
-                                    false,
-                                    cx,
-                                ),
-                            )),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    pub(super) fn set_new_connection_terminal_encoding(
-        &mut self,
-        encoding: Option<ConnectionTerminalEncoding>,
-        cx: &mut Context<Self>,
-    ) {
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                form.terminal.encoding = encoding;
-                form.field_focused = false;
-                clear_connection_selection(form);
-                form.error = None;
-            }
-        });
-        self.ime_marked_text = None;
-        cx.notify();
-    }
-
-    pub(super) fn set_new_connection_terminal_backspace_sequence(
-        &mut self,
-        sequence: Option<ConnectionTerminalBackspaceSequence>,
-        cx: &mut Context<Self>,
-    ) {
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                form.terminal.backspace_sequence = sequence;
-                form.field_focused = false;
-                clear_connection_selection(form);
-                form.error = None;
-            }
-        });
-        self.ime_marked_text = None;
-        cx.notify();
-    }
-
-    pub(super) fn set_new_connection_terminal_delete_sequence(
-        &mut self,
-        sequence: Option<ConnectionTerminalDeleteSequence>,
-        cx: &mut Context<Self>,
-    ) {
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                form.terminal.delete_sequence = sequence;
-                form.field_focused = false;
-                clear_connection_selection(form);
-                form.error = None;
-            }
-        });
-        self.ime_marked_text = None;
-        cx.notify();
+        select_anchor_probe(anchor_id, trigger, move |anchor, _window, cx| {
+            let _ = workspace.update(cx, |this, cx| {
+                this.update_select_anchor(anchor, cx);
+            });
+        })
+        .into_any_element()
     }
 
     fn render_serial_u8_select(
@@ -2870,25 +2589,10 @@ impl WorkspaceApp {
 
     pub(super) fn render_upstream_proxy_policy_section(
         &self,
+        form: &NewConnectionForm,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some((policy, protocol, host, port, no_proxy, remote_dns, auth, username)) =
-            self.connection_form_state(cx).form.as_ref().map(|form| {
-                (
-                    form.upstream_proxy_policy,
-                    form.upstream_proxy_protocol,
-                    form.upstream_proxy_host.clone(),
-                    form.upstream_proxy_port.clone(),
-                    form.upstream_proxy_no_proxy.clone(),
-                    form.upstream_proxy_remote_dns,
-                    form.upstream_proxy_auth,
-                    form.upstream_proxy_username.clone(),
-                )
-            })
-        else {
-            return div().into_any_element();
-        };
-        let custom = policy == NewConnectionUpstreamProxyPolicy::Custom;
+        let custom = form.upstream_proxy_policy == NewConnectionUpstreamProxyPolicy::Custom;
         div()
             .flex()
             .flex_col()
@@ -2901,7 +2605,7 @@ impl WorkspaceApp {
                 self.i18n.t("modals.upstream_proxy.policy"),
                 self.render_new_connection_select_control(
                     NewConnectionSelect::UpstreamProxyPolicy,
-                    self.upstream_proxy_policy_label(policy),
+                    self.upstream_proxy_policy_label(form.upstream_proxy_policy),
                     false,
                     false,
                     cx,
@@ -2919,7 +2623,9 @@ impl WorkspaceApp {
                                 self.i18n.t("settings_view.network.protocol"),
                                 self.render_new_connection_select_control(
                                     NewConnectionSelect::UpstreamProxyProtocol,
-                                    self.upstream_proxy_protocol_label(protocol),
+                                    self.upstream_proxy_protocol_label(
+                                        form.upstream_proxy_protocol,
+                                    ),
                                     false,
                                     false,
                                     cx,
@@ -2928,7 +2634,7 @@ impl WorkspaceApp {
                             .child(div().w(px(self.tokens.metrics.form_port_width)).child(
                                 self.render_connection_field(
                                     self.i18n.t("settings_view.network.port"),
-                                    &port,
+                                    &form.upstream_proxy_port,
                                     "1080".to_string(),
                                     NewConnectionField::UpstreamProxyPort,
                                     false,
@@ -2938,7 +2644,7 @@ impl WorkspaceApp {
                     )
                     .child(self.render_connection_field(
                         self.i18n.t("settings_view.network.host"),
-                        &host,
+                        &form.upstream_proxy_host,
                         "127.0.0.1".to_string(),
                         NewConnectionField::UpstreamProxyHost,
                         false,
@@ -2946,7 +2652,7 @@ impl WorkspaceApp {
                     ))
                     .child(self.render_connection_field(
                         self.i18n.t("settings_view.network.no_proxy"),
-                        &no_proxy,
+                        &form.upstream_proxy_no_proxy,
                         "localhost,127.0.0.1,*.internal".to_string(),
                         NewConnectionField::UpstreamProxyNoProxy,
                         false,
@@ -2954,7 +2660,7 @@ impl WorkspaceApp {
                     ))
                     .child(self.render_connection_checkbox(
                         self.i18n.t("settings_view.network.remote_dns"),
-                        remote_dns,
+                        form.upstream_proxy_remote_dns,
                         |form| form.upstream_proxy_remote_dns = !form.upstream_proxy_remote_dns,
                         cx,
                     ))
@@ -2963,28 +2669,30 @@ impl WorkspaceApp {
                         self.i18n.t("settings_view.network.auth"),
                         self.render_new_connection_select_control(
                             NewConnectionSelect::UpstreamProxyAuth,
-                            self.upstream_proxy_auth_label(auth),
+                            self.upstream_proxy_auth_label(form.upstream_proxy_auth),
                             false,
                             false,
                             cx,
                         ),
                     ))
                     .when(
-                        auth == NewConnectionUpstreamProxyAuth::Password,
+                        form.upstream_proxy_auth == NewConnectionUpstreamProxyAuth::Password,
                         |content| {
                             content
                                 .child(self.render_connection_field(
                                     self.i18n.t("settings_view.network.username"),
-                                    &username,
+                                    &form.upstream_proxy_username,
                                     String::new(),
                                     NewConnectionField::UpstreamProxyUsername,
                                     false,
                                     cx,
                                 ))
-                                .child(self.render_connection_secret_field(
+                                .child(self.render_connection_field(
                                     self.i18n.t("settings_view.network.password"),
+                                    &form.upstream_proxy_password,
                                     String::new(),
                                     NewConnectionField::UpstreamProxyPassword,
+                                    true,
                                     cx,
                                 ))
                                 .child(self.render_connection_hint(
@@ -3032,15 +2740,13 @@ impl WorkspaceApp {
         port_path: String,
         cx: &mut Context<Self>,
     ) {
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                form.serial_port_path = port_path;
-                form.focused_field = NewConnectionField::SerialPortPath;
-                form.field_focused = false;
-                clear_connection_selection(form);
-                form.error = None;
-            }
-        });
+        if let Some(form) = self.new_connection_form.as_mut() {
+            form.serial_port_path = port_path;
+            form.focused_field = NewConnectionField::SerialPortPath;
+            form.field_focused = false;
+            clear_connection_selection(form);
+            form.error = None;
+        }
         self.ime_marked_text = None;
         cx.notify();
     }
@@ -3051,18 +2757,16 @@ impl WorkspaceApp {
         value: u8,
         cx: &mut Context<Self>,
     ) {
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                match select_id {
-                    NewConnectionSelect::SerialDataBits => form.serial_data_bits = value,
-                    NewConnectionSelect::SerialStopBits => form.serial_stop_bits = value,
-                    _ => return,
-                }
-                form.field_focused = false;
-                clear_connection_selection(form);
-                form.error = None;
+        if let Some(form) = self.new_connection_form.as_mut() {
+            match select_id {
+                NewConnectionSelect::SerialDataBits => form.serial_data_bits = value,
+                NewConnectionSelect::SerialStopBits => form.serial_stop_bits = value,
+                _ => return,
             }
-        });
+            form.field_focused = false;
+            clear_connection_selection(form);
+            form.error = None;
+        }
         self.ime_marked_text = None;
         cx.notify();
     }
@@ -3072,14 +2776,12 @@ impl WorkspaceApp {
         parity: oxideterm_terminal::SerialParity,
         cx: &mut Context<Self>,
     ) {
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                form.serial_parity = parity;
-                form.field_focused = false;
-                clear_connection_selection(form);
-                form.error = None;
-            }
-        });
+        if let Some(form) = self.new_connection_form.as_mut() {
+            form.serial_parity = parity;
+            form.field_focused = false;
+            clear_connection_selection(form);
+            form.error = None;
+        }
         self.ime_marked_text = None;
         cx.notify();
     }
@@ -3089,14 +2791,12 @@ impl WorkspaceApp {
         flow: oxideterm_terminal::SerialFlowControl,
         cx: &mut Context<Self>,
     ) {
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                form.serial_flow_control = flow;
-                form.field_focused = false;
-                clear_connection_selection(form);
-                form.error = None;
-            }
-        });
+        if let Some(form) = self.new_connection_form.as_mut() {
+            form.serial_flow_control = flow;
+            form.field_focused = false;
+            clear_connection_selection(form);
+            form.error = None;
+        }
         self.ime_marked_text = None;
         cx.notify();
     }
@@ -3106,14 +2806,12 @@ impl WorkspaceApp {
         policy: NewConnectionUpstreamProxyPolicy,
         cx: &mut Context<Self>,
     ) {
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                form.upstream_proxy_policy = policy;
-                form.field_focused = false;
-                clear_connection_selection(form);
-                form.error = None;
-            }
-        });
+        if let Some(form) = self.new_connection_form.as_mut() {
+            form.upstream_proxy_policy = policy;
+            form.field_focused = false;
+            clear_connection_selection(form);
+            form.error = None;
+        }
         self.ime_marked_text = None;
         cx.notify();
     }
@@ -3123,14 +2821,12 @@ impl WorkspaceApp {
         protocol: SavedUpstreamProxyProtocol,
         cx: &mut Context<Self>,
     ) {
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                form.upstream_proxy_protocol = protocol;
-                form.field_focused = false;
-                clear_connection_selection(form);
-                form.error = None;
-            }
-        });
+        if let Some(form) = self.new_connection_form.as_mut() {
+            form.upstream_proxy_protocol = protocol;
+            form.field_focused = false;
+            clear_connection_selection(form);
+            form.error = None;
+        }
         self.ime_marked_text = None;
         cx.notify();
     }
@@ -3140,20 +2836,18 @@ impl WorkspaceApp {
         auth: NewConnectionUpstreamProxyAuth,
         cx: &mut Context<Self>,
     ) {
-        self.update_connection_form_state(cx, |state| {
-            if let Some(form) = state.form.as_mut() {
-                if auth == NewConnectionUpstreamProxyAuth::None {
-                    // Hidden password fields should not retain a draft secret after
-                    // switching the custom proxy back to unauthenticated mode.
-                    form.upstream_proxy_password.clear();
-                    form.upstream_proxy_password_keychain_id = None;
-                }
-                form.upstream_proxy_auth = auth;
-                form.field_focused = false;
-                clear_connection_selection(form);
-                form.error = None;
+        if let Some(form) = self.new_connection_form.as_mut() {
+            if auth == NewConnectionUpstreamProxyAuth::None {
+                // Hidden password fields should not retain a draft secret after
+                // switching the custom proxy back to unauthenticated mode.
+                form.upstream_proxy_password.clear();
+                form.upstream_proxy_password_keychain_id = None;
             }
-        });
+            form.upstream_proxy_auth = auth;
+            form.field_focused = false;
+            clear_connection_selection(form);
+            form.error = None;
+        }
         self.ime_marked_text = None;
         cx.notify();
     }
@@ -3169,12 +2863,10 @@ impl WorkspaceApp {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, _window, cx| {
-                    this.update_connection_form_state(cx, |state| {
-                        if let Some(form) = state.form.as_mut() {
-                            toggle(form);
-                        }
-                    });
-                    this.close_new_connection_select(cx);
+                    if let Some(form) = this.new_connection_form.as_mut() {
+                        toggle(form);
+                    }
+                    this.close_new_connection_select();
                     cx.notify();
                 }),
             )
@@ -3277,113 +2969,5 @@ mod tests {
             new_connection_transport_index(NewConnectionTransport::WslGraphics),
             5,
         );
-    }
-
-    #[test]
-    fn terminal_selects_map_to_their_tracked_overlay_anchors() {
-        for (select, anchor_id) in [
-            (
-                NewConnectionSelect::TerminalEncoding,
-                SelectAnchorId::NewConnectionTerminalEncoding,
-            ),
-            (
-                NewConnectionSelect::TerminalBackspaceSequence,
-                SelectAnchorId::NewConnectionTerminalBackspaceSequence,
-            ),
-            (
-                NewConnectionSelect::TerminalDeleteSequence,
-                SelectAnchorId::NewConnectionTerminalDeleteSequence,
-            ),
-        ] {
-            assert_eq!(
-                WorkspaceApp::new_connection_select_anchor_id(select),
-                anchor_id
-            );
-            assert!(anchor_id.is_new_connection_select_trigger());
-        }
-    }
-
-    #[test]
-    fn secret_field_render_values_borrow_entity_owned_allocations() {
-        let mut form = NewConnectionForm::default();
-        form.password = "primary-password".to_string();
-        form.passphrase = "primary-passphrase".to_string();
-        form.upstream_proxy_password = "proxy-password".to_string();
-        let mut jump_form = NewConnectionProxyHop::new();
-        jump_form.password = "jump-password".to_string();
-        jump_form.passphrase = "jump-passphrase".to_string();
-        form.jump_server_form = Some(jump_form);
-
-        let password_pointer = form.password.as_ptr();
-        let passphrase_pointer = form.passphrase.as_ptr();
-        let proxy_password_pointer = form.upstream_proxy_password.as_ptr();
-        let jump_password_pointer = form
-            .jump_server_form
-            .as_ref()
-            .expect("jump form should exist")
-            .password
-            .as_ptr();
-        let jump_passphrase_pointer = form
-            .jump_server_form
-            .as_ref()
-            .expect("jump form should exist")
-            .passphrase
-            .as_ptr();
-
-        assert_eq!(
-            connection_secret_field_value(&form, NewConnectionField::Password)
-                .expect("password should be rendered")
-                .as_ptr(),
-            password_pointer,
-        );
-        assert_eq!(
-            connection_secret_field_value(&form, NewConnectionField::Passphrase)
-                .expect("passphrase should be rendered")
-                .as_ptr(),
-            passphrase_pointer,
-        );
-        assert_eq!(
-            connection_secret_field_value(&form, NewConnectionField::UpstreamProxyPassword)
-                .expect("proxy password should be rendered")
-                .as_ptr(),
-            proxy_password_pointer,
-        );
-        assert_eq!(
-            connection_secret_field_value(&form, NewConnectionField::JumpPassword)
-                .expect("jump password should be rendered")
-                .as_ptr(),
-            jump_password_pointer,
-        );
-        assert_eq!(
-            connection_secret_field_value(&form, NewConnectionField::JumpPassphrase)
-                .expect("jump passphrase should be rendered")
-                .as_ptr(),
-            jump_passphrase_pointer,
-        );
-    }
-
-    #[test]
-    fn form_view_sources_do_not_clone_secret_drafts_for_rendering() {
-        let sources = [
-            include_str!("form_modal.rs"),
-            include_str!("field_controls.rs"),
-            include_str!("proxy_chain_view.rs"),
-        ];
-        let forbidden_patterns = [
-            ["form.password", ".clone()"].concat(),
-            ["form.passphrase", ".clone()"].concat(),
-            ["form.upstream_proxy_password", ".clone()"].concat(),
-            ["hop.password", ".clone()"].concat(),
-            ["hop.passphrase", ".clone()"].concat(),
-        ];
-
-        for source in sources {
-            for forbidden_pattern in &forbidden_patterns {
-                assert!(
-                    !source.contains(forbidden_pattern),
-                    "form rendering must borrow secret drafts instead of matching {forbidden_pattern}",
-                );
-            }
-        }
     }
 }

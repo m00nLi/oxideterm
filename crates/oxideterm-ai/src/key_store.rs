@@ -45,9 +45,9 @@ impl AiProviderKeyStore {
         // receives the secret, and the session cache mirrors Tauri's post-save
         // cache so the next chat send does not immediately re-authenticate.
         self.store_provider_key_to_os(provider_id, api_key.as_str())?;
-        // Move the existing zeroizing allocation into the cache after the OS
-        // write instead of creating a second in-memory secret copy.
-        self.cache.write().insert(provider_id.to_string(), api_key);
+        self.cache
+            .write()
+            .insert(provider_id.to_string(), Zeroizing::new(api_key.to_string()));
         Ok(())
     }
 
@@ -187,6 +187,20 @@ impl AiProviderKeyStore {
         NativeSecretStore::new(&self.service)
             .delete(&self.account(provider_id))
             .with_context(|| format!("failed to delete AI provider key for {provider_id}"))
+    }
+
+    pub fn store_acp_auth_token(&self, agent_id: &str, token: Zeroizing<String>) -> Result<()> {
+        // ACP tokens share the AI keychain service but use their own namespace
+        // so provider, MCP, and ACP credentials cannot overwrite each other.
+        self.store_provider_key(&format!("acp:{agent_id}"), token)
+    }
+
+    pub fn has_acp_auth_token(&self, agent_id: &str) -> bool {
+        self.has_provider_key(&format!("acp:{agent_id}"))
+    }
+
+    pub fn delete_acp_auth_token(&self, agent_id: &str) -> Result<()> {
+        self.delete_provider_key(&format!("acp:{agent_id}"))
     }
 
     fn load_provider_key_from_os(&self, provider_id: &str) -> Result<Option<Zeroizing<String>>> {

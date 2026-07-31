@@ -133,7 +133,6 @@
         "invalid_nice": "請輸入 -20 到 19 之間的 nice 值。",
         "connection_missing": "所選連線已無法使用。",
         "action_failed": "程序操作失敗。",
-        "action_succeeded": "PID {{pid}} 的程序操作已完成。",
         "partial_support": "{{os}} 上的程序管理為部分支援。"
       }
     },
@@ -192,8 +191,7 @@
         "exec_opened": "已為 {{name}} 開啟 Shell。",
         "follow_opened": "正在追蹤 {{name}} 的日誌。",
         "connection_missing": "所選連線已無法使用。",
-        "action_failed": "Docker 操作失敗。",
-        "action_succeeded": "容器 {{name}} 的 Docker 操作已完成。"
+        "action_failed": "Docker 操作失敗。"
       }
     },
     "host_services": {
@@ -269,7 +267,6 @@
         "follow_opened": "正在追蹤 {{name}} 的日誌。",
         "connection_missing": "所選連線已不可用。",
         "action_failed": "服務操作失敗。",
-        "action_succeeded": "服務 {{name}} 的操作已完成。",
         "partial_support": "{{os}} 上的服務管理為部分支援。"
       }
     },
@@ -382,7 +379,6 @@
         "new_session_opened": "正在開啟 {{name}}。",
         "action_already_running": "已有 tmux 操作正在執行。",
         "action_failed": "tmux 操作失敗。",
-        "action_succeeded": "tmux 對 {{target}} 的操作已完成。",
         "unknown_error": "未知錯誤",
         "input_required": "繼續前請輸入內容。"
       },
@@ -735,7 +731,8 @@
       "add_by_drilling": "您可以透過深入連線來新增子節點",
       "click_to_add": "點擊 + 新增連線",
       "terminal": "終端機 #{{number}}",
-      "close_terminal": "關閉終端機"
+      "close_terminal": "關閉終端機",
+      "rename_terminal": "重新命名終端機"
     },
     "actions": {
       "connect": "連線",

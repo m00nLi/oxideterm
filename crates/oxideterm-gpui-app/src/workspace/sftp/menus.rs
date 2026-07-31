@@ -19,10 +19,9 @@ impl WorkspaceApp {
             SFTP_CONTEXT_MENU_MAX_HEIGHT,
             8.0,
         );
-        let selected_count = self.sftp_selected_names(menu.pane, cx).len();
-        let remote_loading = self.sftp_view.read(cx).remote_loading;
-        let pane_loading = menu.pane == SftpPane::Remote && remote_loading;
-        let transfer_loading = remote_loading;
+        let selected_count = self.sftp_selected_names(menu.pane).len();
+        let pane_loading = menu.pane == SftpPane::Remote && self.sftp_view.remote_loading;
+        let transfer_loading = self.sftp_view.remote_loading;
         let direction = if menu.pane == SftpPane::Local {
             SftpTransferDirection::Upload
         } else {
@@ -55,8 +54,8 @@ impl WorkspaceApp {
                 false,
                 transfer_loading,
                 has_background,
-                move |this, _event, _window, cx| {
-                    this.queue_sftp_transfers(menu.pane, direction, cx);
+                move |this, _event, _window, _cx| {
+                    this.queue_sftp_transfers(menu.pane, direction);
                 },
                 cx,
             ))
@@ -77,8 +76,8 @@ impl WorkspaceApp {
                         has_background,
                         {
                             let file = file.clone();
-                            move |this, _event, _window, cx| {
-                                this.open_or_preview_sftp_file(menu.pane, &file, cx);
+                            move |this, _event, _window, _cx| {
+                                this.open_or_preview_sftp_file(menu.pane, &file);
                             }
                         },
                         cx,
@@ -94,7 +93,7 @@ impl WorkspaceApp {
                             {
                                 let file = file.clone();
                                 move |this, _event, _window, cx| {
-                                    this.extract_remote_sftp_archive(file.clone(), cx);
+                                    this.extract_remote_sftp_archive(file.clone());
                                     cx.notify();
                                 }
                             },
@@ -113,11 +112,9 @@ impl WorkspaceApp {
                 has_background,
                 {
                     let file = menu.file.clone();
-                    move |this, _event, _window, cx| {
+                    move |this, _event, _window, _cx| {
                         if let Some(file) = file.as_ref() {
-                            this.sftp_view.update(cx, |sftp, cx| {
-                                sftp.open_rename_dialog(menu.pane, file.name.clone(), cx);
-                            });
+                            this.open_sftp_rename_dialog(menu.pane, file.name.clone());
                         }
                     }
                 },
@@ -133,15 +130,12 @@ impl WorkspaceApp {
                 pane_loading,
                 has_background,
                 move |this, _event, _window, cx| {
-                    let base = {
-                        let sftp = this.sftp_view.read(cx);
-                        match menu.pane {
-                            SftpPane::Local => sftp.local_path.clone(),
-                            SftpPane::Remote => sftp.remote_path.clone(),
-                        }
+                    let base = match menu.pane {
+                        SftpPane::Local => &this.sftp_view.local_path,
+                        SftpPane::Remote => &this.sftp_view.remote_path,
                     };
                     cx.write_to_clipboard(ClipboardItem::new_string(join_sftp_path(
-                        &base, &file.name,
+                        base, &file.name,
                     )));
                 },
                 cx,
@@ -155,14 +149,11 @@ impl WorkspaceApp {
                 false,
                 pane_loading,
                 has_background,
-                move |this, _event, _window, cx| {
-                    let files = this.sftp_selected_names(menu.pane, cx);
-                    this.sftp_view.update(cx, |sftp, cx| {
-                        sftp.set_dialog(SftpDialog::Delete {
-                            pane: menu.pane,
-                            files,
-                        });
-                        cx.notify();
+                move |this, _event, _window, _cx| {
+                    let files = this.sftp_selected_names(menu.pane);
+                    this.sftp_view.set_dialog(SftpDialog::Delete {
+                        pane: menu.pane,
+                        files,
                     });
                 },
                 cx,
@@ -181,10 +172,8 @@ impl WorkspaceApp {
             false,
             pane_loading,
             has_background,
-            move |this, _event, _window, cx| {
-                this.sftp_view.update(cx, |sftp, cx| {
-                    sftp.open_new_folder_dialog(menu.pane, cx);
-                });
+            move |this, _event, _window, _cx| {
+                this.open_sftp_new_folder_dialog(menu.pane);
             },
             cx,
         ));
@@ -216,7 +205,7 @@ impl WorkspaceApp {
     ) -> AnyElement {
         let theme = self.tokens.ui;
         let disabled = disabled
-            || self.sftp_view.read(cx).context_menu_presence.phase()
+            || self.sftp_view.context_menu_presence.phase()
                 == oxideterm_gpui_ui::motion::ExitPhase::Exiting;
         let color = if danger { SFTP_RED } else { theme.text };
         let item = div()
@@ -251,15 +240,13 @@ impl WorkspaceApp {
                 hover_background: Some(sftp_hover_bg(theme.bg_hover, has_background)),
                 hover_text_color: None,
             },
-            |_| {},
+            |this| {
+                this.dismiss_sftp_context_menu();
+            },
             // The shared workspace menu helper already wraps this closure in
             // `cx.listener`. Passing another listener here re-enters WorkspaceApp
             // during the same mouse event and panics on menu actions like Preview.
-            move |this, event, window, cx| {
-                this.sftp_view
-                    .update(cx, |sftp, cx| sftp.dismiss_context_menu(cx));
-                listener(this, event, window, cx);
-            },
+            listener,
             cx,
         )
         .into_any_element()

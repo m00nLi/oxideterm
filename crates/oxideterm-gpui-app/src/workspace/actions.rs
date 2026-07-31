@@ -1,5 +1,4 @@
 use super::ime::WorkspaceImeTarget;
-use super::tabs::TabCloseConfirmKeyAction;
 use super::*;
 use oxideterm_gpui_ui::text_input::{
     text_caret, text_input_anchor_probe, text_input_value_segments_with_color,
@@ -44,6 +43,41 @@ impl SearchBarState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalCommandEnterAction {
+    SubmitDraft,
+    SubmitSuggestion(usize),
+    AcceptSuggestion(usize),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalCommandSuggestionDirection {
+    Up,
+    Down,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TabCloseConfirmDirectKeyAction {
+    Cancel,
+    Confirm,
+}
+
+/// Gives the close modal priority over the terminal while preserving modified shortcuts.
+fn tab_close_confirm_direct_key_action(
+    key: &str,
+    platform_modifier: bool,
+    control_modifier: bool,
+) -> Option<TabCloseConfirmDirectKeyAction> {
+    if platform_modifier || control_modifier {
+        return None;
+    }
+    match key {
+        "escape" => Some(TabCloseConfirmDirectKeyAction::Cancel),
+        "enter" => Some(TabCloseConfirmDirectKeyAction::Confirm),
+        _ => None,
+    }
+}
+
 fn terminal_tab_capture_keystroke(keystroke: &gpui::Keystroke) -> bool {
     let modifiers = keystroke.modifiers;
     // Plain Tab and Shift+Tab are terminal protocol keys, but some platforms
@@ -55,94 +89,179 @@ fn terminal_tab_capture_keystroke(keystroke: &gpui::Keystroke) -> bool {
 fn terminal_tab_capture_blocked_by_workspace_ui(
     active_ime_target: bool,
     quick_commands_open: bool,
+    command_suggestions_open: bool,
 ) -> bool {
-    // Text inputs, command palettes, and quick commands own Tab semantics while
-    // they are active. The terminal fallback only handles the platform
-    // focus-traversal path that would otherwise swallow a real terminal Tab.
-    active_ime_target || quick_commands_open
+    // Text inputs, command palettes, terminal command popovers, and quick
+    // commands own Tab semantics while they are active. The terminal fallback is
+    // only for the platform focus-traversal path that would otherwise swallow a
+    // real terminal Tab.
+    active_ime_target || quick_commands_open || command_suggestions_open
 }
 
 impl WorkspaceApp {
+    fn schedule_simple_confirm_exit(
+        &mut self,
+        target: SimpleConfirmExitTarget,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let delay = oxideterm_gpui_ui::motion::duration(
+            &self.tokens,
+            oxideterm_gpui_ui::motion::MotionDuration::Control,
+        );
+        if delay.is_zero() {
+            self.finish_simple_confirm_exit(target, generation);
+            return;
+        }
+        // Each target retains only the read-only payload needed for its exit frame.
+        cx.spawn(async move |weak, cx| {
+            Timer::after(delay).await;
+            let _ = weak.update(cx, |this, cx| {
+                if this.finish_simple_confirm_exit(target, generation) {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn finish_simple_confirm_exit(
+        &mut self,
+        target: SimpleConfirmExitTarget,
+        generation: u64,
+    ) -> bool {
+        match target {
+            SimpleConfirmExitTarget::AiClearAll
+                if self.ai_clear_all_confirm_presence.finish_exit(generation) =>
+            {
+                self.ai.chat.clear_all_confirm_open = false;
+            }
+            SimpleConfirmExitTarget::AiDeleteMessage
+                if self
+                    .ai_delete_message_confirm_presence
+                    .finish_exit(generation) =>
+            {
+                self.ai.chat.delete_message_confirm = None;
+            }
+            SimpleConfirmExitTarget::NodeDisconnect
+                if self
+                    .node_disconnect_confirm_presence
+                    .finish_exit(generation) =>
+            {
+                self.node_disconnect_confirm = None;
+            }
+            SimpleConfirmExitTarget::TabClose
+                if self.tab_close_confirm_presence.finish_exit(generation) =>
+            {
+                self.main_window_tabs.close_confirm = None;
+            }
+            SimpleConfirmExitTarget::SettingsDataDirectory
+                if self
+                    .settings_data_directory_confirm_presence
+                    .finish_exit(generation) =>
+            {
+                self.settings_data_directory_confirm = None;
+            }
+            SimpleConfirmExitTarget::KeybindingResetAll
+                if self
+                    .keybinding_reset_all_confirm_presence
+                    .finish_exit(generation) =>
+            {
+                self.settings_page
+                    .set_keybinding_reset_all_confirm_open(false);
+            }
+            _ => return false,
+        }
+        true
+    }
+
     pub(in crate::workspace) fn begin_ai_clear_all_confirm_exit(
         &mut self,
-        confirmed: bool,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.begin_ai_chat_confirm_exit(confirmed, cx)
+        let Some(generation) = self.ai_clear_all_confirm_presence.begin_exit() else {
+            return false;
+        };
+        self.clear_standard_confirm_focus();
+        self.schedule_simple_confirm_exit(SimpleConfirmExitTarget::AiClearAll, generation, cx);
+        true
     }
 
     pub(in crate::workspace) fn begin_ai_delete_message_confirm_exit(
         &mut self,
-        confirmed: bool,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.begin_ai_chat_confirm_exit(confirmed, cx)
-    }
-
-    fn begin_ai_chat_confirm_exit(&mut self, confirmed: bool, cx: &mut Context<Self>) -> bool {
-        let delay = oxideterm_gpui_ui::motion::duration(
-            &self.tokens,
-            oxideterm_gpui_ui::motion::MotionDuration::Control,
-        );
-        let (started, effect) = self.ai_entity.update(cx, |ai, cx| {
-            ai.begin_chat_confirm_exit(confirmed, delay, cx)
-        });
-        if let Some(effect) = effect {
-            match effect {
-                ai_state::AiChatConfirmEffect::ClearAll => self.clear_ai_conversations(cx),
-                ai_state::AiChatConfirmEffect::DeleteMessage { message_id } => {
-                    self.delete_ai_message(&message_id, cx);
-                }
-            }
-        }
-        started
+        let Some(generation) = self.ai_delete_message_confirm_presence.begin_exit() else {
+            return false;
+        };
+        self.clear_standard_confirm_focus();
+        self.schedule_simple_confirm_exit(SimpleConfirmExitTarget::AiDeleteMessage, generation, cx);
+        true
     }
 
     pub(in crate::workspace) fn begin_node_disconnect_confirm_exit(
         &mut self,
-        confirmed: bool,
         cx: &mut Context<Self>,
-    ) -> (bool, Option<WorkspaceOverlayConfirmEffect>) {
-        let delay = oxideterm_gpui_ui::motion::duration(
-            &self.tokens,
-            oxideterm_gpui_ui::motion::MotionDuration::Control,
-        );
-        self.overlay.update(cx, |overlay, cx| {
-            overlay.begin_confirm_exit(confirmed, delay, cx)
-        })
+    ) -> bool {
+        let Some(generation) = self.node_disconnect_confirm_presence.begin_exit() else {
+            return false;
+        };
+        self.clear_standard_confirm_focus();
+        self.schedule_simple_confirm_exit(SimpleConfirmExitTarget::NodeDisconnect, generation, cx);
+        true
     }
 
     pub(in crate::workspace) fn begin_tab_close_confirm_exit(
         &mut self,
-        confirmed: bool,
         cx: &mut Context<Self>,
-    ) -> (bool, Option<TabCloseConfirm>) {
-        let delay = oxideterm_gpui_ui::motion::duration(
-            &self.tokens,
-            oxideterm_gpui_ui::motion::MotionDuration::Control,
+    ) -> bool {
+        let Some(generation) = self.tab_close_confirm_presence.begin_exit() else {
+            return false;
+        };
+        self.clear_standard_confirm_focus();
+        self.schedule_simple_confirm_exit(SimpleConfirmExitTarget::TabClose, generation, cx);
+        true
+    }
+
+    pub(in crate::workspace) fn begin_settings_data_directory_confirm_exit(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(generation) = self.settings_data_directory_confirm_presence.begin_exit() else {
+            return false;
+        };
+        self.clear_standard_confirm_focus();
+        self.schedule_simple_confirm_exit(
+            SimpleConfirmExitTarget::SettingsDataDirectory,
+            generation,
+            cx,
         );
-        self.tab_host.update(cx, |tab_host, cx| {
-            tab_host.begin_close_confirm_exit(confirmed, delay, cx)
-        })
+        true
     }
 
     pub(in crate::workspace) fn begin_keybinding_reset_all_confirm_exit(
         &mut self,
         cx: &mut Context<Self>,
     ) -> bool {
-        let delay = oxideterm_gpui_ui::motion::duration(
-            &self.tokens,
-            oxideterm_gpui_ui::motion::MotionDuration::Control,
+        let Some(generation) = self.keybinding_reset_all_confirm_presence.begin_exit() else {
+            return false;
+        };
+        self.clear_standard_confirm_focus();
+        self.schedule_simple_confirm_exit(
+            SimpleConfirmExitTarget::KeybindingResetAll,
+            generation,
+            cx,
         );
-        self.settings_workspace.update(cx, |settings, cx| {
-            settings.begin_keybinding_reset_confirm_exit(delay, cx)
-        })
+        true
     }
     pub(super) fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search.visible = true;
-        self.close_terminal_quick_commands_popover(cx);
+        self.terminal_command_bar_focused = false;
+        self.terminal_command_suggestions_open = false;
+        self.terminal_command_suggestion_highlighted = None;
+        self.close_terminal_quick_commands_popover();
         window.focus(&self.focus_handle, cx);
-        if let Some(pane) = self.active_pane(cx) {
+        if let Some(pane) = self.active_pane() {
             let query = (!self.search.query.is_empty()).then(|| self.search.query.clone());
             let selected_match = query
                 .as_ref()
@@ -161,7 +280,7 @@ impl WorkspaceApp {
         self.search.visible = false;
         self.search.clear_match_state();
         self.ime_marked_text = None;
-        if let Some(pane) = self.active_pane(cx) {
+        if let Some(pane) = self.active_pane() {
             let _ = pane.update(cx, |pane, cx| pane.set_search_query(None, None, cx));
         }
         self.focus_active_pane(window, cx);
@@ -171,7 +290,7 @@ impl WorkspaceApp {
     pub(super) fn update_search_query(&mut self, cx: &mut Context<Self>) {
         let query = (!self.search.query.is_empty()).then(|| self.search.query.clone());
         self.search.active_match = query.as_ref().map(|_| 0);
-        if let Some(pane) = self.active_pane(cx) {
+        if let Some(pane) = self.active_pane() {
             let status = pane.update(cx, |pane, cx| {
                 pane.set_search_query(query, self.search.active_match, cx)
             });
@@ -183,7 +302,7 @@ impl WorkspaceApp {
     }
 
     pub(super) fn search_next(&mut self, forward: bool, cx: &mut Context<Self>) {
-        if let Some(pane) = self.active_pane(cx) {
+        if let Some(pane) = self.active_pane() {
             let status = pane.update(cx, |pane, cx| pane.select_next_search_result(forward, cx));
             self.search.sync_from_terminal(status);
             cx.notify();
@@ -194,7 +313,7 @@ impl WorkspaceApp {
         if self.copy_remote_desktop(cx) {
             return;
         }
-        if let Some(pane) = self.active_pane(cx) {
+        if let Some(pane) = self.active_pane() {
             let _ = pane.update(cx, |pane, cx| pane.copy_to_clipboard(cx));
         }
     }
@@ -203,19 +322,19 @@ impl WorkspaceApp {
         if self.paste_remote_desktop(cx) {
             return;
         }
-        if let Some(pane) = self.active_pane(cx) {
+        if let Some(pane) = self.active_pane() {
             let _ = pane.update(cx, |pane, cx| pane.paste_from_clipboard(cx));
         }
     }
 
     pub(super) fn clear_active_terminal_screen(&mut self, cx: &mut Context<Self>) -> bool {
         let terminal_active = self
-            .active_tab(cx)
+            .active_tab()
             .is_some_and(|tab| matches!(tab.kind, TabKind::LocalTerminal | TabKind::SshTerminal));
         if !terminal_active {
             return false;
         }
-        let Some(pane) = self.active_pane(cx) else {
+        let Some(pane) = self.active_pane() else {
             return false;
         };
         pane.update(cx, |pane, cx| pane.clear_screen(cx));
@@ -223,7 +342,7 @@ impl WorkspaceApp {
     }
 
     pub(super) fn cut(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(pane) = self.active_pane(cx) else {
+        let Some(pane) = self.active_pane() else {
             return false;
         };
         pane.update(cx, |pane, cx| pane.cut_to_clipboard(cx))
@@ -234,17 +353,12 @@ impl WorkspaceApp {
         let entering = !settings.sidebar_ui.zen_mode;
         settings.sidebar_ui.zen_mode = entering;
         if entering {
-            let released_saved_search = self.session_manager.update(cx, |session_manager, cx| {
-                if session_manager.focused_input()
-                    != Some(crate::workspace::session_manager::SessionManagerInput::SavedSearch)
-                {
-                    return false;
-                }
+            if self.session_manager.focused_input
+                == Some(crate::workspace::session_manager::SessionManagerInput::SavedSearch)
+            {
                 // Zen mode hides the primary sidebar immediately, so release
                 // the saved-search IME owner before returning focus to content.
-                session_manager.clear_input_focus(cx)
-            });
-            if released_saved_search {
+                self.session_manager.focused_input = None;
                 self.ime_marked_text = None;
             }
             self.sidebar_collapsed = true;
@@ -255,18 +369,23 @@ impl WorkspaceApp {
             self.context_sidebar_rendered = false;
             settings.sidebar_ui.collapsed = true;
             settings.sidebar_ui.ai_sidebar_collapsed = true;
-            self.clear_ai_sidebar_keyboard_focus(cx);
+            self.clear_ai_sidebar_keyboard_focus();
             const ZEN_HINT_TTL: Duration = Duration::from_millis(2500);
-            self.apply_workspace_overlay_intent(
-                WorkspaceOverlayIntent::ShowZenHint { ttl: ZEN_HINT_TTL },
-                cx,
-            );
+            self.zen_hint_expires_at = Some(Instant::now() + ZEN_HINT_TTL);
+            cx.spawn(async move |weak, cx| {
+                Timer::after(ZEN_HINT_TTL).await;
+                let _ = weak.update(cx, |this, cx| {
+                    this.zen_hint_expires_at = None;
+                    cx.notify();
+                });
+            })
+            .detach();
         } else {
             self.sidebar_collapsed = false;
             self.sidebar_motion_generation = self.sidebar_motion_generation.wrapping_add(1);
             self.sidebar_rendered = true;
             settings.sidebar_ui.collapsed = false;
-            self.apply_workspace_overlay_intent(WorkspaceOverlayIntent::ClearZenHint, cx);
+            self.zen_hint_expires_at = None;
         }
         cx.notify();
     }
@@ -289,13 +408,29 @@ impl WorkspaceApp {
     }
 
     fn show_terminal_font_size_hud(&mut self, font_size: i64, cx: &mut Context<Self>) {
-        self.apply_workspace_overlay_intent(
-            WorkspaceOverlayIntent::ShowTerminalFontSizeHud {
-                font_size,
-                ttl: TERMINAL_FONT_SIZE_HUD_DURATION,
-            },
-            cx,
-        );
+        self.terminal_font_size_hud_generation =
+            self.terminal_font_size_hud_generation.wrapping_add(1);
+        let generation = self.terminal_font_size_hud_generation;
+        self.terminal_font_size_hud = Some(TerminalFontSizeHud {
+            font_size,
+            generation,
+        });
+        // Each shortcut refreshes the same HUD. The generation prevents an
+        // earlier timer from hiding a newer value during rapid key repeats.
+        cx.spawn(async move |weak, cx| {
+            Timer::after(TERMINAL_FONT_SIZE_HUD_DURATION).await;
+            let _ = weak.update(cx, |workspace, cx| {
+                if workspace
+                    .terminal_font_size_hud
+                    .is_some_and(|hud| hud.generation == generation)
+                {
+                    workspace.terminal_font_size_hud = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     pub(super) fn dispatch_registered_keybinding(
@@ -312,7 +447,7 @@ impl WorkspaceApp {
         };
 
         let terminal_active = self
-            .active_tab(cx)
+            .active_tab()
             .is_some_and(|tab| matches!(tab.kind, TabKind::LocalTerminal | TabKind::SshTerminal));
         if matches!(
             definition.scope,
@@ -322,9 +457,8 @@ impl WorkspaceApp {
             return false;
         }
 
-        let terminal_panel_open = self.search.visible
-            || self.ai_entity.read(cx).terminal_inline_panel().open
-            || self.context_sidebar_visible();
+        let terminal_panel_open =
+            self.search.visible || self.ai.chat.inline_panel.open || self.context_sidebar_visible();
         if !crate::keybindings::action_allowed_by_terminal_behavior(
             definition,
             &combo,
@@ -432,7 +566,6 @@ impl WorkspaceApp {
                 "common.disabled"
             })),
             TerminalNoticeVariant::Default,
-            cx,
         );
     }
 
@@ -444,7 +577,7 @@ impl WorkspaceApp {
             self.close_search(window, cx);
             return;
         }
-        if self.ai_entity.read(cx).terminal_inline_panel().open {
+        if self.ai.chat.inline_panel.open {
             self.close_terminal_ai_inline_panel(window, cx);
             return;
         }
@@ -458,28 +591,35 @@ impl WorkspaceApp {
         &mut self,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.dismiss_terminal_broadcast_menu(cx) {
+        if self.dismiss_terminal_broadcast_menu() {
             cx.notify();
             return true;
         }
 
-        if self.terminal.read(cx).quick_commands.is_open() {
-            self.close_terminal_quick_commands_popover(cx);
+        if self.terminal_quick_commands_open {
+            self.close_terminal_quick_commands_popover();
             cx.notify();
             return true;
         }
 
-        if self.close_terminal_cwd_picker(cx) {
+        if self.close_terminal_cwd_picker() {
             cx.notify();
             return true;
         }
 
-        if self.close_terminal_git_branch_picker(cx) {
+        if self.close_terminal_git_branch_picker() {
             cx.notify();
             return true;
         }
 
-        if self.close_terminal_project_panel(cx) {
+        if self.close_terminal_project_panel() {
+            cx.notify();
+            return true;
+        }
+
+        if self.terminal_command_suggestions_open {
+            self.terminal_command_suggestions_open = false;
+            self.terminal_command_suggestion_highlighted = None;
             cx.notify();
             return true;
         }
@@ -500,37 +640,45 @@ impl WorkspaceApp {
     }
 
     pub(super) fn toggle_terminal_broadcast(&mut self, cx: &mut Context<Self>) {
-        self.terminal
-            .update(cx, |terminal, _cx| terminal.toggle_broadcast());
+        self.terminal_broadcast_enabled = !self.terminal_broadcast_enabled;
+        self.dismiss_terminal_broadcast_menu();
+        if !self.terminal_broadcast_enabled {
+            self.terminal_broadcast_targets.clear();
+        }
         cx.notify();
     }
 
-    pub(in crate::workspace) fn dismiss_terminal_broadcast_menu(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    pub(in crate::workspace) fn dismiss_terminal_broadcast_menu(&mut self) -> bool {
         // Broadcast target selection is rendered as a Radix-style context menu.
         // Keep Esc, outside click, command overlay close, and toolbar toggles
         // on the same owner path instead of mutating the open flag ad hoc.
-        self.terminal
-            .update(cx, |terminal, _cx| terminal.dismiss_broadcast_menu())
+        let was_open = self.terminal_broadcast_menu_open;
+        self.terminal_broadcast_menu_open = false;
+        was_open
     }
 
-    pub(in crate::workspace) fn toggle_terminal_broadcast_menu(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::workspace) fn toggle_terminal_broadcast_menu(&mut self) {
         // Opening the broadcast target menu replaces sibling terminal command
         // popovers, matching browser overlay ownership where only one floating
         // command surface receives pointer/wheel events at a time.
-        let should_open = !self.terminal.read(cx).broadcast_menu_open();
-        self.dismiss_terminal_broadcast_menu(cx);
+        let should_open = !self.terminal_broadcast_menu_open;
+        self.dismiss_terminal_broadcast_menu();
         if should_open {
-            self.close_terminal_quick_commands_popover(cx);
-            self.close_terminal_cwd_picker(cx);
-            self.close_terminal_git_branch_picker(cx);
-            self.close_terminal_project_panel(cx);
-            self.terminal.update(cx, |terminal, _cx| {
-                terminal.set_broadcast_menu_open(true);
-            });
+            self.close_terminal_quick_commands_popover();
+            self.close_terminal_cwd_picker();
+            self.close_terminal_git_branch_picker();
+            self.close_terminal_project_panel();
+            self.terminal_command_suggestions_open = false;
+            self.terminal_command_suggestion_highlighted = None;
+            self.terminal_broadcast_menu_open = true;
         }
+    }
+
+    pub(in crate::workspace) fn keep_terminal_broadcast_menu_open(&mut self) {
+        // Broadcast target rows are persistent checkbox-style menu items; their
+        // shared action guard runs without closing the menu, so keep ownership
+        // explicit after selection changes.
+        self.terminal_broadcast_menu_open = true;
     }
 
     pub(super) fn handle_workspace_key(
@@ -539,12 +687,8 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.terminal_command_sender_editor_focused(window, cx) {
-            // Child editor handlers own the bubble path while focused.
-            return;
-        }
         if active_ime_should_defer_input_key(
-            self.active_ime_target(cx).is_some(),
+            self.active_ime_target().is_some(),
             self.ime_marked_text.is_some(),
             &event.keystroke,
         ) {
@@ -554,7 +698,7 @@ impl WorkspaceApp {
             return;
         }
 
-        if self.connection_form_state(cx).form.is_some() {
+        if self.new_connection_form.is_some() {
             let _ = self.handle_new_connection_key(event, window, cx);
             return;
         }
@@ -563,6 +707,10 @@ impl WorkspaceApp {
         let modifiers = event.keystroke.modifiers;
 
         if self.handle_native_plugin_confirm_key(event, cx) {
+            return;
+        }
+
+        if self.handle_tab_close_confirm_key(event, window, cx) {
             return;
         }
 
@@ -595,12 +743,12 @@ impl WorkspaceApp {
         }
 
         let connection_monitor_keys_visible = self
-            .active_tab(cx)
+            .active_tab()
             .is_some_and(|tab| tab.kind == TabKind::ConnectionMonitor)
             || (self.context_sidebar_visible()
                 && self.active_context_sidebar_panel == ContextSidebarPanel::HostTools
                 && matches!(
-                    self.host_tools.read(cx).active_tool(),
+                    self.active_context_sidebar_tool,
                     ContextSidebarTool::Monitor
                         | ContextSidebarTool::Gpu
                         | ContextSidebarTool::Processes
@@ -656,23 +804,12 @@ impl WorkspaceApp {
             return;
         }
 
-        if self.focused_settings_input.is_some()
-            || self
-                .settings_workspace
-                .read(cx)
-                .settings_entity_focused_input()
-                .is_some()
-            || self.ai_entity.read(cx).focused_settings_input().is_some()
-        {
+        if self.focused_settings_input.is_some() {
             let _ = self.handle_settings_input_key(event, cx);
             return;
         }
 
-        let quick_commands_focused = {
-            let quick_commands = &self.terminal.read(cx).quick_commands;
-            quick_commands.is_open() && quick_commands.focused_input().is_some()
-        };
-        if quick_commands_focused {
+        if self.terminal_quick_commands_open && self.quick_commands.focused_input.is_some() {
             self.handle_quick_commands_key(event, cx);
             return;
         }
@@ -698,25 +835,28 @@ impl WorkspaceApp {
         }
 
         if self.ai_sidebar_visible()
-            && (self.ai_entity.read(cx).chat_ui().input_focused
-                || self.ai_entity.read(cx).model_selector_search_focused())
+            && (self.ai.chat.input_focused || self.ai.models.selector_search_focused)
         {
             let _ = self.handle_ai_sidebar_key(event, cx);
             return;
         }
 
-        if self.terminal.read(cx).cast_search_focused() {
+        if self
+            .terminal_cast_player
+            .as_ref()
+            .is_some_and(|player| player.search_focused)
+        {
             self.handle_terminal_cast_search_key(event, cx);
             return;
         }
 
-        if self.active_session_manager_input(cx).is_some() {
+        if self.active_session_manager_input().is_some() {
             let _ = self.handle_session_manager_key(event, cx);
             return;
         }
 
         if self
-            .active_tab(cx)
+            .active_tab()
             .is_some_and(|tab| tab.kind == TabKind::Sftp)
         {
             let _ = self.handle_sftp_key(event, cx);
@@ -724,20 +864,26 @@ impl WorkspaceApp {
         }
 
         if self
-            .active_tab(cx)
+            .active_tab()
             .is_some_and(|tab| tab.kind == TabKind::Launcher)
-            && self.launcher.read(cx).focused_input().is_some()
+            && self.launcher.focused_input.is_some()
         {
             let _ = self.handle_launcher_key(event, cx);
             return;
         }
 
         if self
-            .active_tab(cx)
+            .active_tab()
             .is_some_and(|tab| tab.kind == TabKind::Graphics)
-            && self.graphics.read(cx).focused_input().is_some()
+            && self.graphics.focused_input.is_some()
         {
             let _ = self.handle_graphics_key(event, cx);
+            return;
+        }
+
+        if self.terminal_command_bar_focused
+            && self.handle_terminal_command_bar_key(event, window, cx)
+        {
             return;
         }
 
@@ -794,8 +940,9 @@ impl WorkspaceApp {
         }
 
         if terminal_tab_capture_blocked_by_workspace_ui(
-            self.active_ime_target(cx).is_some(),
-            self.terminal.read(cx).quick_commands.is_open(),
+            self.active_ime_target().is_some(),
+            self.terminal_quick_commands_open,
+            self.terminal_command_suggestions_open,
         ) {
             return false;
         }
@@ -810,13 +957,13 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> bool {
         let terminal_active = self
-            .active_tab(cx)
+            .active_tab()
             .is_some_and(|tab| matches!(tab.kind, TabKind::LocalTerminal | TabKind::SshTerminal));
         if !terminal_active {
             return false;
         }
 
-        let Some(pane) = self.active_pane(cx) else {
+        let Some(pane) = self.active_pane() else {
             return false;
         };
         let handled = pane.update(cx, |pane, cx| pane.handle_unfocused_key(event, cx));
@@ -895,221 +1042,137 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self
-            .settings_workspace
-            .read(cx)
-            .ssh_config_import_dialog_open()
-        {
+        if self.settings_page.ssh_config_import_dialog_open {
             if event.keystroke.key.as_str() == "escape" {
                 self.close_settings_ssh_config_import_dialog(cx);
             }
             // The import dialog owns keyboard input while it is mounted.
             true
-        } else if self.handle_keybinding_reset_confirm_key(event, window, cx) {
-            true
-        } else if self.handle_knowledge_delete_confirm_key(event, cx) {
-            true
-        } else if self.handle_knowledge_document_dialog_key(event, cx) {
-            true
-        } else if self.handle_knowledge_collection_dialog_key(event, cx) {
-            true
+        } else if self.settings_page.settings_reset_confirm_open
+            && self.settings_reset_confirm_presence.phase()
+                == oxideterm_gpui_ui::motion::ExitPhase::Visible
+        {
+            match self.handle_standard_confirm_key(event, cx) {
+                Some(ConfirmKeyboardAction::Cancel) => {
+                    self.begin_settings_reset_confirm_exit(cx);
+                    cx.notify();
+                    true
+                }
+                Some(ConfirmKeyboardAction::Confirm) => {
+                    if self.begin_settings_reset_confirm_exit(cx) {
+                        self.edit_settings(|settings| *settings = PersistedSettings::default(), cx);
+                    }
+                    true
+                }
+                Some(ConfirmKeyboardAction::Handled) => true,
+                None => false,
+            }
+        } else if self.settings_page.keybinding_reset_all_confirm_open
+            && self.keybinding_reset_all_confirm_presence.phase()
+                == oxideterm_gpui_ui::motion::ExitPhase::Visible
+        {
+            match self.handle_standard_confirm_key(event, cx) {
+                Some(ConfirmKeyboardAction::Cancel) => {
+                    self.begin_keybinding_reset_all_confirm_exit(cx);
+                    cx.notify();
+                    true
+                }
+                Some(ConfirmKeyboardAction::Confirm) => {
+                    if self.begin_keybinding_reset_all_confirm_exit(cx) {
+                        self.reset_all_keybindings(window, cx);
+                    }
+                    true
+                }
+                Some(ConfirmKeyboardAction::Handled) => true,
+                None => false,
+            }
+        } else if self.settings_data_directory_confirm.is_some()
+            && self.settings_data_directory_confirm_presence.phase()
+                == oxideterm_gpui_ui::motion::ExitPhase::Visible
+        {
+            match self.handle_standard_confirm_key(event, cx) {
+                Some(ConfirmKeyboardAction::Cancel) => {
+                    self.cancel_settings_data_directory_confirm(cx);
+                    true
+                }
+                Some(ConfirmKeyboardAction::Confirm) => {
+                    self.confirm_settings_data_directory(cx);
+                    true
+                }
+                Some(ConfirmKeyboardAction::Handled) => true,
+                None => false,
+            }
+        } else if self.settings_page.knowledge_create_dialog_open {
+            match self.handle_standard_confirm_key(event, cx) {
+                Some(ConfirmKeyboardAction::Cancel) => {
+                    self.settings_page.close_knowledge_create_dialog();
+                    cx.notify();
+                    true
+                }
+                Some(ConfirmKeyboardAction::Confirm) => {
+                    if self
+                        .settings_page
+                        .knowledge_new_collection_name
+                        .trim()
+                        .is_empty()
+                    {
+                        // Disabled primary buttons keep focus in the dialog;
+                        // restore the shared footer owner after the key guard.
+                        self.reset_standard_confirm_focus();
+                        cx.notify();
+                    } else {
+                        self.knowledge_create_collection(cx);
+                        self.settings_page.hide_knowledge_create_dialog();
+                    }
+                    true
+                }
+                Some(ConfirmKeyboardAction::Handled) => true,
+                None => false,
+            }
+        } else if self.settings_page.knowledge_new_document_dialog_open {
+            match self.handle_standard_confirm_key(event, cx) {
+                Some(ConfirmKeyboardAction::Cancel) => {
+                    self.settings_page.close_knowledge_new_document_dialog();
+                    cx.notify();
+                    true
+                }
+                Some(ConfirmKeyboardAction::Confirm) => {
+                    if self
+                        .settings_page
+                        .knowledge_new_document_title
+                        .trim()
+                        .is_empty()
+                    {
+                        // Keep disabled-submit behavior aligned with the
+                        // shared two-action footer instead of adding a local
+                        // key path for this dialog only.
+                        self.reset_standard_confirm_focus();
+                        cx.notify();
+                    } else {
+                        self.knowledge_create_blank_document(cx);
+                        self.settings_page.hide_knowledge_new_document_dialog();
+                    }
+                    true
+                }
+                Some(ConfirmKeyboardAction::Handled) => true,
+                None => false,
+            }
+        } else if self.settings_page.knowledge_delete_confirm.is_some() {
+            match self.handle_standard_confirm_key(event, cx) {
+                Some(ConfirmKeyboardAction::Cancel) => {
+                    self.settings_page.clear_knowledge_delete_confirm();
+                    cx.notify();
+                    true
+                }
+                Some(ConfirmKeyboardAction::Confirm) => {
+                    self.knowledge_confirm_delete(cx);
+                    true
+                }
+                Some(ConfirmKeyboardAction::Handled) => true,
+                None => false,
+            }
         } else {
-            self.handle_settings_data_directory_confirm_key(event, cx)
-        }
-    }
-
-    pub(super) fn handle_keybinding_reset_confirm_key(
-        &mut self,
-        event: &KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self
-            .settings_workspace
-            .read(cx)
-            .keybinding_reset_confirm_snapshot()
-            .is_some_and(|snapshot| snapshot.phase == oxideterm_gpui_ui::motion::ExitPhase::Visible)
-        {
-            return false;
-        }
-        let key_action = self.settings_workspace.update(cx, |settings, cx| {
-            settings.handle_keybinding_reset_confirm_key(
-                event.keystroke.key.as_str(),
-                event.keystroke.modifiers.shift,
-                event.keystroke.modifiers.platform || event.keystroke.modifiers.control,
-                cx,
-            )
-        });
-        match key_action {
-            Some(settings::KeybindingResetConfirmKeyAction::Cancel) => {
-                self.begin_keybinding_reset_all_confirm_exit(cx);
-                cx.notify();
-                true
-            }
-            Some(settings::KeybindingResetConfirmKeyAction::Confirm) => {
-                if self.begin_keybinding_reset_all_confirm_exit(cx) {
-                    self.reset_all_keybindings(window, cx);
-                }
-                true
-            }
-            Some(settings::KeybindingResetConfirmKeyAction::Handled) => true,
-            None => false,
-        }
-    }
-
-    pub(super) fn handle_settings_data_directory_confirm_key(
-        &mut self,
-        event: &KeyDownEvent,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self
-            .settings_workspace
-            .read(cx)
-            .data_directory_confirm_is_visible()
-        {
-            return false;
-        }
-        match self.handle_standard_confirm_key(event, cx) {
-            Some(ConfirmKeyboardAction::Cancel) => {
-                self.cancel_settings_data_directory_confirm(cx);
-                true
-            }
-            Some(ConfirmKeyboardAction::Confirm) => {
-                self.confirm_settings_data_directory(cx);
-                true
-            }
-            Some(ConfirmKeyboardAction::Handled) => true,
-            None => false,
-        }
-    }
-
-    pub(super) fn handle_knowledge_collection_dialog_key(
-        &mut self,
-        event: &KeyDownEvent,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.ai_entity.read(cx).knowledge_create_dialog_open() {
-            return false;
-        }
-        match self.handle_standard_confirm_key(event, cx) {
-            Some(ConfirmKeyboardAction::Cancel) => {
-                self.ai_entity.update(cx, |entity, cx| {
-                    entity.close_knowledge_create_dialog(Duration::ZERO, cx);
-                });
-                true
-            }
-            Some(ConfirmKeyboardAction::Confirm) => {
-                if self
-                    .ai_entity
-                    .read(cx)
-                    .knowledge_new_collection_name()
-                    .trim()
-                    .is_empty()
-                {
-                    // Disabled primary buttons retain ownership inside the dialog.
-                    self.reset_standard_confirm_focus();
-                    cx.notify();
-                } else {
-                    self.knowledge_create_collection(cx);
-                    self.ai_entity.update(cx, |entity, cx| {
-                        entity.close_knowledge_create_dialog(Duration::ZERO, cx);
-                    });
-                }
-                true
-            }
-            Some(ConfirmKeyboardAction::Handled) => true,
-            None => false,
-        }
-    }
-
-    pub(super) fn handle_knowledge_document_dialog_key(
-        &mut self,
-        event: &KeyDownEvent,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.ai_entity.read(cx).knowledge_document_dialog_open() {
-            return false;
-        }
-        match self.handle_standard_confirm_key(event, cx) {
-            Some(ConfirmKeyboardAction::Cancel) => {
-                self.ai_entity.update(cx, |entity, cx| {
-                    entity.close_knowledge_document_dialog(Duration::ZERO, cx);
-                });
-                true
-            }
-            Some(ConfirmKeyboardAction::Confirm) => {
-                if self
-                    .ai_entity
-                    .read(cx)
-                    .knowledge_new_document_title()
-                    .trim()
-                    .is_empty()
-                {
-                    // Disabled primary buttons retain ownership inside the dialog.
-                    self.reset_standard_confirm_focus();
-                    cx.notify();
-                } else {
-                    self.knowledge_create_blank_document(cx);
-                    self.ai_entity.update(cx, |entity, cx| {
-                        entity.close_knowledge_document_dialog(Duration::ZERO, cx);
-                    });
-                }
-                true
-            }
-            Some(ConfirmKeyboardAction::Handled) => true,
-            None => false,
-        }
-    }
-
-    pub(super) fn handle_knowledge_delete_confirm_key(
-        &mut self,
-        event: &KeyDownEvent,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if self.ai_entity.read(cx).knowledge_delete_confirm().is_none() {
-            return false;
-        }
-        match self.handle_standard_confirm_key(event, cx) {
-            Some(ConfirmKeyboardAction::Cancel) => {
-                self.ai_entity.update(cx, |entity, cx| {
-                    entity.clear_knowledge_delete_confirm();
-                    cx.notify();
-                });
-                true
-            }
-            Some(ConfirmKeyboardAction::Confirm) => {
-                self.knowledge_confirm_delete(cx);
-                true
-            }
-            Some(ConfirmKeyboardAction::Handled) => true,
-            None => false,
-        }
-    }
-
-    pub(super) fn handle_settings_reset_confirm_key(
-        &mut self,
-        event: &KeyDownEvent,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let key_action = self.overlay.update(cx, |overlay, cx| {
-            overlay.handle_confirm_key(
-                event.keystroke.key.as_str(),
-                event.keystroke.modifiers.shift,
-                event.keystroke.modifiers.platform || event.keystroke.modifiers.control,
-                cx,
-            )
-        });
-        match key_action {
-            Some(WorkspaceOverlayConfirmKeyAction::Cancel) => {
-                self.begin_settings_reset_confirm_exit(false, cx);
-                true
-            }
-            Some(WorkspaceOverlayConfirmKeyAction::Confirm) => {
-                self.begin_settings_reset_confirm_exit(true, cx);
-                true
-            }
-            Some(WorkspaceOverlayConfirmKeyAction::Handled) => true,
-            None => false,
+            false
         }
     }
 
@@ -1119,30 +1182,39 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(snapshot) = self.tab_host.read(cx).close_confirm_snapshot() else {
+        if self.main_window_tabs.close_confirm.is_none() {
             return false;
-        };
-        if snapshot.phase == oxideterm_gpui_ui::motion::ExitPhase::Exiting {
+        }
+        if self.tab_close_confirm_presence.phase() == oxideterm_gpui_ui::motion::ExitPhase::Exiting
+        {
             return true;
         }
-        let key_action = self.tab_host.update(cx, |tab_host, cx| {
-            tab_host.handle_close_confirm_key(
-                event.keystroke.key.as_str(),
-                event.keystroke.modifiers.shift,
-                event.keystroke.modifiers.platform || event.keystroke.modifiers.control,
-                cx,
-            )
-        });
-        match key_action {
-            Some(TabCloseConfirmKeyAction::Cancel) => {
+        if let Some(action) = tab_close_confirm_direct_key_action(
+            event.keystroke.key.as_str(),
+            event.keystroke.modifiers.platform,
+            event.keystroke.modifiers.control,
+        ) {
+            match action {
+                TabCloseConfirmDirectKeyAction::Cancel => {
+                    self.cancel_tab_close_confirm(cx);
+                    return true;
+                }
+                TabCloseConfirmDirectKeyAction::Confirm => {
+                    self.confirm_tab_close_confirm(window, cx);
+                    return true;
+                }
+            }
+        }
+        match self.handle_standard_confirm_key(event, cx) {
+            Some(ConfirmKeyboardAction::Cancel) => {
                 self.cancel_tab_close_confirm(cx);
                 true
             }
-            Some(TabCloseConfirmKeyAction::Confirm) => {
+            Some(ConfirmKeyboardAction::Confirm) => {
                 self.confirm_tab_close_confirm(window, cx);
                 true
             }
-            Some(TabCloseConfirmKeyAction::Handled) => true,
+            Some(ConfirmKeyboardAction::Handled) => true,
             None => false,
         }
     }
@@ -1153,36 +1225,24 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(snapshot) = self.overlay.read(cx).confirm_snapshot() else {
-            return false;
-        };
-        if !matches!(
-            snapshot.kind,
-            WorkspaceOverlayConfirmKind::NodeDisconnect { .. }
-        ) {
+        if self.node_disconnect_confirm.is_none() {
             return false;
         }
-        if snapshot.phase == oxideterm_gpui_ui::motion::ExitPhase::Exiting {
+        if self.node_disconnect_confirm_presence.phase()
+            == oxideterm_gpui_ui::motion::ExitPhase::Exiting
+        {
             return true;
         }
-        let key_action = self.overlay.update(cx, |overlay, cx| {
-            overlay.handle_confirm_key(
-                event.keystroke.key.as_str(),
-                event.keystroke.modifiers.shift,
-                event.keystroke.modifiers.platform || event.keystroke.modifiers.control,
-                cx,
-            )
-        });
-        match key_action {
-            Some(WorkspaceOverlayConfirmKeyAction::Cancel) => {
+        match self.handle_standard_confirm_key(event, cx) {
+            Some(ConfirmKeyboardAction::Cancel) => {
                 self.cancel_node_disconnect_confirm(cx);
                 true
             }
-            Some(WorkspaceOverlayConfirmKeyAction::Confirm) => {
+            Some(ConfirmKeyboardAction::Confirm) => {
                 self.confirm_node_disconnect_confirm(window, cx);
                 true
             }
-            Some(WorkspaceOverlayConfirmKeyAction::Handled) => true,
+            Some(ConfirmKeyboardAction::Handled) => true,
             None => false,
         }
     }
@@ -1192,106 +1252,96 @@ impl WorkspaceApp {
         event: &KeyDownEvent,
         cx: &mut Context<Self>,
     ) -> bool {
-        // Summarize is rendered after Safety and therefore owns keys if a
-        // stale lower confirmation is still mounted during the same frame.
-        self.handle_ai_summarize_confirm_key(event, cx)
-            || self.handle_ai_safety_confirm_key(event, cx)
-    }
-
-    pub(super) fn handle_ai_safety_confirm_key(
-        &mut self,
-        event: &KeyDownEvent,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.ai_entity.read(cx).chat_ui().safety_confirm_open {
-            return false;
-        }
-        if self
-            .ai_entity
-            .read(cx)
-            .chat_ui()
-            .safety_confirm_presence
-            .phase()
-            == oxideterm_gpui_ui::motion::ExitPhase::Exiting
-        {
-            return true;
-        }
-        match self.handle_standard_confirm_key(event, cx) {
-            Some(ConfirmKeyboardAction::Cancel) => {
-                self.begin_ai_safety_confirm_exit(cx);
-                cx.notify();
-                true
+        if self.ai.chat.safety_confirm_open {
+            if self.ai.chat.safety_confirm_presence.phase()
+                == oxideterm_gpui_ui::motion::ExitPhase::Exiting
+            {
+                return true;
             }
-            Some(ConfirmKeyboardAction::Confirm) => {
-                if self.begin_ai_safety_confirm_exit(cx) {
-                    self.confirm_ai_safety_bypass(cx);
+            match self.handle_standard_confirm_key(event, cx) {
+                Some(ConfirmKeyboardAction::Cancel) => {
+                    self.begin_ai_safety_confirm_exit(cx);
+                    cx.notify();
+                    true
                 }
-                true
-            }
-            Some(ConfirmKeyboardAction::Handled) => true,
-            None => false,
-        }
-    }
-
-    pub(super) fn handle_ai_summarize_confirm_key(
-        &mut self,
-        event: &KeyDownEvent,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.ai_entity.read(cx).chat_ui().summarize_confirm_open {
-            return false;
-        }
-        if self
-            .ai_entity
-            .read(cx)
-            .chat_ui()
-            .summarize_confirm_presence
-            .phase()
-            == oxideterm_gpui_ui::motion::ExitPhase::Exiting
-        {
-            return true;
-        }
-        match self.handle_standard_confirm_key(event, cx) {
-            Some(ConfirmKeyboardAction::Cancel) => {
-                self.begin_ai_summarize_confirm_exit(cx);
-                cx.notify();
-                true
-            }
-            Some(ConfirmKeyboardAction::Confirm) => {
-                if self.begin_ai_summarize_confirm_exit(cx) {
-                    self.start_ai_summarize_conversation(cx);
+                Some(ConfirmKeyboardAction::Confirm) => {
+                    if self.begin_ai_safety_confirm_exit(cx) {
+                        self.confirm_ai_safety_bypass(cx);
+                    }
+                    true
                 }
-                true
+                Some(ConfirmKeyboardAction::Handled) => true,
+                None => false,
             }
-            Some(ConfirmKeyboardAction::Handled) => true,
-            None => false,
-        }
-    }
-
-    pub(super) fn handle_ai_chat_confirm_key(
-        &mut self,
-        event: &KeyDownEvent,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let key_action = self.ai_entity.update(cx, |ai, cx| {
-            ai.handle_chat_confirm_key(
-                event.keystroke.key.as_str(),
-                event.keystroke.modifiers.shift,
-                event.keystroke.modifiers.platform || event.keystroke.modifiers.control,
-                cx,
-            )
-        });
-        match key_action {
-            Some(ai_state::AiChatConfirmKeyAction::Cancel) => {
-                self.begin_ai_chat_confirm_exit(false, cx);
-                true
+        } else if self.ai.chat.summarize_confirm_open {
+            if self.ai.chat.summarize_confirm_presence.phase()
+                == oxideterm_gpui_ui::motion::ExitPhase::Exiting
+            {
+                return true;
             }
-            Some(ai_state::AiChatConfirmKeyAction::Confirm) => {
-                self.begin_ai_chat_confirm_exit(true, cx);
-                true
+            match self.handle_standard_confirm_key(event, cx) {
+                Some(ConfirmKeyboardAction::Cancel) => {
+                    self.begin_ai_summarize_confirm_exit(cx);
+                    cx.notify();
+                    true
+                }
+                Some(ConfirmKeyboardAction::Confirm) => {
+                    if self.begin_ai_summarize_confirm_exit(cx) {
+                        self.start_ai_summarize_conversation(cx);
+                    }
+                    true
+                }
+                Some(ConfirmKeyboardAction::Handled) => true,
+                None => false,
             }
-            Some(ai_state::AiChatConfirmKeyAction::Handled) => true,
-            None => false,
+        } else if self.ai.chat.clear_all_confirm_open {
+            if self.ai_clear_all_confirm_presence.phase()
+                == oxideterm_gpui_ui::motion::ExitPhase::Exiting
+            {
+                return true;
+            }
+            match self.handle_standard_confirm_key(event, cx) {
+                Some(ConfirmKeyboardAction::Cancel) => {
+                    self.begin_ai_clear_all_confirm_exit(cx);
+                    cx.notify();
+                    true
+                }
+                Some(ConfirmKeyboardAction::Confirm) => {
+                    if self.begin_ai_clear_all_confirm_exit(cx) {
+                        self.clear_ai_conversations();
+                    }
+                    cx.notify();
+                    true
+                }
+                Some(ConfirmKeyboardAction::Handled) => true,
+                None => false,
+            }
+        } else if self.ai.chat.delete_message_confirm.is_some() {
+            if self.ai_delete_message_confirm_presence.phase()
+                == oxideterm_gpui_ui::motion::ExitPhase::Exiting
+            {
+                return true;
+            }
+            match self.handle_standard_confirm_key(event, cx) {
+                Some(ConfirmKeyboardAction::Cancel) => {
+                    self.begin_ai_delete_message_confirm_exit(cx);
+                    cx.notify();
+                    true
+                }
+                Some(ConfirmKeyboardAction::Confirm) => {
+                    let message_id = self.ai.chat.delete_message_confirm.clone();
+                    if self.begin_ai_delete_message_confirm_exit(cx)
+                        && let Some(message_id) = message_id
+                    {
+                        self.delete_ai_message(&message_id, cx);
+                    }
+                    true
+                }
+                Some(ConfirmKeyboardAction::Handled) => true,
+                None => false,
+            }
+        } else {
+            false
         }
     }
 
@@ -1301,26 +1351,90 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let overrides = &self.settings_store.settings().keybindings.overrides;
-        let action = self.settings_workspace.update(cx, |settings, cx| {
-            settings.handle_keybinding_recording_key(event, overrides, cx)
-        });
-        if action == Some(settings::KeybindingRecordingKeyAction::Confirm) {
-            self.confirm_keybinding_recording(window, cx);
+        if event.keystroke.key.as_str() == "escape"
+            && !event.keystroke.modifiers.platform
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.shift
+        {
+            self.cancel_keybinding_recording(cx);
+            return;
         }
+
+        if self.keybinding_recording_combo.is_some()
+            && !event.keystroke.modifiers.platform
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+        {
+            match browser_behavior::modal_footer_key_action(
+                event.keystroke.key.as_str(),
+                event.keystroke.modifiers.shift,
+                &KEYBINDING_RECORDING_FOOTER_ACTIONS,
+                self.keybinding_recording_footer_focus,
+                KeybindingRecordingFooterAction::Confirm,
+            ) {
+                Some(browser_behavior::ModalFooterKeyAction::Cancel) => {
+                    self.cancel_keybinding_recording(cx);
+                    return;
+                }
+                Some(browser_behavior::ModalFooterKeyAction::Focus(action)) => {
+                    // Tauri renders real footer buttons once a combo exists.
+                    // Native captures keydown globally, so route recorder
+                    // footer navigation through the shared browser footer
+                    // contract instead of recording Tab/Home/End again.
+                    self.keybinding_recording_footer_focus = Some(action);
+                    cx.notify();
+                    return;
+                }
+                Some(browser_behavior::ModalFooterKeyAction::Activate(action)) => {
+                    self.activate_keybinding_recording_footer_action(action, window, cx);
+                    return;
+                }
+                None => {}
+            }
+        }
+
+        let Some(action_id) = self.settings_page.keybinding_recording_action_id.clone() else {
+            return;
+        };
+        let Some(combo) = crate::keybindings::combo_from_keystroke(&event.keystroke) else {
+            return;
+        };
+
+        let side = crate::keybindings::KeybindingSide::current();
+        let conflicts = crate::keybindings::conflicts_for_combo(
+            &action_id,
+            &combo,
+            &self.settings_store.settings().keybindings.overrides,
+            side,
+        )
+        .into_iter()
+        .map(|definition| definition.id.to_string())
+        .collect::<Vec<_>>();
+
+        self.keybinding_recording_combo = Some(combo);
+        self.keybinding_recording_footer_focus = None;
+        self.settings_page.set_keybinding_conflicts(conflicts);
+        cx.notify();
     }
 
     pub(super) fn activate_keybinding_recording_footer_action(
         &mut self,
-        action: settings::KeybindingRecordingFooterAction,
+        action: KeybindingRecordingFooterAction,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let should_confirm = self.settings_workspace.update(cx, |settings, cx| {
-            settings.activate_keybinding_recording_footer(action, cx)
-        });
-        if should_confirm {
-            self.confirm_keybinding_recording(window, cx);
+        // Tauri RecordingCell buttons stop propagation and then run exactly one
+        // footer action. Native shares this entry for keyboard and pointer
+        // activation so focus cleanup and confirm/cancel branching cannot drift.
+        self.keybinding_recording_footer_focus = None;
+        match action {
+            KeybindingRecordingFooterAction::Confirm => {
+                self.confirm_keybinding_recording(window, cx);
+            }
+            KeybindingRecordingFooterAction::Cancel => {
+                self.cancel_keybinding_recording(cx);
+            }
         }
     }
 
@@ -1329,12 +1443,14 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(commit) = self.settings_workspace.update(cx, |settings, cx| {
-            settings.take_keybinding_recording_commit(cx)
-        }) else {
+        let Some(action_id) = self.settings_page.keybinding_recording_action_id.clone() else {
             return;
         };
-        let Some(definition) = crate::keybindings::action_definition(&commit.action_id) else {
+        let Some(combo) = self.keybinding_recording_combo.clone() else {
+            return;
+        };
+        let Some(definition) = crate::keybindings::action_definition(&action_id) else {
+            self.cancel_keybinding_recording(cx);
             return;
         };
 
@@ -1345,29 +1461,31 @@ impl WorkspaceApp {
             side,
         );
         let runtime_bindings = crate::keybindings::runtime_rebind_key_bindings(
-            &commit.action_id,
+            &action_id,
             previous.as_ref(),
-            Some(&commit.combo),
+            Some(&combo),
         );
 
         self.edit_settings(
-            move |settings| {
+            |settings| {
                 crate::keybindings::set_override(
                     &mut settings.keybindings.overrides,
-                    &commit.action_id,
+                    &action_id,
                     side,
-                    commit.combo,
+                    combo,
                 );
             },
             cx,
         );
+        self.cancel_keybinding_recording(cx);
         self.apply_runtime_key_bindings(runtime_bindings, window, cx);
     }
 
     pub(super) fn cancel_keybinding_recording(&mut self, cx: &mut Context<Self>) {
-        self.settings_workspace.update(cx, |settings, cx| {
-            settings.stop_keybinding_recording(cx);
-        });
+        self.settings_page.stop_keybinding_recording();
+        self.keybinding_recording_combo = None;
+        self.keybinding_recording_footer_focus = None;
+        cx.notify();
     }
 
     pub(super) fn reset_keybinding(
@@ -1385,11 +1503,11 @@ impl WorkspaceApp {
             &self.settings_store.settings().keybindings.overrides,
             side,
         );
-        let next = definition.default_combo(side);
+        let next = definition.default_combo(side).clone();
         let runtime_bindings = crate::keybindings::runtime_rebind_key_bindings(
             action_id,
             previous.as_ref(),
-            Some(next),
+            Some(&next),
         );
         self.edit_settings(
             |settings| {
@@ -1401,7 +1519,9 @@ impl WorkspaceApp {
             },
             cx,
         );
-        self.cancel_keybinding_recording(cx);
+        self.settings_page.stop_keybinding_recording();
+        self.keybinding_recording_combo = None;
+        self.keybinding_recording_footer_focus = None;
         self.apply_runtime_key_bindings(runtime_bindings, window, cx);
     }
 
@@ -1432,28 +1552,31 @@ impl WorkspaceApp {
             },
             cx,
         );
-        self.cancel_keybinding_recording(cx);
+        self.settings_page.stop_keybinding_recording();
+        self.keybinding_recording_combo = None;
+        self.keybinding_recording_footer_focus = None;
         self.apply_runtime_key_bindings(runtime_bindings, window, cx);
     }
 
     pub(super) fn reset_all_keybindings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let side = crate::keybindings::KeybindingSide::current();
-        let runtime_bindings = {
-            let overrides = &self.settings_store.settings().keybindings.overrides;
-            crate::keybindings::ACTION_DEFINITIONS
-                .iter()
-                .flat_map(|definition| {
-                    let previous = crate::keybindings::effective_combo(definition, overrides, side);
-                    crate::keybindings::runtime_rebind_key_bindings(
-                        definition.id,
-                        previous.as_ref(),
-                        Some(definition.default_combo(side)),
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
+        let overrides = self.settings_store.settings().keybindings.overrides.clone();
+        let runtime_bindings = crate::keybindings::ACTION_DEFINITIONS
+            .iter()
+            .flat_map(|definition| {
+                let previous = crate::keybindings::effective_combo(definition, &overrides, side);
+                let next = definition.default_combo(side).clone();
+                crate::keybindings::runtime_rebind_key_bindings(
+                    definition.id,
+                    previous.as_ref(),
+                    Some(&next),
+                )
+            })
+            .collect::<Vec<_>>();
         self.edit_settings(|settings| settings.keybindings.overrides.clear(), cx);
-        self.cancel_keybinding_recording(cx);
+        self.settings_page.stop_keybinding_recording();
+        self.keybinding_recording_combo = None;
+        self.keybinding_recording_footer_focus = None;
         self.apply_runtime_key_bindings(runtime_bindings, window, cx);
     }
 
@@ -1466,17 +1589,29 @@ impl WorkspaceApp {
                 self.i18n.t("settings_view.keybindings.export"),
             )),
         });
-        let selection = async move {
-            match receiver.await {
-                Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                _ => None,
-            }
-        };
         let overrides = self.settings_store.settings().keybindings.overrides.clone();
-        let runtime = self.forwarding_runtime.handle().clone();
-        self.settings_workspace.update(cx, |settings, cx| {
-            settings.start_keybinding_export(selection, overrides, runtime, cx);
-        });
+        let success = self.i18n.t("settings_view.keybindings.export_success");
+        let error = self.i18n.t("settings_view.keybindings.export_error");
+        cx.spawn(async move |weak, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(directory) = paths.into_iter().next() else {
+                return;
+            };
+            let path = directory.join("oxideterm-keybindings.json");
+            let result = serde_json::to_string_pretty(&overrides)
+                .map_err(|err| err.to_string())
+                .and_then(|json| fs::write(path, json).map_err(|err| err.to_string()));
+            let _ = weak.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => this.push_ai_settings_toast(success, TerminalNoticeVariant::Success),
+                    Err(_) => this.push_ai_settings_toast(error, TerminalNoticeVariant::Error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub(super) fn import_keybindings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1488,17 +1623,66 @@ impl WorkspaceApp {
                 self.i18n.t("settings_view.keybindings.import"),
             )),
         });
-        let selection = async move {
-            match receiver.await {
-                Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                _ => None,
-            }
-        };
-        let runtime = self.forwarding_runtime.handle().clone();
-        let target_window = window.window_handle();
-        self.settings_workspace.update(cx, |settings, cx| {
-            settings.start_keybinding_import(selection, runtime, target_window, cx);
-        });
+        let window_handle = window.window_handle();
+        let side = crate::keybindings::KeybindingSide::current();
+        let previous_overrides = self.settings_store.settings().keybindings.overrides.clone();
+        let success = self.i18n.t("settings_view.keybindings.import_success");
+        let invalid = self.i18n.t("settings_view.keybindings.import_invalid");
+        cx.spawn(async move |weak, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let result = fs::read_to_string(path)
+                .map_err(|err| err.to_string())
+                .and_then(|content| {
+                    serde_json::from_str::<serde_json::Value>(&content)
+                        .map_err(|err| err.to_string())
+                })
+                .and_then(crate::keybindings::sanitize_imported_overrides);
+            let _ = cx.update_window(window_handle, |_root, window, cx| {
+                let _ = weak.update(cx, |this, cx| match result {
+                    Ok(next_overrides) => {
+                        let runtime_bindings = crate::keybindings::ACTION_DEFINITIONS
+                            .iter()
+                            .flat_map(|definition| {
+                                let previous = crate::keybindings::effective_combo(
+                                    definition,
+                                    &previous_overrides,
+                                    side,
+                                );
+                                let next = crate::keybindings::effective_combo(
+                                    definition,
+                                    &next_overrides,
+                                    side,
+                                );
+                                crate::keybindings::runtime_rebind_key_bindings(
+                                    definition.id,
+                                    previous.as_ref(),
+                                    next.as_ref(),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        this.edit_settings(
+                            |settings| settings.keybindings.overrides = next_overrides,
+                            cx,
+                        );
+                        this.settings_page.stop_keybinding_recording();
+                        this.keybinding_recording_combo = None;
+                        this.keybinding_recording_footer_focus = None;
+                        this.apply_runtime_key_bindings(runtime_bindings, window, cx);
+                        this.push_ai_settings_toast(success, TerminalNoticeVariant::Success);
+                    }
+                    Err(_) => {
+                        this.push_ai_settings_toast(invalid, TerminalNoticeVariant::Error);
+                        cx.notify();
+                    }
+                });
+            });
+        })
+        .detach();
     }
 
     fn apply_runtime_key_bindings(
@@ -1507,21 +1691,179 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.apply_runtime_key_bindings_to_window_handle(bindings, window.window_handle(), cx);
-    }
-
-    pub(in crate::workspace) fn apply_runtime_key_bindings_to_window_handle(
-        &self,
-        bindings: Vec<gpui::KeyBinding>,
-        window_handle: AnyWindowHandle,
-        cx: &mut Context<Self>,
-    ) {
         if bindings.is_empty() {
             return;
         }
-        let _ = cx.update_window(window_handle, move |_root, _window, app| {
+        let _ = cx.update_window(window.window_handle(), move |_root, _window, app| {
             app.bind_keys(bindings);
         });
+    }
+
+    pub(super) fn handle_terminal_command_bar_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let key = event.keystroke.key.as_str();
+        let modifiers = event.keystroke.modifiers;
+        if modifiers.platform {
+            return false;
+        }
+
+        match key {
+            "escape" => {
+                if self.close_terminal_command_overlays(cx) {
+                    return true;
+                }
+                self.terminal_command_bar_focused = false;
+                self.close_terminal_quick_commands_popover();
+                self.ime_marked_text = None;
+                self.focus_active_pane(window, cx);
+                cx.notify();
+                true
+            }
+            "tab" => {
+                if self.terminal_command_suggestions_open {
+                    let suggestions = self.terminal_command_bar_visible_suggestions(cx);
+                    let index = self.terminal_command_suggestion_highlighted.unwrap_or(0);
+                    if let Some(suggestion) = suggestions.get(index) {
+                        self.accept_terminal_command_suggestion(suggestion, cx);
+                        return true;
+                    }
+                }
+                false
+            }
+            "right" => {
+                let suggestions = self.terminal_command_bar_visible_suggestions(cx);
+                if let Some(suggestion) =
+                    self.terminal_command_inline_suggestion_for_accept(&suggestions)
+                {
+                    self.accept_terminal_command_suggestion(&suggestion, cx);
+                    return true;
+                }
+                false
+            }
+            "down" => {
+                let mut suggestions = self.terminal_command_bar_suggestions(false, cx);
+                if suggestions.is_empty() {
+                    suggestions = self.terminal_command_bar_suggestions(true, cx);
+                }
+                if !suggestions.is_empty() {
+                    self.terminal_command_suggestions_open = true;
+                    self.terminal_command_suggestion_highlighted =
+                        terminal_command_next_suggestion_index(
+                            suggestions.len(),
+                            true,
+                            self.terminal_command_suggestion_highlighted,
+                            TerminalCommandSuggestionDirection::Down,
+                        );
+                    cx.notify();
+                    return true;
+                }
+                false
+            }
+            "up" => {
+                let mut suggestions = self.terminal_command_bar_suggestions(false, cx);
+                if suggestions.is_empty() {
+                    suggestions = self.terminal_command_bar_suggestions(true, cx);
+                }
+                if !suggestions.is_empty() {
+                    self.terminal_command_suggestions_open = true;
+                    self.terminal_command_suggestion_highlighted =
+                        terminal_command_next_suggestion_index(
+                            suggestions.len(),
+                            true,
+                            self.terminal_command_suggestion_highlighted,
+                            TerminalCommandSuggestionDirection::Up,
+                        );
+                    cx.notify();
+                    return true;
+                }
+                false
+            }
+            "enter" if modifiers.shift || modifiers.alt => {
+                self.terminal_command_bar_draft.push('\n');
+                self.terminal_command_suggestions_open = false;
+                self.terminal_command_suggestion_highlighted = None;
+                self.ime_marked_text = None;
+                cx.notify();
+                true
+            }
+            "enter" => {
+                let suggestions = self.terminal_command_bar_visible_suggestions(cx);
+                match terminal_command_enter_action(
+                    self.terminal_command_suggestions_open,
+                    self.terminal_command_suggestion_highlighted,
+                    &suggestions,
+                ) {
+                    TerminalCommandEnterAction::AcceptSuggestion(index) => {
+                        if let Some(suggestion) = suggestions.get(index) {
+                            self.accept_terminal_command_suggestion(suggestion, cx);
+                            return true;
+                        }
+                    }
+                    TerminalCommandEnterAction::SubmitSuggestion(index) => {
+                        if let Some(suggestion) = suggestions.get(index) {
+                            self.accept_terminal_command_suggestion(suggestion, cx);
+                        }
+                    }
+                    TerminalCommandEnterAction::SubmitDraft => {
+                        self.terminal_command_suggestions_open = false;
+                        self.terminal_command_suggestion_highlighted = None;
+                    }
+                }
+                if self.terminal_command_bar_draft.trim().is_empty() {
+                    // A stale command-bar focus flag must not swallow Enter
+                    // when there is no command to submit.
+                    return false;
+                }
+                self.terminal_command_suggestions_open = false;
+                self.terminal_command_suggestion_highlighted = None;
+                self.submit_terminal_command_bar(window, cx);
+                true
+            }
+            "space" | " "
+                if terminal_command_bar_space_inserts_literal(
+                    modifiers.platform,
+                    modifiers.control,
+                    modifiers.alt,
+                ) =>
+            {
+                // Some GPUI platforms deliver Space without key_char, so the
+                // platform text path cannot mutate the textarea-like command
+                // draft. Preserve Tauri textarea semantics by inserting the
+                // literal space through the shared IME replacement path.
+                let target = WorkspaceImeTarget::TerminalCommandBar;
+                let replacement_range = self.ime_selection_range_for_target(target);
+                let caret = replacement_range
+                    .as_ref()
+                    .map(|range| range.start + " ".encode_utf16().count());
+                self.clear_ime_selection();
+                self.replace_ime_target_text(target, replacement_range, " ", cx);
+                if let Some(caret) = caret {
+                    self.set_ime_selection_from_anchor(target, caret, caret);
+                }
+                true
+            }
+            "backspace" => {
+                let changed = self.terminal_command_bar_draft.pop().is_some()
+                    || self.terminal_command_suggestions_open
+                    || self
+                        .terminal_command_suggestion_highlighted
+                        .take()
+                        .is_some()
+                    || self.ime_marked_text.take().is_some();
+                self.terminal_command_suggestions_open = false;
+                if changed {
+                    // Backspace with an empty command and no open suggestions
+                    // leaves the command bar visually unchanged.
+                    cx.notify();
+                }
+                changed
+            }
+            _ => false,
+        }
     }
 
     pub(super) fn handle_terminal_cast_search_key(
@@ -1535,21 +1877,38 @@ impl WorkspaceApp {
         }
         match key {
             "escape" => {
-                self.terminal
-                    .update(cx, |terminal, _cx| terminal.blur_cast_search());
+                if let Some(player) = self.terminal_cast_player.as_mut() {
+                    player.search_focused = false;
+                }
                 self.ime_marked_text = None;
                 cx.notify();
             }
             "backspace" => {
-                if self
-                    .terminal
-                    .update(cx, |terminal, cx| terminal.pop_cast_search(cx))
-                {
-                    cx.notify();
+                if let Some(player) = self.terminal_cast_player.as_mut() {
+                    if player.search_query.pop().is_some() {
+                        self.update_terminal_cast_search(cx);
+                        cx.notify();
+                    }
                 }
             }
             _ => {}
         }
+    }
+
+    pub(super) fn submit_terminal_command_bar(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let command = self.terminal_command_bar_draft.trim().to_string();
+        if command.is_empty() {
+            return;
+        }
+
+        self.submit_terminal_command_line(&command, window, cx);
+        self.terminal_command_bar_draft.clear();
+        self.ime_marked_text = None;
+        cx.notify();
     }
 
     fn submit_terminal_command_line(
@@ -1558,7 +1917,7 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if let Some(source_pane_id) = self.active_pane_id(cx) {
+        if let Some(source_pane_id) = self.active_pane_id() {
             self.send_terminal_command_to_pane(
                 source_pane_id,
                 command,
@@ -1571,6 +1930,7 @@ impl WorkspaceApp {
         }
 
         if self.terminal_command_should_handoff_focus(command) {
+            self.terminal_command_bar_focused = false;
             self.focus_active_pane(window, cx);
         }
         true
@@ -1585,11 +1945,8 @@ impl WorkspaceApp {
         let settings = &self.settings_store.settings().terminal.command_bar;
         let risk = classify_command_risk(command);
         if settings.quick_commands_confirm_before_run || risk.is_some() {
-            self.terminal.update(cx, |terminal, _cx| {
-                terminal
-                    .quick_commands
-                    .request_confirmation(command.to_string())
-            });
+            self.terminal_quick_command_pending = Some(command.to_string());
+            self.terminal_quick_commands_open = true;
             cx.notify();
             return;
         }
@@ -1610,66 +1967,58 @@ impl WorkspaceApp {
                 .command_bar
                 .quick_commands_show_toast
         {
-            self.push_workspace_notice(
-                TerminalNotice {
-                    title: self.i18n.t("terminal.quick_commands.toast_executed"),
-                    description: Some(command.to_string()),
-                    status_text: None,
-                    progress: None,
-                    variant: TerminalNoticeVariant::Success,
-                },
-                cx,
-            );
+            let _ = self.terminal_notice_tx.send(TerminalNotice {
+                title: self.i18n.t("terminal.quick_commands.toast_executed"),
+                description: Some(command.to_string()),
+                status_text: None,
+                progress: None,
+                variant: TerminalNoticeVariant::Success,
+            });
         }
-        self.finish_terminal_quick_command_execution(cx);
+        self.finish_terminal_quick_command_execution();
+        self.terminal_command_bar_draft.clear();
         self.ime_marked_text = None;
         cx.notify();
     }
 
-    pub(super) fn active_terminal_recording_status(&self, cx: &App) -> TerminalRecordingStatus {
-        self.active_pane(cx)
+    pub(super) fn active_terminal_recording_status(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> TerminalRecordingStatus {
+        self.active_pane()
             .map(|pane| pane.read(cx).recording_status())
             .unwrap_or_default()
     }
 
-    pub(in crate::workspace) fn sync_active_terminal_recording_elapsed_tick(
-        &mut self,
-        cx: &mut App,
-    ) {
-        let pane_id = self.active_pane_id(cx);
-        let recording =
-            self.active_terminal_recording_status(cx).state == TerminalRecordingState::Recording;
-        self.tab_host.update(cx, |tab_host, cx| {
-            tab_host.sync_recording_elapsed_tick(pane_id, recording, cx)
-        });
+    pub(super) fn any_terminal_recording_active(&self, cx: &mut Context<Self>) -> bool {
+        self.panes
+            .values()
+            .any(|pane| pane.read(cx).recording_status().state != TerminalRecordingState::Idle)
     }
 
     pub(super) fn active_terminal_timestamps_enabled(&self, cx: &mut Context<Self>) -> bool {
-        self.active_pane(cx)
+        self.active_pane()
             .is_some_and(|pane| pane.read(cx).terminal_timestamps_enabled())
     }
 
     pub(super) fn toggle_active_terminal_timestamps(&mut self, cx: &mut Context<Self>) {
-        if let Some(pane) = self.active_pane(cx) {
+        if let Some(pane) = self.active_pane() {
             let _ = pane.update(cx, |pane, cx| pane.toggle_terminal_timestamps(cx));
         }
         cx.notify();
     }
 
     pub(super) fn start_active_terminal_recording(&mut self, cx: &mut Context<Self>) {
-        let title = self.active_tab(cx).map(|tab| tab.title.clone());
-        if let Some(pane) = self.active_pane(cx) {
+        let title = self.active_tab().map(|tab| tab.title.clone());
+        if let Some(pane) = self.active_pane() {
             let _ = pane.update(cx, |pane, cx| pane.start_recording(title, cx));
-            self.push_workspace_notice(
-                TerminalNotice {
-                    title: self.i18n.t("terminal.recording.started"),
-                    description: None,
-                    status_text: None,
-                    progress: None,
-                    variant: TerminalNoticeVariant::Success,
-                },
-                cx,
-            );
+            let _ = self.terminal_notice_tx.send(TerminalNotice {
+                title: self.i18n.t("terminal.recording.started"),
+                description: None,
+                status_text: None,
+                progress: None,
+                variant: TerminalNoticeVariant::Success,
+            });
         }
         cx.notify();
     }
@@ -1684,35 +2033,35 @@ impl WorkspaceApp {
     }
 
     pub(super) fn pause_active_terminal_recording(&mut self, cx: &mut Context<Self>) {
-        if let Some(pane) = self.active_pane(cx) {
+        if let Some(pane) = self.active_pane() {
             let _ = pane.update(cx, |pane, cx| pane.pause_recording(cx));
         }
         cx.notify();
     }
 
     pub(super) fn resume_active_terminal_recording(&mut self, cx: &mut Context<Self>) {
-        if let Some(pane) = self.active_pane(cx) {
+        if let Some(pane) = self.active_pane() {
             let _ = pane.update(cx, |pane, cx| pane.resume_recording(cx));
         }
         cx.notify();
     }
 
     pub(super) fn discard_active_terminal_recording(&mut self, cx: &mut Context<Self>) {
-        if let Some(pane) = self.active_pane(cx) {
+        if let Some(pane) = self.active_pane() {
             let _ = pane.update(cx, |pane, cx| pane.discard_recording(cx));
         }
         cx.notify();
     }
 
     pub(super) fn stop_active_terminal_recording(&mut self, cx: &mut Context<Self>) {
-        let Some(pane_id) = self.active_pane_id(cx) else {
+        let Some(pane_id) = self.active_pane_id() else {
             return;
         };
-        let Some(pane) = self.tab_host.read(cx).panes().get(&pane_id).cloned() else {
+        let Some(pane) = self.panes.get(&pane_id).cloned() else {
             return;
         };
         let session_label = self
-            .active_terminal_session_id(cx)
+            .active_terminal_session_id()
             .map(|id| id.0.to_string())
             .unwrap_or_else(|| pane_id.0.to_string());
         let content = pane.update(cx, |pane, cx| pane.stop_recording(cx));
@@ -1755,29 +2104,23 @@ impl WorkspaceApp {
             let _ = weak.update(cx, |this, cx| {
                 match result {
                     Ok(Some(path)) => {
-                        this.push_workspace_notice(
-                            TerminalNotice {
-                                title: this.i18n.t("terminal.recording.saved"),
-                                description: Some(path.to_string_lossy().to_string()),
-                                status_text: None,
-                                progress: None,
-                                variant: TerminalNoticeVariant::Success,
-                            },
-                            cx,
-                        );
+                        let _ = this.terminal_notice_tx.send(TerminalNotice {
+                            title: this.i18n.t("terminal.recording.saved"),
+                            description: Some(path.to_string_lossy().to_string()),
+                            status_text: None,
+                            progress: None,
+                            variant: TerminalNoticeVariant::Success,
+                        });
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        this.push_workspace_notice(
-                            TerminalNotice {
-                                title: this.i18n.t("terminal.recording.save_failed"),
-                                description: Some(error),
-                                status_text: None,
-                                progress: None,
-                                variant: TerminalNoticeVariant::Error,
-                            },
-                            cx,
-                        );
+                        let _ = this.terminal_notice_tx.send(TerminalNotice {
+                            title: this.i18n.t("terminal.recording.save_failed"),
+                            description: Some(error),
+                            status_text: None,
+                            progress: None,
+                            variant: TerminalNoticeVariant::Error,
+                        });
                     }
                 }
                 cx.notify();
@@ -1793,7 +2136,7 @@ impl WorkspaceApp {
         mark_source: TerminalCommandMarkDetectionSource,
         cx: &mut Context<Self>,
     ) {
-        if let Some(pane) = self.tab_host.read(cx).panes().get(&pane_id).cloned() {
+        if let Some(pane) = self.panes.get(&pane_id).cloned() {
             let _ = pane.update(cx, |pane, cx| {
                 pane.begin_command_mark(command, mark_source, cx);
                 pane.send_command_line(command, cx);
@@ -1807,17 +2150,12 @@ impl WorkspaceApp {
         command: &str,
         cx: &mut Context<Self>,
     ) {
-        if !self.terminal.read(cx).broadcast_enabled() {
+        if !self.terminal_broadcast_enabled {
             return;
         }
 
-        self.retain_live_terminal_broadcast_targets(cx);
-        // Pruning the final selected target disables broadcast rather than
-        // reinterpreting the now-empty selection as "all terminals".
-        if !self.terminal.read(cx).broadcast_enabled() {
-            return;
-        }
-        let targets = self.terminal_broadcast_target_panes(source_pane_id, cx);
+        self.retain_live_terminal_broadcast_targets();
+        let targets = self.terminal_broadcast_target_panes(source_pane_id);
         for pane_id in targets {
             self.send_terminal_command_to_pane(
                 pane_id,
@@ -1828,46 +2166,43 @@ impl WorkspaceApp {
         }
     }
 
-    pub(super) fn terminal_broadcast_target_panes(
-        &self,
-        source_pane_id: PaneId,
-        cx: &App,
-    ) -> Vec<PaneId> {
-        let tab_host = self.tab_host.read(cx);
+    pub(super) fn terminal_broadcast_target_panes(&self, source_pane_id: PaneId) -> Vec<PaneId> {
         let mut candidates = Vec::new();
-        for tab in self.tabs(cx) {
+        for tab in &self.tabs {
             if let Some(root) = tab.root_pane.as_ref() {
                 root.collect_pane_ids(&mut candidates);
             }
         }
-        candidates
-            .retain(|pane_id| *pane_id != source_pane_id && tab_host.panes().contains_key(pane_id));
+        candidates.retain(|pane_id| *pane_id != source_pane_id && self.panes.contains_key(pane_id));
 
-        self.terminal.read(cx).filter_broadcast_targets(candidates)
+        if self.terminal_broadcast_targets.is_empty() {
+            candidates
+        } else {
+            candidates
+                .into_iter()
+                .filter(|pane_id| self.terminal_broadcast_targets.contains(pane_id))
+                .collect()
+        }
     }
 
-    fn retain_live_terminal_broadcast_targets(&mut self, cx: &mut Context<Self>) {
-        let tab_host = self.tab_host.read(cx);
-        let live_panes = tab_host.panes().keys().copied().collect::<HashSet<_>>();
-        self.terminal.update(cx, |terminal, _cx| {
-            terminal.retain_live_broadcast_targets(&live_panes);
-        });
+    fn retain_live_terminal_broadcast_targets(&mut self) {
+        let panes = &self.panes;
+        self.terminal_broadcast_targets
+            .retain(|pane_id| panes.contains_key(pane_id));
     }
 
     pub(in crate::workspace) fn terminal_broadcast_entries(
         &self,
-        cx: &App,
     ) -> Vec<(PaneId, String, TabKind)> {
-        let tab_host = self.tab_host.read(cx);
         let mut entries = Vec::new();
-        for tab in self.tabs(cx) {
+        for tab in &self.tabs {
             let Some(root) = tab.root_pane.as_ref() else {
                 continue;
             };
             let mut pane_ids = Vec::new();
             root.collect_pane_ids(&mut pane_ids);
             for pane_id in pane_ids {
-                if !tab_host.panes().contains_key(&pane_id) {
+                if !self.panes.contains_key(&pane_id) {
                     continue;
                 }
                 let label = if root.pane_count() > 1 {
@@ -1915,14 +2250,15 @@ impl WorkspaceApp {
         cx.notify();
     }
 
-    pub(super) fn sync_tab_titles(&mut self, cx: &mut App) {
+    pub(super) fn sync_tab_titles(&mut self, _cx: &App) {
         // Localized tab titles are derived only when the locale changes. Keeping
         // this work out of render avoids allocating every translated title on
         // unrelated terminal repaint frames.
-        let i18n = &self.i18n;
-        self.tab_host.update(cx, |tab_host, _| {
-            tab_host.sync_tab_titles(|key| i18n.t(key))
-        });
+        for tab in &mut self.tabs {
+            if let TabTitleSource::I18nKey(key) = tab.title_source {
+                tab.title = self.i18n.t(key);
+            }
+        }
     }
 
     pub(super) fn render_search_bar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1933,8 +2269,8 @@ impl WorkspaceApp {
         let target = WorkspaceImeTarget::Search;
         let workspace = cx.entity();
         let has_query = !self.search.query.is_empty();
-        let marked_text = self.marked_text_for_target(target, cx);
-        let selected_range = self.ime_selected_range_for_target(target, cx);
+        let marked_text = self.marked_text_for_target(target);
+        let selected_range = self.ime_selected_range_for_target(target);
         let input_range = selected_range.filter(|_| has_query && marked_text.is_none());
         let selection_range = input_range.clone().filter(|range| range.start < range.end);
         let caret_offset = input_range
@@ -2010,7 +2346,10 @@ impl WorkspaceApp {
                                 rgb(theme.text_muted)
                             })
                             .when(!has_query && marked_text.is_none(), |input| {
-                                input.child(text_caret(&self.tokens, self.input_caret.visible()))
+                                input.child(text_caret(
+                                    &self.tokens,
+                                    self.new_connection_caret_visible,
+                                ))
                             })
                             .child(if has_query {
                                 text_input_value_segments_with_color(
@@ -2019,7 +2358,7 @@ impl WorkspaceApp {
                                     false,
                                     selection_range,
                                     caret_offset,
-                                    self.input_caret.visible(),
+                                    self.new_connection_caret_visible,
                                     Some(theme.text),
                                 )
                                 .into_any_element()
@@ -2037,13 +2376,16 @@ impl WorkspaceApp {
                             .when(
                                 has_query && !shows_selection && !shows_positioned_caret,
                                 |input| {
-                                    input
-                                        .child(text_caret(&self.tokens, self.input_caret.visible()))
+                                    input.child(text_caret(
+                                        &self.tokens,
+                                        self.new_connection_caret_visible,
+                                    ))
                                 },
                             )
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, event, window, cx| {
+                                    this.terminal_command_bar_focused = false;
                                     this.ime_marked_text = None;
                                     window.focus(&this.focus_handle, cx);
                                     this.begin_ime_selection_from_mouse_down(
@@ -2202,6 +2544,51 @@ fn terminal_command_executable(command: &str) -> Option<String> {
     None
 }
 
+fn terminal_command_enter_action(
+    suggestions_open: bool,
+    highlighted: Option<usize>,
+    suggestions: &[TerminalCommandSuggestion],
+) -> TerminalCommandEnterAction {
+    let Some(index) = highlighted else {
+        return TerminalCommandEnterAction::SubmitDraft;
+    };
+    if !suggestions_open {
+        return TerminalCommandEnterAction::SubmitDraft;
+    }
+    let Some(suggestion) = suggestions.get(index) else {
+        return TerminalCommandEnterAction::SubmitDraft;
+    };
+    if suggestion.executable {
+        TerminalCommandEnterAction::SubmitSuggestion(index)
+    } else {
+        TerminalCommandEnterAction::AcceptSuggestion(index)
+    }
+}
+
+fn terminal_command_next_suggestion_index(
+    suggestions_len: usize,
+    suggestions_open: bool,
+    highlighted: Option<usize>,
+    direction: TerminalCommandSuggestionDirection,
+) -> Option<usize> {
+    if suggestions_len == 0 {
+        return None;
+    }
+    let last = suggestions_len.saturating_sub(1);
+    Some(match (direction, suggestions_open, highlighted) {
+        (TerminalCommandSuggestionDirection::Down, true, Some(index)) => {
+            index.saturating_add(1).min(last)
+        }
+        (TerminalCommandSuggestionDirection::Down, _, _) => 0,
+        (TerminalCommandSuggestionDirection::Up, true, Some(index)) => index.saturating_sub(1),
+        (TerminalCommandSuggestionDirection::Up, _, _) => last,
+    })
+}
+
+fn terminal_command_bar_space_inserts_literal(platform: bool, control: bool, alt: bool) -> bool {
+    !platform && !control && !alt
+}
+
 fn shell_words(segment: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut current = String::new();
@@ -2254,11 +2641,43 @@ fn is_shell_assignment_name(name: &str) -> bool {
 mod terminal_command_bar_behavior_tests {
     use super::*;
 
+    #[test]
+    fn tab_close_confirm_uses_escape_to_cancel_and_enter_to_confirm() {
+        assert_eq!(
+            tab_close_confirm_direct_key_action("escape", false, false),
+            Some(TabCloseConfirmDirectKeyAction::Cancel)
+        );
+        assert_eq!(
+            tab_close_confirm_direct_key_action("enter", false, false),
+            Some(TabCloseConfirmDirectKeyAction::Confirm)
+        );
+        assert_eq!(
+            tab_close_confirm_direct_key_action("enter", true, false),
+            None
+        );
+    }
+
     fn tab_keystroke_with(modifiers: gpui::Modifiers) -> gpui::Keystroke {
         gpui::Keystroke {
             key: "tab".to_string(),
             modifiers,
             ..Default::default()
+        }
+    }
+
+    fn suggestion(executable: bool) -> TerminalCommandSuggestion {
+        TerminalCommandSuggestion {
+            kind: TerminalCommandSuggestionKind::History,
+            label: "ls -la".to_string(),
+            insert_text: "ls -la".to_string(),
+            description: None,
+            executable,
+            replacement: 0..2,
+            group_label_key: "terminal.command_bar.group_history",
+            source_label_key: "terminal.command_bar.source_history",
+            score: 1.0,
+            risk: None,
+            inline_safe: true,
         }
     }
 
@@ -2300,9 +2719,100 @@ mod terminal_command_bar_behavior_tests {
 
     #[test]
     fn terminal_tab_capture_defers_to_workspace_text_ui() {
-        assert!(!terminal_tab_capture_blocked_by_workspace_ui(false, false));
-        assert!(terminal_tab_capture_blocked_by_workspace_ui(true, false));
-        assert!(terminal_tab_capture_blocked_by_workspace_ui(false, true));
+        assert!(!terminal_tab_capture_blocked_by_workspace_ui(
+            false, false, false
+        ));
+        assert!(terminal_tab_capture_blocked_by_workspace_ui(
+            true, false, false
+        ));
+        assert!(terminal_tab_capture_blocked_by_workspace_ui(
+            false, true, false
+        ));
+        assert!(terminal_tab_capture_blocked_by_workspace_ui(
+            false, false, true
+        ));
+    }
+
+    #[test]
+    fn command_bar_enter_matches_tauri_unselected_popup_semantics() {
+        let suggestions = vec![suggestion(true)];
+
+        assert_eq!(
+            terminal_command_enter_action(true, None, &suggestions),
+            TerminalCommandEnterAction::SubmitDraft
+        );
+        assert_eq!(
+            terminal_command_enter_action(false, Some(0), &suggestions),
+            TerminalCommandEnterAction::SubmitDraft
+        );
+    }
+
+    #[test]
+    fn command_bar_enter_submits_only_highlighted_executable_suggestion() {
+        assert_eq!(
+            terminal_command_enter_action(true, Some(0), &[suggestion(true)]),
+            TerminalCommandEnterAction::SubmitSuggestion(0)
+        );
+        assert_eq!(
+            terminal_command_enter_action(true, Some(0), &[suggestion(false)]),
+            TerminalCommandEnterAction::AcceptSuggestion(0)
+        );
+    }
+
+    #[test]
+    fn command_bar_arrow_navigation_matches_tauri_highlight_rules() {
+        assert_eq!(
+            terminal_command_next_suggestion_index(
+                2,
+                false,
+                None,
+                TerminalCommandSuggestionDirection::Down
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            terminal_command_next_suggestion_index(
+                2,
+                true,
+                Some(0),
+                TerminalCommandSuggestionDirection::Down
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            terminal_command_next_suggestion_index(
+                2,
+                false,
+                None,
+                TerminalCommandSuggestionDirection::Up
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            terminal_command_next_suggestion_index(
+                2,
+                true,
+                Some(1),
+                TerminalCommandSuggestionDirection::Up
+            ),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn command_bar_plain_space_is_literal_text() {
+        assert!(terminal_command_bar_space_inserts_literal(
+            false, false, false
+        ));
+        assert!(!terminal_command_bar_space_inserts_literal(
+            true, false, false
+        ));
+        assert!(!terminal_command_bar_space_inserts_literal(
+            false, true, false
+        ));
+        assert!(!terminal_command_bar_space_inserts_literal(
+            false, false, true
+        ));
     }
 
     #[test]

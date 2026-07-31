@@ -1,7 +1,7 @@
 // Copyright (C) 2026 AnalyseDeCircuit
 // SPDX-License-Identifier: GPL-3.0-only
 
-use dashmap::{DashMap, mapref::entry::Entry};
+use dashmap::DashMap;
 use oxideterm_sftp::{SftpError, SftpSession};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -18,11 +18,11 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 use uuid::Uuid;
-use zeroize::Zeroizing;
 
 use crate::{
     AcquiredSftpMeta, ConnectionConsumer, ConnectionInfo, ConnectionState,
-    ConnectionTransportStatus, SshConfig, SshConnectionHandle, SshConnectionRegistry,
+    ConnectionTransportStatus, DedicatedSftpConnection, SshConfig, SshConnectionHandle,
+    SshConnectionRegistry, SshTransportClient,
 };
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -119,7 +119,7 @@ impl NodeOrigin {
 #[serde(rename_all = "camelCase")]
 pub struct TerminalEndpoint {
     pub ws_port: u16,
-    pub ws_token: Zeroizing<String>,
+    pub ws_token: String,
     pub session_id: String,
 }
 
@@ -205,17 +205,11 @@ pub enum NodeStateEvent {
         ready: bool,
         cwd: Option<String>,
     },
-    SharedSftpSessionChanged {
-        node_id: String,
-        generation: u64,
-        connection_id: String,
-        session_generation: Option<u64>,
-        ready: bool,
-    },
     TerminalEndpointChanged {
         node_id: String,
         generation: u64,
-        available: bool,
+        ws_port: u16,
+        ws_token: String,
     },
 }
 
@@ -258,26 +252,17 @@ impl fmt::Debug for NodeStateEvent {
                 .field("ready", ready)
                 .field("cwd", cwd)
                 .finish(),
-            Self::SharedSftpSessionChanged {
-                node_id,
-                generation,
-                ready,
-                ..
-            } => formatter
-                .debug_struct("SharedSftpSessionChanged")
-                .field("node_id", node_id)
-                .field("generation", generation)
-                .field("ready", ready)
-                .finish(),
             Self::TerminalEndpointChanged {
                 node_id,
                 generation,
-                available,
+                ws_port,
+                ws_token: _,
             } => formatter
                 .debug_struct("TerminalEndpointChanged")
                 .field("node_id", node_id)
                 .field("generation", generation)
-                .field("available", available)
+                .field("ws_port", ws_port)
+                .field("ws_token", &"[redacted token]")
                 .finish(),
         }
     }
@@ -292,29 +277,11 @@ pub struct NodeRuntimeSnapshot {
     pub origin: NodeOrigin,
     pub connection_id: Option<String>,
     pub terminal_session_id: Option<String>,
+    pub terminal_endpoints: Vec<TerminalEndpoint>,
     pub sftp_session_id: Option<String>,
     pub state: NodeState,
     pub created_at_ms: u64,
     pub generation: u64,
-}
-
-/// Node metadata projection that never retains authentication or endpoint tokens.
-#[derive(Clone, Debug)]
-pub struct NodeMetadataSnapshot {
-    pub id: NodeId,
-    pub parent_id: Option<NodeId>,
-    pub children_ids: Vec<NodeId>,
-    pub depth: u32,
-    pub origin: NodeOrigin,
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub readiness: NodeReadiness,
-    pub error: Option<String>,
-    pub connection_id: Option<String>,
-    pub terminal_session_id: Option<String>,
-    pub sftp_session_id: Option<String>,
-    pub created_at_ms: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -360,30 +327,6 @@ pub struct NodeTreeSnapshotNode {
     #[serde(default)]
     pub terminal_endpoints: Vec<TerminalEndpoint>,
     pub sftp_session_id: Option<String>,
-    pub created_at_ms: u64,
-    pub generation: u64,
-}
-
-/// Restart-safe tree state that excludes live runtime handles and secrets.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NodeTreePersistenceSnapshot {
-    pub version: u32,
-    pub exported_at_ms: u64,
-    pub root_ids: Vec<NodeId>,
-    pub nodes: Vec<NodeTreePersistenceNode>,
-}
-
-/// Persistable node projection; saved connections resolve their config on restore.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NodeTreePersistenceNode {
-    pub id: NodeId,
-    pub parent_id: Option<NodeId>,
-    pub children_ids: Vec<NodeId>,
-    pub depth: u32,
-    pub origin: NodeOrigin,
-    pub config: Option<SshConfig>,
     pub created_at_ms: u64,
     pub generation: u64,
 }

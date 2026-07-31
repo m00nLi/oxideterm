@@ -1,7 +1,5 @@
-mod acp_workspace;
 mod actions;
 mod ai_lazy;
-mod ai_runtime_context;
 mod ai_state;
 mod app_lock;
 mod breadcrumb_scroll;
@@ -9,7 +7,7 @@ mod browser_behavior;
 mod cloud_sync;
 mod command_palette;
 mod connection_monitor;
-mod delivery;
+mod desktop_presence;
 mod detached_tab_window;
 mod file_manager;
 mod forwards;
@@ -23,22 +21,19 @@ mod local_terminal_background;
 mod new_connection;
 mod notification_center;
 mod onboarding;
-mod overlay;
 mod pane_tree;
 mod path_completion;
-mod plugin_entity;
+mod plugin_host;
 mod plugin_lifecycle;
 mod plugin_manager;
+mod plugin_runtime;
 mod plugin_ui;
 mod quick_commands;
 mod remote_desktop;
-mod runtime_entity;
 mod root {
     pub(super) mod background;
     pub(super) mod helpers;
-    pub(super) mod host_tools;
     pub(super) mod init;
-    pub(super) mod modal_owner;
     pub(super) mod render;
     pub(super) mod state;
     #[cfg(test)]
@@ -51,20 +46,16 @@ mod session_manager;
 mod settings;
 mod sftp;
 mod sidebar;
+mod single_instance;
 mod tabs;
 mod terminal_cast;
 mod terminal_command_bar;
-mod terminal_command_sender;
 mod terminal_context_actions;
 mod terminal_cwd;
-mod terminal_entity;
 mod terminal_git;
 mod terminal_project;
 mod version_migration;
 mod virtual_list;
-mod window_intent;
-mod window_registry;
-mod window_shell;
 
 use std::{
     cell::{Cell, RefCell},
@@ -88,6 +79,7 @@ use self::{
         PathCompletionCandidate, PathCompletionOwner, PathCompletionState,
         local_path_completion_request, remote_path_completion_request,
     },
+    settings::SettingsManagedKeyDialog,
     sidebar::{ContextSidebarPanel, ContextSidebarTool},
     version_migration::VersionMigrationState,
 };
@@ -98,19 +90,19 @@ use gpui::{
     FollowMode, Image, ImageFormat, IntoElement, KeyDownEvent, KeyUpEvent, ListAlignment,
     ListState, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ObjectFit, ParentElement, PathPromptOptions, Pixels, Point, Render, RenderImage, Rgba,
-    ScrollHandle, ScrollWheelEvent, SharedString, Styled, StyledImage, Subscription, Task,
-    TextLayout, Timer, UniformListScrollHandle, Window, anchored, canvas, deferred, div,
+    ScrollHandle, ScrollWheelEvent, SharedString, Styled, StyledImage, Subscription, TextLayout,
+    Timer, UniformListScrollHandle, WeakEntity, Window, anchored, canvas, deferred, div,
     prelude::*, px, relative, rgb, rgba, svg,
 };
 use oxideterm_connection_monitor::{
     CompactMonitorRow, ConnectionPoolEntryState, ConnectionPoolEntrySummary,
     ConnectionPoolMonitorStats, DockerActionKind, FilesystemCommandCapability,
     FilesystemEntrySeverity, FilesystemFilter, GpuDevice, GpuProvider, GpuSamplingTask,
-    GpuSnapshot, GpuSnapshotStatus, GpuUpdate, LogCommandCapability, LogPreset, MetricsSource,
-    MonitorListRow, MonitorMetricKind, MonitorSectionKind, MonitorValueLevel,
-    PackageCommandCapability, PackageFilter, PortCommandCapability, PortFilter, ProcessActionKind,
-    ProcessCommandCapability, ProcessFilter, ProcessSort, ProfilerRegistry, ProfilerUpdate,
-    ResourceDockerContainer, ResourceDockerStatus, ResourceFilesystemEntry,
+    GpuSnapshot, GpuSnapshotStatus, GpuUpdate, HostToolActionOutcome, LogCommandCapability,
+    LogPreset, MetricsSource, MonitorListRow, MonitorMetricKind, MonitorSectionKind,
+    MonitorValueLevel, PackageCommandCapability, PackageFilter, PortCommandCapability, PortFilter,
+    ProcessActionKind, ProcessCommandCapability, ProcessFilter, ProcessSort, ProfilerRegistry,
+    ProfilerUpdate, ResourceDockerContainer, ResourceDockerStatus, ResourceFilesystemEntry,
     ResourceFilesystemSnapshot, ResourceFilesystemStatus, ResourceLogEntry, ResourceLogSnapshot,
     ResourceLogStatus, ResourceMetrics, ResourcePackageEntry, ResourcePackageSnapshot,
     ResourcePackageStatus, ResourcePortEntry, ResourcePortSnapshot, ResourcePortStatus,
@@ -127,35 +119,40 @@ use oxideterm_connection_monitor::{
     build_scheduled_task_diagnostic_command, build_scheduled_task_logs_command,
     build_scheduled_task_snapshot_command, build_service_action_command,
     build_service_follow_logs_command, build_service_logs_command, build_tmux_action_command,
-    build_tmux_attach_command, build_tmux_new_session_command, build_tmux_rename_session_command,
-    build_tmux_rename_window_command, build_tmux_send_pane_command, build_tmux_snapshot_command,
-    compact_monitor_row_signature, compact_monitor_rows, disk_list_rows, docker_action_succeeded,
-    docker_row_signature, docker_state_label_key, filesystem_attention_label_keys,
-    filesystem_entry_severity, filesystem_filter_label_key, filesystem_kind_label_key,
-    filesystem_read_only_label_key, filesystem_row_signature, format_boot_time, format_bytes,
-    format_rate, format_uptime, gpu_device_row_signature, gpu_list_rows, gpu_memory_percent,
-    gpu_memory_summary, gpu_utilization_percent, interface_list_rows, log_level_label_key,
-    log_preset_label_key, log_row_signature, metrics_source_label_key, package_filter_label_key,
-    package_row_signature, package_status_label_key, parse_log_snapshot, parse_package_snapshot,
-    parse_port_snapshot, percent_level, port_endpoint, port_filter_label_key,
-    port_is_risky_exposure, port_row_signature, port_state_label_key, process_display_command,
-    process_display_name, process_row_signature, process_state_label_key,
-    resource_metrics_is_rtt_only, rtt_level, scheduled_task_active_label_key,
-    scheduled_task_enabled_label_key, scheduled_task_filter_label_key,
-    scheduled_task_row_signature, scheduled_task_source_label_key, service_action_succeeded,
-    service_enabled_label_key, service_row_signature, service_state_label_key,
-    start_gpu_sampling_on, tmux_session_row_signature, top_process_list_rows, visible_docker_rows,
+    build_tmux_attach_command, build_tmux_new_session_command, build_tmux_snapshot_command,
+    compact_monitor_row_signature, compact_monitor_rows, disk_list_rows,
+    docker_action_failure_message, docker_action_succeeded, docker_row_signature,
+    docker_state_label_key, filesystem_attention_label_keys, filesystem_entry_severity,
+    filesystem_filter_label_key, filesystem_kind_label_key, filesystem_read_only_label_key,
+    filesystem_row_signature, format_boot_time, format_bytes, format_rate, format_uptime,
+    gpu_device_row_signature, gpu_list_rows, gpu_memory_percent, gpu_memory_summary,
+    gpu_utilization_percent, host_tool_capture_failure_message, interface_list_rows,
+    interpret_docker_action_output, interpret_process_action_output,
+    interpret_scheduled_task_action_output, interpret_service_action_output,
+    interpret_tmux_action_output, log_level_label_key, log_preset_label_key, log_row_signature,
+    metrics_source_label_key, package_filter_label_key, package_row_signature,
+    package_status_label_key, parse_log_snapshot, parse_package_snapshot, parse_port_snapshot,
+    percent_level, port_endpoint, port_filter_label_key, port_is_risky_exposure,
+    port_row_signature, port_state_label_key, process_display_command, process_display_name,
+    process_row_signature, process_state_label_key, resource_metrics_is_rtt_only, rtt_level,
+    scheduled_task_active_label_key, scheduled_task_enabled_label_key,
+    scheduled_task_filter_label_key, scheduled_task_row_signature, scheduled_task_source_label_key,
+    service_action_failure_message, service_action_succeeded, service_enabled_label_key,
+    service_row_signature, service_state_label_key, start_gpu_sampling_on,
+    tmux_session_row_signature, top_process_list_rows, visible_docker_rows,
     visible_filesystem_rows, visible_log_rows, visible_package_rows, visible_port_rows,
     visible_process_rows, visible_scheduled_task_rows, visible_service_rows,
     visible_tmux_session_rows,
 };
 use oxideterm_connections::{
-    ConnectionStore, ConnectionTerminalOptions, PrivilegeCredentialKind, SaveConnectionRequest,
-    SavedPrivilegeCredential, SshConfigSyncService,
+    ConnectionImportDuplicateStrategy, ConnectionImportPreview, ConnectionImportSource,
+    ConnectionStore, PrivilegeCredentialKind, SaveConnectionRequest, SavedPrivilegeCredential,
+    SshConfigSyncService,
 };
 use oxideterm_forwarding::{
-    ForwardEventDeliverySender, ForwardStatus, ForwardingRegistry, SavedForwardStore,
+    ForwardEvent, ForwardRule, ForwardStatus, ForwardType, ForwardingRegistry, SavedForwardStore,
 };
+use oxideterm_gpui_ide::IdeSurface;
 use oxideterm_gpui_platform::{
     rendering::detect_graphics,
     vibrancy::{NativeVibrancyMode, VibrancySupport, apply_window_vibrancy},
@@ -168,9 +165,8 @@ use oxideterm_gpui_terminal::{
     TerminalInputInterceptor, TerminalInputInterceptorResult, TerminalModemLabels, TerminalNotice,
     TerminalNoticeVariant, TerminalOutputProcessor, TerminalPane, TerminalPaneEvent,
     TerminalPasteLabels, TerminalRecordingState, TerminalRecordingStatus, TerminalSearchStatus,
-    TerminalSerialControlLabels, TerminalTrzszLabels, TerminalUiPreferenceOverrides,
-    TerminalUiPreferences, TerminalUiTheme, TerminalWorkingDirectorySource,
-    detect_custom_privilege_prompt,
+    TerminalSerialControlLabels, TerminalTrzszLabels, TerminalUiPreferences, TerminalUiTheme,
+    TerminalWorkingDirectorySource, detect_custom_privilege_prompt, detect_privilege_prompt,
 };
 use oxideterm_gpui_ui::scroll::ScrollableElement;
 use oxideterm_gpui_ui::{
@@ -195,15 +191,12 @@ use oxideterm_notification_center::{
     NotificationStatus as WorkspaceNotificationStatus,
     NotificationStatusFilter as WorkspaceNotificationStatusFilter,
 };
-use oxideterm_plugin_host_api::runtime as plugin_runtime;
-use oxideterm_plugin_registry as plugin_host;
 use oxideterm_render_policy::{
     DetectedGraphics, EffectiveRenderPolicy, RenderProfile, compute_render_policy,
 };
 use oxideterm_session_adapter::{
     reconnect_max_attempts_from_settings, reconnect_timing_from_settings,
-    sftp_runtime_settings_from_settings, terminal_backspace_sequence_from_connection,
-    terminal_delete_sequence_from_connection, terminal_encoding_from_connection,
+    sftp_runtime_settings_from_settings,
     terminal_encoding_from_settings as session_terminal_encoding,
 };
 use oxideterm_settings::{
@@ -211,10 +204,12 @@ use oxideterm_settings::{
     CursorStyle as SettingsCursorStyle, FontFamily, FrostedGlassMode, HighlightRuleRenderMode,
     Language, MAX_TERMINAL_BACKGROUND_OPACITY, MAX_WINDOW_OPACITY, MIN_TERMINAL_BACKGROUND_OPACITY,
     MIN_WINDOW_OPACITY, PersistedSettings, SettingsStore, background_images_directory,
-    default_settings_path, ensure_bundled_background_image, list_background_images,
+    default_settings_path, ensure_bundled_background_image, import_background_images,
+    is_managed_background_image, list_background_images, remove_background_image,
 };
 use oxideterm_settings_model::{
-    AiMcpServerDraft, AiProviderKeyStatusDelivery, SettingsNavigationLayout,
+    AiMcpServerDraft, AiModelRefreshDelivery, AiProviderKeyStatusDelivery,
+    SettingsNavigationLayout, SettingsPageModel,
 };
 use oxideterm_sftp::{
     BackgroundTransferDirection, BackgroundTransferKind, BackgroundTransferSnapshot,
@@ -227,12 +222,11 @@ use oxideterm_ssh::{
     ConnectionTraceMode, ConnectionTracePlan, ConnectionTraceStage, ConnectionTraceState,
     ConnectionTraceStatus, MAX_RETAINED_RECONNECT_JOBS, NodeEventReceiver, NodeEventSubscription,
     NodeId, NodeOrigin, NodeReadiness, NodeRouter, NodeRuntimeStore, NodeState, NodeStateEvent,
-    NodeTreeExpansion, NodeTreePersistenceSnapshot, NodeTreeSnapshot, NodeTreeSnapshotNode,
-    PhaseResult, ProbeConnectionStatus, ProxyHopConfig, ReconnectForwardRuleSnapshot,
+    NodeTreeExpansion, NodeTreeSnapshot, NodeTreeSnapshotNode, PhaseResult, ProbeConnectionStatus,
+    ProxyHopConfig, ReconnectForwardRule, ReconnectForwardRuleSnapshot, ReconnectJob,
     ReconnectNodeConnectionSnapshot, ReconnectNodeTerminalSnapshot, ReconnectNodeTransferSnapshot,
-    ReconnectOrchestratorStore, ReconnectPhase, ReconnectProgress, ReconnectSnapshot,
-    SshAlgorithmDiagnosticKind, SshConfig, SshConnectionRegistry, SshTransportClient,
-    TerminalEndpoint,
+    ReconnectOrchestratorStore, ReconnectPhase, ReconnectSnapshot, SshAlgorithmDiagnosticKind,
+    SshConfig, SshConnectionRegistry, SshTransportClient, TerminalEndpoint, UpstreamProxyConfig,
 };
 use oxideterm_ssh_launch::TemporarySshLaunch;
 use oxideterm_terminal::{
@@ -242,52 +236,41 @@ use oxideterm_terminal::{
 };
 use oxideterm_theme::{
     AppUiColors, TerminalTheme, ThemeTokens, UiDensityProfile, UiMotionProfile, UiRadii,
-    theme_by_id,
+    derive_ui_colors_from_terminal, theme_by_id,
 };
 use oxideterm_workspace::{
-    ActiveSessionNode, ActiveSessionReadiness, ActiveSessionStatus, MAX_PANES_PER_TAB, PaneId,
-    PaneNode, SplitDirection, Tab, TabId, TabKind, TabTitleSource, TerminalSessionId,
-    adjusted_split_sizes,
+    ActiveSessionNode, ActiveSessionReadiness, ActiveSessionStatus,
+    CommandPaletteMode as PaletteMode, MAX_PANES_PER_TAB, PaneId, PaneNode, SplitDirection, Tab,
+    TabId, TabKind, TabTitleSource, TerminalSessionId, adjusted_split_sizes,
 };
 
 use self::actions::SearchBarState;
-use self::connection_monitor::{
-    ConnectionRuntimeSection, HostToolsEntity, HostToolsEvent, HostToolsMessages,
-    HostToolsWindowIntent, HostToolsWindowRequest,
-};
-use self::file_manager::{FileManagerState, FileManagerWorkspaceEvent};
-use self::graphics::GraphicsWorkspaceEntity;
+use self::connection_monitor::{ConnectionMonitorState, ConnectionRuntimeSection};
+use self::file_manager::FileManagerState;
+use self::graphics::GraphicsState;
 use self::ime::{
-    HostToolsPlainTextImeFrame, TextInputAnchorStore, WorkspaceImeDragSelection,
-    WorkspaceImeElement, WorkspaceImeSelection, WorkspaceImeTarget,
-    active_ime_should_defer_input_key, workspace_ime_target_for_plain_host_tools_input,
+    WorkspaceImeDragSelection, WorkspaceImeElement, WorkspaceImeSelection, WorkspaceImeTarget,
+    active_ime_should_defer_input_key,
 };
-use self::launcher::{LauncherWorkspaceEntity, LauncherWorkspaceEvent};
+use self::launcher::LauncherState;
 use self::new_connection::{
-    ConnectionFlowEntity, ConnectionFlowEvent, NativeSshPromptHandler, NewConnectionField,
-    NewConnectionForm, SavedConnectionPromptAction, SshAuthTab, SshConnectionIntent,
+    HostKeyChallenge, KeyboardInteractiveChallenge, NativeSessionTreeConnectPlan,
+    NativeSshPromptHandler, NewConnectionField, NewConnectionForm, NewConnectionSelect,
+    PrivilegeCredentialDraft, SavedConnectionPromptAction, SshAuthTab, SshConnectionIntent,
+    SshConnectionWorkerResult,
 };
 use self::onboarding::OnboardingState;
-use self::overlay::{
-    WorkspaceOverlayConfirmEffect, WorkspaceOverlayConfirmKeyAction, WorkspaceOverlayConfirmKind,
-    WorkspaceOverlayEntity, WorkspaceOverlayIntent,
-};
 use self::pane_tree::SplitDrag;
-pub(crate) use self::root::helpers::tokens_from_settings as portable_bootstrap_tokens_from_settings;
-use self::root::state::{ReconnectWorkerResult, WorkspaceSshNode, WorkspaceSshNodeEndpoint};
+use self::quick_commands::QuickCommandsState;
+use self::root::state::{PendingSshTerminalOpen, ReconnectWorkerResult, WorkspaceSshNode};
 use self::root::{background::*, helpers::*};
-use self::session_manager::{SessionManagerState, SessionManagerWorkspaceEvent};
+use self::session_manager::SessionManagerState;
 use self::sidebar::AiInlinePanelState;
 use self::sidebar::{ActiveSessionSidebarViewMode, SidebarSection};
 use self::sidebar::{
-    AiCompactionDelivery, AiCompactionDeliverySender, AiStreamDelivery, AiStreamDeliverySender,
-    ai_now_ms,
+    AiCompactionDelivery, AiModelSelectorProbeDelivery, AiPendingChatStream, AiStreamDelivery,
 };
-#[cfg(test)]
-use self::sidebar::{AiCompactionDeliveryKind, AiStreamDeliveryEvent};
-use self::tabs::{TabRemovalTransition, TerminalLocation};
-use self::terminal_entity::{WorkspaceTerminalEntity, WorkspaceTerminalEvent};
-use self::window_intent::WorkspaceWindowIntentEntity;
+use self::terminal_cast::TerminalCastPlayerState;
 use crate::{
     CloseOtherTabs, ClosePane, CloseSearch, CloseTab, CommandPalette, Copy, Cut, Find, FindNext,
     FindPrev, FontDecrease, FontIncrease, FontReset, GoToTab1, GoToTab2, GoToTab3, GoToTab4,
@@ -317,7 +300,7 @@ use oxideterm_gpui_settings_view::{
     ActiveSurface, SettingsInput, SettingsSelect, SettingsSlider, SettingsTab,
 };
 use oxideterm_gpui_ui::select::{OverlayAnchor, SelectAnchorId, select_anchor_probe};
-use oxideterm_gpui_ui::text_input::TextInputAnchor;
+use oxideterm_gpui_ui::text_input::{TextInputAnchor, TextInputAnchorId};
 use oxideterm_gpui_ui::typography::{
     css_font_family_head as settings_css_font_family_head, gpui_font_family_name,
     tauri_ui_font_family as settings_ui_font_family,
@@ -366,6 +349,12 @@ const FORWARDS_TABLE_ROW_LIST_OVERSCAN: usize = 8;
 const CONNECTION_MONITOR_SECTION_LIST_ITEM_COUNT: usize = 2;
 const CONNECTION_MONITOR_SECTION_LIST_ESTIMATED_HEIGHT: f32 = 280.0;
 const CONNECTION_MONITOR_SECTION_LIST_OVERSCAN: usize = 1;
+const LAUNCHER_WSL_LIST_INITIAL_ITEM_COUNT: usize = 0;
+const LAUNCHER_WSL_LIST_ESTIMATED_HEIGHT: f32 = 56.0;
+const LAUNCHER_WSL_LIST_OVERSCAN: usize = 6;
+const LAUNCHER_APP_GRID_INITIAL_ROW_COUNT: usize = 0;
+const LAUNCHER_APP_GRID_ESTIMATED_ROW_HEIGHT: f32 = 104.0;
+const LAUNCHER_APP_GRID_OVERSCAN: usize = 4;
 const QUICK_COMMAND_LIST_INITIAL_ITEM_COUNT: usize = 0;
 const QUICK_COMMAND_LIST_ESTIMATED_HEIGHT: f32 = 56.0;
 const QUICK_COMMAND_LIST_OVERSCAN: usize = 6;
@@ -415,7 +404,7 @@ struct AiCompactionNotice {
     timestamp_ms: i64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct AiChatInitializationError {
     message_key: &'static str,
     can_retry: bool,
@@ -430,8 +419,23 @@ enum AiChatFooterAction {
 // keyboard focus order stays centralized even though it is not a modal trap.
 const AI_CHAT_FOOTER_ACTIONS: [AiChatFooterAction; 1] = [AiChatFooterAction::Submit];
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KeybindingRecordingFooterAction {
+    Confirm,
+    Cancel,
+}
+
 const CONFIRM_DIALOG_FOOTER_ACTIONS: [ConfirmDialogAction; 2] =
     [ConfirmDialogAction::Cancel, ConfirmDialogAction::Confirm];
+const KEYBINDING_RECORDING_FOOTER_ACTIONS: [KeybindingRecordingFooterAction; 2] = [
+    KeybindingRecordingFooterAction::Confirm,
+    KeybindingRecordingFooterAction::Cancel,
+];
+
+enum KnowledgeReindexDelivery {
+    Progress { current: usize, total: usize },
+    Finished(Result<usize, String>),
+}
 
 #[derive(Default)]
 struct AiMarkdownDocumentCache {
@@ -470,51 +474,9 @@ const AI_MARKDOWN_CONTENT_OFFSET_PX: f32 = 56.0;
 
 #[derive(Clone, Debug)]
 enum AiChatListItem {
-    TrimNotice { count: usize },
-    Message { index: usize, last_assistant: bool },
+    TrimNotice { sequence: u64, count: usize },
+    Message { id: String },
     BottomSpacer,
-}
-
-#[derive(Default)]
-struct AiChatMessageSignatureCache {
-    conversation_id: Option<String>,
-    signatures: HashMap<String, u64>,
-}
-
-impl AiChatMessageSignatureCache {
-    fn select_conversation(&mut self, conversation_id: &str) {
-        if self.conversation_id.as_deref() == Some(conversation_id) {
-            return;
-        }
-        self.conversation_id = Some(conversation_id.to_string());
-        self.signatures.clear();
-    }
-
-    fn signature_for(&mut self, message_id: &str, compute: impl FnOnce() -> u64) -> u64 {
-        if let Some(signature) = self.signatures.get(message_id) {
-            return *signature;
-        }
-        let signature = compute();
-        self.signatures.insert(message_id.to_string(), signature);
-        signature
-    }
-
-    fn invalidate_message(&mut self, message_id: &str) {
-        self.signatures.remove(message_id);
-    }
-
-    fn invalidate_all(&mut self) {
-        self.signatures.clear();
-    }
-
-    fn needs_prune(&self, retained_count: usize) -> bool {
-        self.signatures.len() > retained_count.saturating_add(32)
-    }
-
-    fn prune(&mut self, retained_message_ids: &HashSet<&str>) {
-        self.signatures
-            .retain(|message_id, _| retained_message_ids.contains(message_id.as_str()));
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -556,6 +518,18 @@ struct AiContextTokenBreakdownKey {
 struct AiContextTokenBreakdownCache {
     key: Option<AiContextTokenBreakdownKey>,
     breakdown_without_draft: Option<AiContextTokenBreakdown>,
+}
+
+#[derive(Clone, Debug)]
+struct CommandPaletteState {
+    open: bool,
+    raw_query: String,
+    mode: PaletteMode,
+    selected_index: usize,
+    scroll_handle: UniformListScrollHandle,
+    ssh_config_hosts: Vec<oxideterm_connections::SshConfigHost>,
+    ssh_config_hosts_loading: bool,
+    error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -617,7 +591,7 @@ struct ExitingTabVisual {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::workspace) enum TabCloseConfirm {
+enum TabCloseConfirm {
     Single { tab_id: TabId },
     LocalChildProcess { tab_id: TabId },
     LocalChildProcessBatch { tab_ids: Vec<TabId> },
@@ -640,8 +614,16 @@ impl LocalTerminalCloseCheck {
 }
 
 struct WorkspaceWindowTabState {
+    active_tab_id: Option<TabId>,
+    active_tab_index_cache: Cell<Option<(TabId, usize)>>,
+    navigation_history: Vec<TabId>,
+    navigation_index: Option<usize>,
+    navigation_replaying: bool,
+    navigation_observed_tab: Option<TabId>,
     drag: Option<TabDragState>,
     context_menu: Option<TabContextMenu>,
+    close_confirm: Option<TabCloseConfirm>,
+    process_close_check_generation: u64,
     exiting_tabs: Vec<ExitingTabVisual>,
     scroll_handle: ScrollHandle,
     scrollbar_drag: Option<TabbarScrollbarDragState>,
@@ -688,14 +670,47 @@ struct DetachedTabReturnPlaceholder {
 impl WorkspaceWindowTabState {
     fn new() -> Self {
         Self {
+            active_tab_id: None,
+            active_tab_index_cache: Cell::new(None),
+            navigation_history: Vec::new(),
+            navigation_index: None,
+            navigation_replaying: false,
+            navigation_observed_tab: None,
             drag: None,
             context_menu: None,
+            close_confirm: None,
+            process_close_check_generation: 0,
             exiting_tabs: Vec::new(),
             scroll_handle: ScrollHandle::new(),
             scrollbar_drag: None,
             scrollbar_hovered: false,
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NodeDisconnectConfirm {
+    node_id: NodeId,
+    display_name: String,
+}
+
+#[derive(Clone, Copy)]
+enum SimpleConfirmExitTarget {
+    AiClearAll,
+    AiDeleteMessage,
+    NodeDisconnect,
+    TabClose,
+    SettingsDataDirectory,
+    KeybindingResetAll,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DataDirectoryConfirm {
+    Conflict {
+        path: PathBuf,
+        files_found: Vec<String>,
+    },
+    Reset,
 }
 
 #[derive(Clone)]
@@ -710,38 +725,110 @@ pub(super) struct SelectableTextFragmentState {
 
 pub(crate) struct WorkspaceApp {
     focus_handle: FocusHandle,
+    tabs: Vec<Tab>,
     main_window_tabs: WorkspaceWindowTabState,
+    renaming_tab_id: Option<TabId>,
+    rename_input_draft: String,
+    renaming_terminal_id: Option<TerminalSessionId>,
+    terminal_rename_draft: String,
+    detached_tabs: HashSet<TabId>,
+    detached_tab_windows: HashMap<TabId, AnyWindowHandle>,
     detached_tab_return_drag: Option<DetachedTabReturnDrag>,
     detached_tab_return_handoff: Option<DetachedTabReturnHandoff>,
     next_tab_window_handoff_generation: u64,
     main_window_tabbar_drop_bounds: Option<Bounds<Pixels>>,
+    node_disconnect_confirm: Option<NodeDisconnectConfirm>,
+    node_disconnect_confirm_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    panes: HashMap<PaneId, gpui::Entity<TerminalPane>>,
+    terminal_locations: HashMap<TerminalSessionId, TerminalLocation>,
+    terminal_labels: HashMap<TerminalSessionId, String>,
+    terminal_pane_subscriptions: HashMap<PaneId, Subscription>,
     pending_auto_close_terminal_sessions: HashSet<TerminalSessionId>,
     auto_close_terminal_sessions_scheduled: bool,
-    tab_host: Entity<tabs::WorkspaceTabHostEntity>,
-    _tab_host_subscription: Subscription,
+    host_tools_tab_scroll_handle: ScrollHandle,
+    next_tab_id: u64,
+    next_pane_id: u64,
+    next_session_id: u64,
     search: SearchBarState,
-    terminal_command_sender: Entity<terminal_command_sender::TerminalCommandSenderEntity>,
-    _terminal_command_sender_observation: Subscription,
+    terminal_command_bar_focused: bool,
+    terminal_command_input_collapsed: bool,
+    terminal_command_bar_draft: String,
+    terminal_command_suggestions_open: bool,
+    terminal_command_suggestion_highlighted: Option<usize>,
+    terminal_broadcast_enabled: bool,
+    terminal_broadcast_targets: HashSet<PaneId>,
+    terminal_broadcast_menu_open: bool,
+    terminal_quick_commands_open: bool,
+    terminal_quick_commands_pinned: bool,
+    terminal_quick_command_pending: Option<String>,
+    terminal_cwd_tx: std::sync::mpsc::Sender<terminal_cwd::TerminalCwdDelivery>,
+    terminal_cwd_rx: std::sync::mpsc::Receiver<terminal_cwd::TerminalCwdDelivery>,
+    terminal_cwd_picker: terminal_cwd::TerminalCwdPickerState,
+    terminal_git_store: oxideterm_environment::GitStatusStore,
+    terminal_git_tx: std::sync::mpsc::Sender<terminal_git::TerminalGitDelivery>,
+    terminal_git_rx: std::sync::mpsc::Receiver<terminal_git::TerminalGitDelivery>,
+    terminal_git_branch_picker: terminal_git::TerminalGitBranchPickerState,
+    terminal_project_store: oxideterm_environment::ProjectStatusStore,
+    terminal_project_tx: std::sync::mpsc::Sender<terminal_project::TerminalProjectDelivery>,
+    terminal_project_rx: std::sync::mpsc::Receiver<terminal_project::TerminalProjectDelivery>,
+    terminal_project_panel: terminal_project::TerminalProjectPanelState,
     detached_local_terminals: HashMap<TerminalSessionId, DetachedLocalTerminalSession>,
     detached_local_terminal_order: Vec<TerminalSessionId>,
     serial_terminal_configs: HashMap<TerminalSessionId, SerialSessionConfig>,
     detached_local_terminals_popover_open: bool,
-    command_palette: Entity<command_palette::CommandPaletteEntity>,
-    _command_palette_observation: Subscription,
+    terminal_cast_player: Option<TerminalCastPlayerState>,
+    terminal_cast_seek_dragging: bool,
+    command_palette: CommandPaletteState,
     version_migration: VersionMigrationState,
     onboarding: OnboardingState,
     shortcuts_modal: ShortcutsModalState,
-    settings_workspace: Entity<settings::SettingsWorkspaceEntity>,
-    _settings_workspace_observation: Subscription,
-    _settings_workspace_subscription: Subscription,
+    settings_page: SettingsPageModel,
+    settings_navigation_draft: Option<SettingsNavigationLayout>,
     segmented_control_user_motion: selection_motion::UserSegmentedControlMotionState,
+    theme_editor_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    knowledge_create_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    knowledge_document_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    ssh_config_import_dialog_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    ai_mcp_dialog_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    managed_key_dialog_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    portable_settings_dialog_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    help_legal_notice_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    ai_settings_dialog_presence: oxideterm_gpui_ui::motion::ExitPresence,
     // Prompt and memory documents are edited outside the virtual settings list.
     ai_text_editor_dialog: Option<settings::AiTextEditorDialog>,
     ai_text_editor: Option<Entity<oxideterm_gpui_editor::TextEditorView>>,
+    settings_managed_key_dialog: Option<SettingsManagedKeyDialog>,
+    settings_managed_key_status: Option<String>,
+    remote_shell_integration: settings::RemoteShellIntegrationUiState,
+    settings_managed_key_file_path: String,
+    settings_managed_key_file_name: String,
+    settings_managed_key_file_passphrase: String,
+    settings_managed_key_paste_name: String,
+    settings_managed_key_paste_private_key: String,
+    settings_managed_key_paste_passphrase: String,
+    settings_managed_key_rename_name: String,
+    settings_connection_import_source: ConnectionImportSource,
+    settings_connection_import_paths: Vec<String>,
+    settings_connection_import_preview: Option<ConnectionImportPreview>,
+    settings_selected_connection_import_drafts: HashSet<String>,
+    settings_connection_import_duplicate_strategy: ConnectionImportDuplicateStrategy,
+    settings_connection_import_target_group: String,
+    settings_network_proxy_password_status: Option<String>,
+    settings_network_proxy_test_host: String,
+    settings_network_proxy_test_port: String,
+    settings_network_proxy_test_pending: bool,
+    settings_network_proxy_test_status: Option<String>,
+    settings_local_privilege_draft: PrivilegeCredentialDraft,
+    settings_local_privilege_error: Option<String>,
+    // The editor stays collapsed for populated scopes until the user starts an add or edit flow.
+    settings_privilege_editor_open: bool,
+    quick_commands: QuickCommandsState,
+    quick_command_list_state: ListState,
+    quick_command_list_cache: RefCell<VirtualListSignatureCache>,
     detached_local_terminal_list_state: ListState,
     detached_local_terminal_list_cache: RefCell<VirtualListSignatureCache>,
-    plugin_entity: Entity<plugin_entity::PluginWorkspaceEntity>,
-    _plugin_entity_subscription: Subscription,
+    native_plugin_manager: plugin_manager::NativePluginManagerState,
+    native_plugin_ui: plugin_ui::NativePluginUiState,
     split_drag: Option<SplitDrag>,
     sidebar_resizing: bool,
     sidebar_resize_hotzone_hovered: bool,
@@ -751,12 +838,9 @@ pub(crate) struct WorkspaceApp {
     sidebar_width: f32,
     context_sidebar_rendered: bool,
     context_sidebar_motion_generation: u64,
-    ai_entity: Entity<ai_state::AiWorkspaceEntity>,
-    acp_entity: Entity<acp_workspace::AcpWorkspaceEntity>,
-    ai_runtime_context: Entity<ai_runtime_context::AiRuntimeContextEntity>,
-    _ai_entity_subscription: Subscription,
-    _acp_entity_subscription: Subscription,
+    ai: ai_state::AiWorkspaceState,
     active_context_sidebar_panel: ContextSidebarPanel,
+    active_context_sidebar_tool: ContextSidebarTool,
     needs_active_pane_focus: bool,
     active_sidebar_section: SidebarSection,
     active_surface: ActiveSurface,
@@ -768,9 +852,19 @@ pub(crate) struct WorkspaceApp {
     settings_select_focus_origin: Option<browser_behavior::BrowserFocusOrigin>,
     settings_section_list_state: ListState,
     settings_section_list_cache: RefCell<VirtualListSignatureCache>,
+    launch_at_login_enabled: bool,
+    launch_at_login_loading: bool,
+    launch_at_login_error: Option<String>,
+    settings_data_directory_confirm: Option<DataDirectoryConfirm>,
+    settings_data_directory_confirm_presence: oxideterm_gpui_ui::motion::ExitPresence,
     standard_confirm_focused_action: Option<ConfirmDialogAction>,
+    settings_reset_confirm_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    keybinding_reset_all_confirm_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    ai_clear_all_confirm_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    ai_delete_message_confirm_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    tab_close_confirm_presence: oxideterm_gpui_ui::motion::ExitPresence,
     select_anchors: HashMap<SelectAnchorId, OverlayAnchor>,
-    text_input_anchors: TextInputAnchorStore,
+    text_input_anchors: HashMap<TextInputAnchorId, TextInputAnchor>,
     selectable_text_values: HashMap<u64, String>,
     selectable_text_layouts: HashMap<u64, TextLayout>,
     selectable_text_fragments: HashMap<u64, SelectableTextFragmentState>,
@@ -793,95 +887,188 @@ pub(crate) struct WorkspaceApp {
     // settings virtual list remains the only scroll owner behind it.
     terminal_command_specs_editor_open: bool,
     settings_slider_drag: Option<SettingsSlider>,
-    workspace_input: Entity<ime::WorkspaceInputEntity>,
-    _workspace_input_observation: Subscription,
-    input_caret: ime::WorkspaceCaretVisibility,
+    settings_caret_blink_pause_until: Option<Instant>,
+    keybinding_recording_combo: Option<crate::keybindings::KeyCombo>,
+    keybinding_recording_footer_focus: Option<KeybindingRecordingFooterAction>,
+    portable_settings_dialog: Option<settings::PortableSettingsDialog>,
+    portable_settings_action_pending: Option<settings::PortableSettingsAction>,
+    portable_settings_action_error: Option<String>,
+    portable_status_snapshot: Option<oxideterm_portable_runtime::PortableStatusSnapshot>,
+    portable_status_error: Option<String>,
+    portable_exportable_secret_count: Option<usize>,
+    portable_settings_refresh_pending: bool,
+    native_update_state: settings::NativeUpdateUiState,
+    native_update_rx: Option<std::sync::mpsc::Receiver<settings::NativeUpdateDelivery>>,
+    native_update_polling: bool,
+    native_update_cancel: Option<Arc<AtomicBool>>,
+    native_update_package: Option<oxideterm_update::NativeUpdatePackage>,
     native_update_notification_open: bool,
     native_update_notification_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    native_update_release_notes_open: bool,
+    native_update_release_notes_presence: oxideterm_gpui_ui::motion::ExitPresence,
     native_update_release_notes_scroll: MarkdownVirtualListScrollHandle,
     settings_legal_notice_scroll: MarkdownVirtualListScrollHandle,
-    _window_intents: Entity<WorkspaceWindowIntentEntity>,
-    _window_intent_subscription: Subscription,
-    window_registry: window_registry::WorkspaceWindowRegistry,
-    window_effect_delivery_scheduled: bool,
-    connection_flow: Entity<ConnectionFlowEntity>,
-    _connection_flow_observation: Subscription,
-    _connection_flow_subscription: Subscription,
-    workspace_runtime: Entity<runtime_entity::WorkspaceRuntimeEntity>,
-    _workspace_runtime_subscription: Subscription,
+    desktop_presence_rx: Option<oxideterm_desktop_presence::DesktopPresenceReceiver>,
+    desktop_presence_polling: bool,
+    single_instance_rx: Option<crate::single_instance::SingleInstanceReceiver>,
+    single_instance_polling: bool,
+    portable_current_password: String,
+    portable_new_password: String,
+    portable_confirm_password: String,
+    new_connection_form: Option<NewConnectionForm>,
+    new_connection_form_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    jump_server_form_presence: oxideterm_gpui_ui::motion::ExitPresence,
+    jump_server_exit_commits: bool,
+    drill_down_parent_node_id: Option<NodeId>,
+    editing_saved_connection_id: Option<String>,
+    editing_saved_connection_connect_after_save_node_id: Option<NodeId>,
+    duplicating_saved_connection_id: Option<String>,
+    saved_connection_prompt_action: Option<SavedConnectionPromptAction>,
+    open_new_connection_select: Option<NewConnectionSelect>,
+    new_connection_select_focus_origin: Option<browser_behavior::BrowserFocusOrigin>,
+    new_connection_caret_visible: bool,
+    host_key_challenge: Option<HostKeyChallenge>,
+    active_proxy_connect_run: Option<NativeProxyConnectRun>,
+    keyboard_interactive_challenge: Option<KeyboardInteractiveChallenge>,
+    keyboard_interactive_timer_generation: u64,
+    ssh_worker_tx: std::sync::mpsc::Sender<SshConnectionWorkerResult>,
+    ssh_worker_rx: std::sync::mpsc::Receiver<SshConnectionWorkerResult>,
     ssh_registry: SshConnectionRegistry,
-    forwarding_service: forwards::ForwardingRuntimeService,
+    forwarding_registry: ForwardingRegistry,
     forwarding_runtime: Arc<tokio::runtime::Runtime>,
+    wsl_graphics: Arc<oxideterm_wsl_graphics::WslGraphicsState>,
+    forwarding_connection_consumers: HashMap<String, (String, ConnectionConsumer)>,
     sftp_transfer_manager: Arc<SftpTransferManager>,
     sftp_progress_store: Arc<dyn ProgressStore>,
+    node_runtime_store: NodeRuntimeStore,
     node_router: NodeRouter,
+    // The subscription token owns the bounded router listener for this workspace.
+    _node_event_subscription: NodeEventSubscription,
+    node_event_rx: NodeEventReceiver,
+    node_event_generations: HashMap<NodeId, u64>,
+    reconnect_orchestrator: ReconnectOrchestratorStore,
+    reconnect_worker_tx: std::sync::mpsc::Sender<ReconnectWorkerResult>,
+    reconnect_worker_rx: std::sync::mpsc::Receiver<ReconnectWorkerResult>,
+    pending_reconnect_node_ids: HashSet<NodeId>,
+    reconnect_debounce_scheduled: bool,
+    reconnect_debounce_generation: u64,
+    reconnect_pipeline_active_node: Option<NodeId>,
+    reconnect_requeue_counts: HashMap<NodeId, u32>,
+    active_connection_chain: Option<ConnectionChainRun>,
+    connecting_node_locks: HashSet<NodeId>,
+    pending_reconnect_cascade_nodes: VecDeque<NodeId>,
+    last_ssh_active_probe_at: Option<Instant>,
+    ssh_active_probe_in_flight: bool,
+    pending_reconnect_transfer_resumes: HashMap<NodeId, HashSet<String>>,
+    reconnect_transfer_resume_totals: HashMap<NodeId, usize>,
+    reconnect_transfer_resume_successes: HashMap<NodeId, usize>,
+    pending_ide_restore_transfer_counts: HashMap<NodeId, u32>,
+    reconnect_forward_restore_totals: HashMap<NodeId, u32>,
+    reconnect_forward_restore_tokens: HashMap<NodeId, Arc<AtomicBool>>,
     notification_center: NotificationCenterState,
     notification_sidebar_list_state: ListState,
     notification_sidebar_list_cache: RefCell<VirtualListSignatureCache>,
     event_log_sidebar_scroll_handle: UniformListScrollHandle,
+    terminal_endpoint_sessions: HashMap<TerminalSessionId, WorkspaceTerminalEndpointSession>,
     ssh_nodes: HashMap<NodeId, WorkspaceSshNode>,
     saved_ssh_nodes: HashMap<String, NodeId>,
+    terminal_ssh_nodes: HashMap<TerminalSessionId, NodeId>,
+    pending_ssh_terminal_opens: VecDeque<PendingSshTerminalOpen>,
     expanded_ssh_nodes: HashSet<NodeId>,
     active_ssh_node_id: Option<NodeId>,
     next_ssh_node_id: u64,
-    forwarding: Entity<forwards::ForwardingWorkspaceEntity>,
-    _forwarding_subscriptions: Vec<Subscription>,
-    file_manager: Entity<FileManagerState>,
-    _file_manager_observation: Subscription,
-    _file_manager_subscription: Subscription,
+    forward_tab_nodes: HashMap<TabId, NodeId>,
+    forwards_section_list_state: ListState,
+    forwards_section_list_cache: RefCell<VirtualListSignatureCache>,
+    forwards_table_row_list_state: ListState,
+    forwards_table_row_list_cache: RefCell<VirtualListSignatureCache>,
+    forwarding_view: forwards::ForwardsViewState,
+    forwarding_port_detection_by_node: HashMap<NodeId, forwards::PortDetectionViewState>,
+    forwarding_port_profiler_nodes: HashSet<NodeId>,
+    file_manager: FileManagerState,
     sftp_tab_nodes: HashMap<TabId, NodeId>,
-    ide_workspace: Entity<ide::IdeWorkspaceEntity>,
-    _ide_workspace_subscription: Subscription,
-    sftp_view: Entity<sftp::SftpWorkspaceEntity>,
-    _sftp_observation: Subscription,
-    _sftp_subscription: Subscription,
-    launcher: Entity<LauncherWorkspaceEntity>,
-    _launcher_observation: Subscription,
-    _launcher_subscription: Subscription,
-    graphics: Entity<GraphicsWorkspaceEntity>,
-    _graphics_observation: Subscription,
-    _graphics_subscription: Subscription,
-    host_tools: Entity<HostToolsEntity>,
-    _host_tools_subscription: Subscription,
-    cloud_sync: Entity<cloud_sync::CloudSyncWorkspaceEntity>,
-    _cloud_sync_observation: Subscription,
-    _cloud_sync_subscription: Subscription,
+    sftp_view_node: Option<NodeId>,
+    sftp_local_path_memory: HashMap<NodeId, String>,
+    sftp_path_memory: HashMap<NodeId, String>,
+    sftp_remote_home_by_node: HashMap<NodeId, String>,
+    ide_tab_surfaces: HashMap<TabId, gpui::Entity<IdeSurface>>,
+    ide_surface_subscriptions: HashMap<TabId, Subscription>,
+    ide_tab_nodes: HashMap<TabId, NodeId>,
+    ide_last_closed_at_by_node: HashMap<NodeId, SystemTime>,
+    sftp_view: sftp::SftpViewState,
+    launcher: LauncherState,
+    launcher_wsl_list_state: ListState,
+    launcher_wsl_list_cache: RefCell<VirtualListSignatureCache>,
+    launcher_app_grid_list_state: ListState,
+    launcher_app_grid_list_cache: RefCell<VirtualListSignatureCache>,
+    graphics: GraphicsState,
+    connection_monitor: ConnectionMonitorState,
+    active_connection_runtime_section: ConnectionRuntimeSection,
+    previous_connection_runtime_section: ConnectionRuntimeSection,
+    connection_monitor_section_list_state: ListState,
+    connection_monitor_section_list_cache: RefCell<VirtualListSignatureCache>,
+    cloud_sync: cloud_sync::CloudSyncWorkspaceState,
+    sftp_worker_tx: tokio::sync::mpsc::UnboundedSender<sftp::SftpWorkerResult>,
+    forwarding_worker_tx: std::sync::mpsc::Sender<forwards::ForwardingWorkerResult>,
+    forwarding_worker_rx: std::sync::mpsc::Receiver<forwards::ForwardingWorkerResult>,
+    forwarding_event_rx: std::sync::mpsc::Receiver<ForwardEvent>,
     i18n: I18n,
     tokens: ThemeTokens,
     detected_graphics: DetectedGraphics,
     render_profile_override: Option<RenderProfile>,
     render_policy: EffectiveRenderPolicy,
+    applied_vibrancy_mode: NativeVibrancyMode,
     vibrancy_support: VibrancySupport,
+    applied_window_opacity: f32,
+    background_image_cache: BackgroundImageRenderCache,
+    // The gallery is loaded at explicit storage boundaries so settings renders never perform IO.
+    background_images: Vec<String>,
     app_lock: app_lock::AppLockState,
     settings_store: SettingsStore,
     connection_store: ConnectionStore,
     // The connection-layer worker owns SSH config parsing and persistence.
     ssh_config_sync_service: Option<SshConfigSyncService>,
-    session_manager: Entity<SessionManagerState>,
-    _session_manager_observation: Subscription,
-    _session_manager_subscription: Subscription,
-    remote_desktop: Entity<remote_desktop::RemoteDesktopWorkspaceEntity>,
+    settings_store_last_modified: Option<SystemTime>,
+    connection_store_last_modified: Option<SystemTime>,
+    native_plugin_runtime: plugin_lifecycle::NativePluginRuntimeState,
+    session_manager: SessionManagerState,
+    remote_desktop_sessions: HashMap<TabId, remote_desktop::RemoteDesktopSession>,
+    remote_desktop_worker_tx: std::sync::mpsc::Sender<remote_desktop::RemoteDesktopWorkerDelivery>,
+    remote_desktop_worker_rx:
+        std::sync::mpsc::Receiver<remote_desktop::RemoteDesktopWorkerDelivery>,
+    oxide_export_connection_list_state: ListState,
+    oxide_export_connection_list_cache: RefCell<VirtualListSignatureCache>,
+    oxide_import_connection_preview_list_state: ListState,
+    oxide_import_connection_preview_list_cache: RefCell<VirtualListSignatureCache>,
+    oxide_export_forward_group_list_state: ListState,
+    oxide_export_forward_group_list_cache: RefCell<VirtualListSignatureCache>,
+    oxide_export_summary_line_list_state: ListState,
+    oxide_export_summary_line_list_cache: RefCell<VirtualListSignatureCache>,
+    oxide_import_forward_detail_list_state: ListState,
+    oxide_import_forward_detail_list_cache: RefCell<VirtualListSignatureCache>,
+    oxide_import_name_group_list_states: RefCell<HashMap<String, ListState>>,
+    oxide_import_name_group_list_caches: RefCell<HashMap<String, VirtualListSignatureCache>>,
     local_shells: Vec<ShellInfo>,
     local_shell_launcher_open: bool,
     local_shell_launcher_selected_id: Option<String>,
-    terminal: Entity<WorkspaceTerminalEntity>,
-    _terminal_subscription: Subscription,
-    overlay: Entity<WorkspaceOverlayEntity>,
-    _overlay_observation: Subscription,
+    terminal_notice_tx: std::sync::mpsc::Sender<TerminalNotice>,
+    terminal_notice_rx: std::sync::mpsc::Receiver<TerminalNotice>,
+    // Standard toasts need stable ids so the close button removes the rendered
+    // toast, not whichever item later occupies the same list index.
+    workspace_toast_next_id: u64,
+    workspace_toasts: Vec<WorkspaceToast>,
+    plugin_progress_toasts: HashMap<String, WorkspaceToast>,
+    connection_trace_tx: std::sync::mpsc::Sender<ConnectionTraceEvent>,
+    connection_trace_rx: std::sync::mpsc::Receiver<ConnectionTraceEvent>,
+    connection_trace_toasts: HashMap<String, ActiveConnectionTrace>,
+    connection_trace_state: ConnectionTraceState,
+    zen_hint_expires_at: Option<Instant>,
+    terminal_font_size_hud: Option<TerminalFontSizeHud>,
+    terminal_font_size_hud_generation: u64,
+    workspace_tooltip: Option<WorkspaceTooltip>,
+    workspace_tooltip_pending: Option<WorkspaceTooltipPending>,
+    workspace_tooltip_generation: u64,
 }
-
-impl Drop for WorkspaceApp {
-    fn drop(&mut self) {
-        // App Lock and Cloud Sync move the focused secret into this window IME
-        // adapter, so window destruction must zeroize it even without a blur event.
-        zeroize::Zeroize::zeroize(&mut self.settings_input_draft);
-        // WorkspaceApp owns the shared session runtime. Window, tab, and page
-        // release must not stop transfers or tunnels; final owner drop must.
-        self.shutdown_final_session_services();
-    }
-}
-
-pub(crate) use window_shell::WorkspaceWindowShell;
 
 #[derive(Clone)]
 struct MermaidZoomState {
@@ -941,8 +1128,6 @@ impl WorkspaceApp {
     }
 }
 
-// Completion providers remain data-only while the sender editor owns input.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 struct TerminalCommandSuggestion {
     kind: TerminalCommandSuggestionKind,
@@ -958,7 +1143,6 @@ struct TerminalCommandSuggestion {
     inline_safe: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TerminalCommandSuggestionKind {
     History,
@@ -970,9 +1154,12 @@ enum TerminalCommandSuggestionKind {
     QuickCommand,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct AiRuntimeCommandRecord {
     pub(crate) command_id: String,
+    pub(crate) target_id: Option<String>,
+    pub(crate) session_id: Option<String>,
+    pub(crate) node_id: Option<String>,
     pub(crate) command: String,
     pub(crate) cwd: Option<String>,
     pub(crate) source: String,
@@ -980,27 +1167,9 @@ pub(crate) struct AiRuntimeCommandRecord {
     pub(crate) exit_code: Option<i64>,
     pub(crate) started_at: i64,
     pub(crate) finished_at: Option<i64>,
+    pub(crate) runtime_epoch: String,
     pub(crate) approval_mode: Option<String>,
     pub(crate) risk: String,
-}
-
-impl std::fmt::Debug for AiRuntimeCommandRecord {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Command text and working directories can contain credentials.
-        formatter
-            .debug_struct("AiRuntimeCommandRecord")
-            .field("command_id", &self.command_id)
-            .field("command", &"[redacted]")
-            .field("cwd", &self.cwd.as_ref().map(|_| "[redacted]"))
-            .field("source", &self.source)
-            .field("status", &self.status)
-            .field("exit_code", &self.exit_code)
-            .field("started_at", &self.started_at)
-            .field("finished_at", &self.finished_at)
-            .field("approval_mode", &self.approval_mode)
-            .field("risk", &self.risk)
-            .finish()
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -1011,7 +1180,7 @@ pub(crate) struct AiToolExecutionRecord {
     pub(crate) tool_call_id: String,
     pub(crate) tool_name: String,
     pub(crate) argument_summary: String,
-    pub(crate) resource_kind: Option<oxideterm_ai::StableResourceKind>,
+    pub(crate) target_id: Option<String>,
     pub(crate) target_kind: Option<String>,
     pub(crate) risk: String,
     pub(crate) approval_source: Option<String>,
@@ -1020,9 +1189,11 @@ pub(crate) struct AiToolExecutionRecord {
     pub(crate) status: String,
     pub(crate) success: Option<bool>,
     pub(crate) error_code: Option<String>,
+    pub(crate) result_summary: Option<String>,
     pub(crate) duration_ms: Option<u64>,
     pub(crate) started_at: i64,
     pub(crate) finished_at: Option<i64>,
+    pub(crate) runtime_epoch: String,
 }
 
 #[derive(Clone, Debug)]
@@ -1033,35 +1204,117 @@ pub(crate) struct AiToolResultFact {
     pub(crate) tool_call_id: String,
     pub(crate) tool_name: String,
     pub(crate) source_kind: String,
+    pub(crate) text_hash: String,
     pub(crate) summary: String,
+    pub(crate) output_preview: String,
     pub(crate) created_at: i64,
+    pub(crate) runtime_epoch: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct AiCliAgentSession {
     pub(crate) id: String,
     pub(crate) kind: String,
     pub(crate) label: String,
     pub(crate) status: String,
-    pub(crate) live_terminal: bool,
+    pub(crate) target_id: Option<String>,
+    pub(crate) session_id: Option<String>,
+    pub(crate) node_id: Option<String>,
+    pub(crate) command: String,
     pub(crate) started_at: i64,
     pub(crate) updated_at: i64,
+    pub(crate) runtime_epoch: String,
 }
 
-impl std::fmt::Debug for AiCliAgentSession {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Agent launch commands share the same secret-bearing boundary.
-        formatter
-            .debug_struct("AiCliAgentSession")
-            .field("id", &self.id)
-            .field("kind", &self.kind)
-            .field("label", &self.label)
-            .field("status", &self.status)
-            .field("live_terminal", &self.live_terminal)
-            .field("started_at", &self.started_at)
-            .field("updated_at", &self.updated_at)
-            .finish()
-    }
+#[derive(Clone, Debug)]
+struct WorkspaceToast {
+    id: u64,
+    notice: TerminalNotice,
+    expires_at: Instant,
+    presence: oxideterm_gpui_ui::motion::ExitPresence,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TerminalFontSizeHud {
+    font_size: i64,
+    generation: u64,
+}
+
+#[derive(Clone, Debug)]
+struct AcpAgentProbeDelivery {
+    agent_id: String,
+    result: AcpAgentProbeResult,
+}
+
+#[derive(Clone, Debug)]
+struct AcpAgentProbeResult {
+    runtime_state: oxideterm_settings::AcpAgentRuntimeState,
+    auth_status: oxideterm_settings::AcpAgentAuthStatus,
+    last_error_kind: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct AcpModelDiscoveryDelivery {
+    conversation_id: String,
+    agent_id: String,
+    config_options: Option<Vec<oxideterm_ai::AcpSessionConfigOption>>,
+}
+
+#[derive(Clone, Debug)]
+struct ActiveConnectionTrace {
+    visible: bool,
+    latest: ConnectionTraceEvent,
+    displayed: Option<ConnectionTraceEvent>,
+    started_at: Instant,
+    show_generation: u64,
+    flush_generation: u64,
+    expires_at: Option<Instant>,
+    presence: oxideterm_gpui_ui::motion::ExitPresence,
+}
+
+#[derive(Clone, Debug)]
+struct ConnectionChainRun {
+    node_ids: Vec<NodeId>,
+    next_index: usize,
+    trace_plan: ConnectionTracePlan,
+}
+
+#[derive(Clone, Debug)]
+struct NativeProxyConnectRun {
+    plan: NativeSessionTreeConnectPlan,
+    title: String,
+    intent: SshConnectionIntent,
+    save_after_open: Option<SaveConnectionRequest>,
+    upstream_proxy: Option<UpstreamProxyConfig>,
+}
+
+#[derive(Clone, Debug)]
+struct WorkspaceTooltip {
+    id: String,
+    label: String,
+    x: f32,
+    y: f32,
+}
+
+#[derive(Clone, Debug)]
+struct WorkspaceTooltipPending {
+    id: String,
+    label: String,
+    x: f32,
+    y: f32,
+    generation: u64,
+}
+
+#[derive(Clone)]
+struct WorkspaceTerminalEndpointSession {
+    endpoint: TerminalEndpoint,
+    session: SharedTerminalSession,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TerminalLocation {
+    tab_id: TabId,
+    pane_id: PaneId,
 }
 
 #[derive(Clone)]
@@ -1071,6 +1324,28 @@ struct DetachedLocalTerminalSession {
     session: SharedTerminalSession,
     detached_at: Instant,
     buffer_lines: usize,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedNodeTreeSnapshot {
+    version: u32,
+    exported_at_ms: u64,
+    root_ids: Vec<NodeId>,
+    nodes: Vec<PersistedNodeTreeNode>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedNodeTreeNode {
+    id: NodeId,
+    parent_id: Option<NodeId>,
+    children_ids: Vec<NodeId>,
+    depth: u32,
+    origin: NodeOrigin,
+    config: Option<SshConfig>,
+    created_at_ms: u64,
+    generation: u64,
 }
 
 #[cfg(test)]

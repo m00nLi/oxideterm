@@ -23,7 +23,7 @@ use oxideterm_terminal::{
 
 use super::{
     ModemProgressState, TerminalCommandNavigationDirection, TerminalContextAction,
-    TerminalContextMenu, TerminalPane, TerminalPaneEvent, command_mark_ui_available,
+    TerminalContextMenu, TerminalPane, command_mark_ui_available,
 };
 use crate::terminal_ui::*;
 use crate::terminal_view::*;
@@ -41,8 +41,6 @@ const TERMINAL_CONTEXT_MENU_SEPARATORS_BEFORE_MODEM: f32 = 2.0;
 const TERMINAL_CONTEXT_MENU_MARGIN: f32 = 8.0;
 const SERIAL_CONTROL_BAR_HEIGHT: f32 = 34.0;
 const SERIAL_CONTROL_BUTTON_RADIUS: f32 = 999.0;
-// Keep diagnostic chrome away from the prompt and command text at the left edge.
-const TERMINAL_PERFORMANCE_OVERLAY_INSET: f32 = 8.0;
 
 fn clamp_terminal_context_menu_position(
     pointer_x: f32,
@@ -271,9 +269,6 @@ impl Render for TerminalPane {
                     window.focus(&this.focus_handle, cx);
                     let mode = this.terminal.lock().mode();
                     if mouse_mode(mode, event.modifiers.shift) {
-                        this.handle_mouse_down(event, cx);
-                    } else if this.right_click_paste_requested(mode, event.modifiers) {
-                        window.prevent_default();
                         this.handle_mouse_down(event, cx);
                     } else {
                         window.prevent_default();
@@ -1393,7 +1388,6 @@ impl TerminalPane {
         // Workspace owns AI and command-bar behavior; the terminal only records
         // the user's menu intent and lets the active-pane owner consume it.
         self.context_action_requested = Some(action);
-        cx.emit(TerminalPaneEvent::ContextActionRequested);
         cx.notify();
     }
 
@@ -1447,8 +1441,8 @@ impl TerminalPane {
         let stats = self.render_stats;
         div()
             .absolute()
-            .top(px(TERMINAL_PERFORMANCE_OVERLAY_INSET))
-            .right(px(TERMINAL_PERFORMANCE_OVERLAY_INSET))
+            .top(px(8.0))
+            .left(px(8.0))
             .flex()
             .items_center()
             .gap(px(6.0))

@@ -133,7 +133,6 @@
         "invalid_nice": "nice 値は -20 から 19 の範囲で入力してください。",
         "connection_missing": "選択した接続は利用できません。",
         "action_failed": "プロセス操作に失敗しました。",
-        "action_succeeded": "PID {{pid}} のプロセス操作が完了しました。",
         "partial_support": "{{os}} のプロセス管理は部分対応です。"
       }
     },
@@ -192,8 +191,7 @@
         "exec_opened": "{{name}} のシェルを開きました。",
         "follow_opened": "{{name}} のログを追跡しています。",
         "connection_missing": "選択した接続は利用できません。",
-        "action_failed": "Docker 操作に失敗しました。",
-        "action_succeeded": "{{name}} の Docker 操作が完了しました。"
+        "action_failed": "Docker 操作に失敗しました。"
       }
     },
     "host_services": {
@@ -269,7 +267,6 @@
         "follow_opened": "{{name}} のログを追跡しています。",
         "connection_missing": "選択した接続は利用できなくなりました。",
         "action_failed": "サービス操作に失敗しました。",
-        "action_succeeded": "{{name}} のサービス操作が完了しました。",
         "partial_support": "{{os}} でのサービス管理は一部対応です。"
       }
     },
@@ -382,7 +379,6 @@
         "new_session_opened": "{{name}} を開いています。",
         "action_already_running": "tmux 操作はすでに実行中です。",
         "action_failed": "tmux 操作に失敗しました。",
-        "action_succeeded": "{{target}} の tmux 操作が完了しました。",
         "unknown_error": "不明なエラー",
         "input_required": "続行する前に値を入力してください。"
       },
@@ -735,7 +731,8 @@
       "add_by_drilling": "ドリルダウンして子ノードを追加できます",
       "click_to_add": "+をクリックして新しい接続を追加",
       "terminal": "ターミナル #{{number}}",
-      "close_terminal": "ターミナルを閉じる"
+      "close_terminal": "ターミナルを閉じる",
+      "rename_terminal": "ターミナルの名前を変更"
     },
     "actions": {
       "connect": "接続",

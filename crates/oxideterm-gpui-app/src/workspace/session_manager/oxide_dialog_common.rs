@@ -262,9 +262,10 @@ impl WorkspaceApp {
 
     pub(super) fn render_oxide_password_strength(
         &self,
-        strength: OxidePasswordStrength,
+        password: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let strength = oxide_password_strength(password);
         let text_color = match strength {
             OxidePasswordStrength::Weak => OXIDE_YELLOW_500,
             OxidePasswordStrength::Fair => self.tokens.ui.text_muted,
@@ -365,7 +366,6 @@ impl WorkspaceApp {
         let mut list = div().flex().flex_col().gap(px(8.0));
         let sections = if import_dialog {
             self.session_manager
-                .read(cx)
                 .oxide_import_dialog
                 .as_ref()
                 .and_then(|dialog| dialog.preview.as_ref())
@@ -395,29 +395,28 @@ impl WorkspaceApp {
                         String::new(),
                         checked,
                         cx.listener(move |this, _event, _window, cx| {
-                            this.session_manager.update(cx, |manager, cx| {
-                                let selected =
-                                    if import_dialog {
-                                        manager.oxide_import_dialog.as_mut().map(|dialog| {
-                                            &mut dialog.selected_app_settings_sections
-                                        })
-                                    } else {
-                                        manager.oxide_export_dialog.as_mut().map(|dialog| {
-                                            &mut dialog.selected_app_settings_sections
-                                        })
-                                    };
-                                if let Some(selected) = selected {
-                                    if selected.contains(&id) {
-                                        selected.remove(&id);
-                                    } else {
-                                        selected.insert(id.clone());
-                                    }
-                                    cx.notify();
+                            let selected = if import_dialog {
+                                this.session_manager
+                                    .oxide_import_dialog
+                                    .as_mut()
+                                    .map(|dialog| &mut dialog.selected_app_settings_sections)
+                            } else {
+                                this.session_manager
+                                    .oxide_export_dialog
+                                    .as_mut()
+                                    .map(|dialog| &mut dialog.selected_app_settings_sections)
+                            };
+                            if let Some(selected) = selected {
+                                if selected.contains(&id) {
+                                    selected.remove(&id);
+                                } else {
+                                    selected.insert(id.clone());
                                 }
-                            });
-                            if !import_dialog {
-                                this.refresh_oxide_export_preflight(cx);
                             }
+                            if !import_dialog {
+                                this.refresh_oxide_export_preflight();
+                            }
+                            cx.notify();
                             cx.stop_propagation();
                         }),
                     ))

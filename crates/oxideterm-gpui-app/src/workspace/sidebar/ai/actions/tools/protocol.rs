@@ -48,17 +48,16 @@ pub(in crate::workspace) fn unavailable_ai_tool_result(
 pub(in crate::workspace) fn pre_execution_rejected_ai_tool_result(
     tool_call_id: String,
     tool_name: String,
-    code: impl Into<String>,
+    _code: impl Into<String>,
     message: impl Into<String>,
 ) -> AiExecutedToolResult {
-    let code = code.into();
     let message = message.into();
     let envelope = serde_json::json!({
         "ok": false,
         "summary": message,
         "output": "",
         "error": {
-            "code": code,
+            "code": "legacy_tool_error",
             "message": message,
             "recoverable": true,
         },
@@ -335,6 +334,24 @@ pub(in crate::workspace) fn ai_terminal_screen_snapshot_json(
     })
 }
 
+pub(in crate::workspace) fn ai_terminal_readiness_json(
+    target: &AiOrchestratorTarget,
+) -> serde_json::Value {
+    let ready = target.state == "connected";
+    // Tauri stores readiness in a registry and updates `updatedAt` on every patch.
+    // Native snapshots are computed on demand, so use the snapshot time while
+    // preserving the same numeric field shape for AI tool consumers.
+    let updated_at_ms = ai_now_ms();
+    serde_json::json!({
+        "sessionId": target.refs.get("sessionId").cloned().unwrap_or_default(),
+        "terminalType": target.metadata.get("terminalType").cloned().unwrap_or(serde_json::Value::Null),
+        "writerReady": ready,
+        "frontendOutputListenerReady": target.terminal_buffer.is_some(),
+        "renderBufferReady": target.terminal_screen.is_some(),
+        "backendBufferReady": target.terminal_buffer.is_some(),
+        "updatedAt": updated_at_ms,
+    })
+}
 
 pub(in crate::workspace) fn terminal_delta_output(before: &str, after: &str) -> String {
     if after.starts_with(before) {
@@ -418,10 +435,6 @@ mod tests {
     pub(in crate::workspace) fn sample_target() -> AiOrchestratorTarget {
         let mut refs = std::collections::BTreeMap::new();
         refs.insert("nodeId".to_string(), "prod-node-1".to_string());
-        refs.insert(
-            "connectionId".to_string(),
-            "4cb736c8-579f-40de-9f71-4efe2c90e7ef".to_string(),
-        );
         AiOrchestratorTarget {
             id: "ssh-node:prod-node-1".to_string(),
             kind: "ssh-node".to_string(),
@@ -439,64 +452,49 @@ mod tests {
     }
 
     #[test]
-    pub(in crate::workspace) fn target_query_uses_only_safe_ranking_fields() {
+    pub(in crate::workspace) fn target_query_matches_refs_and_metadata_values() {
         let target = sample_target();
 
-        assert!(target_matches_ai_query(&target, "prod.example.com"));
-        assert!(target_matches_ai_query(
-            &target,
-            "4cb736c8-579f-40de-9f71-4efe2c90e7ef"
-        ));
-        assert!(!target_matches_ai_query(&target, "4cb736c8"));
-        assert!(!target_matches_ai_query(&target, "prod-node-1"));
-        assert!(!target_matches_ai_query(&target, "deploy"));
+        assert!(target_matches_ai_query(&target, "prod-node-1"));
+        assert!(target_matches_ai_query(&target, "deploy"));
         assert!(!target_matches_ai_query(&target, "staging"));
     }
 
     #[test]
-    pub(in crate::workspace) fn duplicate_labels_remain_explicitly_ambiguous() {
-        let first = sample_target();
-        let mut second = sample_target();
-        second.id = "ssh-node:second-internal-owner".to_string();
-        second
-            .refs
-            .insert("nodeId".to_string(), "second-internal-owner".to_string());
-        let mut snapshot = AiOrchestratorRuntimeSnapshot::background_result_projection();
-        snapshot.targets = vec![first, second];
-
-        let result = snapshot.select_target(&serde_json::json!({
-            "query": "prod.example.com",
-            "intent": "connection",
-            "kind": "ssh-node",
-        }));
-
-        assert!(!result.ok);
+    pub(in crate::workspace) fn target_query_stringifies_metadata_like_javascript_join() {
         assert_eq!(
-            result.error_code.as_deref(),
-            Some("target_disambiguation_required")
+            ai_js_query_string(&serde_json::json!({ "path": "/tmp/project" })),
+            "[object Object]"
         );
-        assert_eq!(result.targets.len(), 2);
+        assert_eq!(
+            ai_js_query_string(&serde_json::json!(["one", null, 3])),
+            "one,,3"
+        );
     }
 
     #[test]
-    pub(in crate::workspace) fn target_discovery_applies_a_hard_result_limit() {
-        let mut snapshot = AiOrchestratorRuntimeSnapshot::background_result_projection();
-        snapshot.targets = (0..=AI_TARGET_DISCOVERY_LIMIT)
-            .map(|index| {
-                let mut target = sample_target();
-                target.id = format!("ssh-node:internal-{index}");
-                target.label = format!("host-{index}.example.com");
-                target
-            })
-            .collect();
+    pub(in crate::workspace) fn tool_result_target_uses_tauri_metadata_shape() {
+        let target = sample_target();
 
-        let result = snapshot.list_targets(&serde_json::json!({
-            "view": "connections",
-            "kind": "ssh-node",
-        }));
+        let value = tool_result_target_json(&target);
 
-        assert!(result.ok);
-        assert_eq!(result.targets.len(), AI_TARGET_DISCOVERY_LIMIT);
+        assert_eq!(
+            value.get("id"),
+            Some(&serde_json::json!("ssh-node:prod-node-1"))
+        );
+        assert!(value.get("refs").is_none());
+        assert_eq!(
+            value.pointer("/metadata/refs/nodeId"),
+            Some(&serde_json::json!("prod-node-1"))
+        );
+        assert_eq!(
+            value.pointer("/metadata/state"),
+            Some(&serde_json::json!("connected"))
+        );
+        assert_eq!(
+            value.pointer("/metadata/username"),
+            Some(&serde_json::json!("deploy"))
+        );
     }
 
     #[test]
@@ -780,7 +778,51 @@ mod tests {
         assert_eq!(ai_run_command_preflight_risk(), "execute");
     }
 
+    #[test]
+    pub(in crate::workspace) fn run_command_targets_with_visible_side_effects_use_ui_executor() {
+        let mut target = sample_target();
+        target
+            .refs
+            .insert("sessionId".to_string(), "42".to_string());
 
+        assert!(ai_run_command_requires_ui_thread_target(&target));
+
+        target.refs.remove("sessionId");
+        assert!(ai_run_command_requires_ui_thread_target(&target));
+
+        target.kind = "terminal-session".to_string();
+        assert!(ai_run_command_requires_ui_thread_target(&target));
+
+        target.kind = "local-shell".to_string();
+        assert!(ai_run_command_requires_ui_thread_target(&target));
+    }
+
+    #[test]
+    pub(in crate::workspace) fn ssh_reconnect_failure_next_action_matches_tauri() {
+        let actions = ai_ssh_reconnect_failed_next_actions();
+
+        assert_eq!(actions.len(), 1);
+        assert_eq!(
+            actions[0].get("action"),
+            Some(&serde_json::json!("list_targets"))
+        );
+        assert_eq!(
+            actions[0].get("reason"),
+            Some(&serde_json::json!("Refresh target state before retrying."))
+        );
+    }
+
+    #[test]
+    pub(in crate::workspace) fn live_state_guard_only_applies_to_runtime_targets() {
+        let mut target = sample_target();
+        assert!(target_requires_live_state(&target));
+
+        target.kind = "settings".to_string();
+        assert!(!target_requires_live_state(&target));
+
+        target.kind = "local-shell".to_string();
+        assert!(!target_requires_live_state(&target));
+    }
 
     #[test]
     pub(in crate::workspace) fn select_target_kind_filter_matches_tauri_validation() {
@@ -817,7 +859,7 @@ mod tests {
         let target = sample_target();
         assert!(target_matches_ai_query(
             &target,
-            &normalized_ai_query(Some("  PROD.EXAMPLE.COM  "))
+            &normalized_ai_query(Some("  prod-node-1  "))
         ));
     }
 
@@ -837,64 +879,26 @@ mod tests {
         });
 
         let opened = ai_opened_local_terminal_target(&target);
+        let value = target_json(&opened);
 
         assert_eq!(
-            opened.refs.get("sessionId"),
-            Some(&"abc123".to_string())
+            value.pointer("/refs/sessionId"),
+            Some(&serde_json::json!("abc123"))
         );
-        assert!(opened.refs.get("tabId").is_none());
+        assert!(value.pointer("/refs/tabId").is_none());
         assert_eq!(
-            opened.metadata.pointer("/terminalType"),
+            value.pointer("/metadata/terminalType"),
             Some(&serde_json::json!("local_terminal"))
         );
-        assert!(opened.metadata.pointer("/shell").is_none());
+        assert!(value.pointer("/metadata/shell").is_none());
     }
 
     #[test]
-    pub(in crate::workspace) fn model_result_projection_removes_internal_runtime_identifiers() {
-        let value = serde_json::json!({
-            "nodeId": "node-1",
-            "session_id": "42",
-            "runtimeEpoch": "epoch-1",
-            "target": "terminal-session:42",
-            "refs": { "tabId": "tab-1" },
-            "stable": { "kind": "saved_connection", "id": "4e22e673-067e-46e2-8b9f-902d7b21af4c" },
-        });
-        let projected = ai_model_safe_runtime_value(&value);
-
-        assert!(projected.get("nodeId").is_none());
-        assert!(projected.get("session_id").is_none());
-        assert!(projected.get("runtimeEpoch").is_none());
-        assert!(projected.get("refs").is_none());
-        assert!(!projected.to_string().contains("terminal-session:42"));
-        assert_eq!(
-            projected.pointer("/stable/id"),
-            Some(&serde_json::json!("4e22e673-067e-46e2-8b9f-902d7b21af4c"))
-        );
+    pub(in crate::workspace) fn resource_kind_validation_matches_tauri_executor_arg() {
+        assert_eq!(normalized_ai_resource_kind(Some("file")), "file");
+        assert_eq!(normalized_ai_resource_kind(Some("bogus")), "");
+        assert_eq!(normalized_ai_resource_kind(None), "");
     }
-
-    #[test]
-    pub(in crate::workspace) fn model_result_projection_bounds_structured_data() {
-        let value = serde_json::json!({
-            "content": "x".repeat(AI_MODEL_RESULT_STRING_MAX_CHARS + 1),
-            "items": vec![serde_json::Value::Null; AI_MODEL_RESULT_DATA_MAX_NODES],
-        });
-
-        let (projected, truncated) = ai_model_safe_runtime_value_with_limits(&value);
-
-        assert!(truncated);
-        assert!(
-            projected["content"]
-                .as_str()
-                .is_some_and(|content| content.chars().count() <= AI_MODEL_RESULT_STRING_MAX_CHARS)
-        );
-        assert!(
-            projected["items"]
-                .as_array()
-                .is_some_and(|items| items.len() < AI_MODEL_RESULT_DATA_MAX_NODES)
-        );
-    }
-
 
     #[test]
     pub(in crate::workspace) fn rag_query_arg_preserves_tauri_nullish_without_trim() {
@@ -962,12 +966,42 @@ mod tests {
         error.state = "stale".to_string();
         error.metadata = serde_json::json!({ "status": "error" });
 
-        let counts = ai_connection_counts(&[stale, error]);
+        let state = ai_connections_state(&[stale, error], "epoch-1");
 
-        assert_eq!(counts.link_down, 2);
-        assert_eq!(counts.error, 1);
+        assert_eq!(
+            state.pointer("/counts/linkDown"),
+            Some(&serde_json::json!(2))
+        );
+        assert_eq!(state.pointer("/counts/error"), Some(&serde_json::json!(1)));
     }
 
+    #[test]
+    pub(in crate::workspace) fn terminal_readiness_payload_uses_tauri_field_names() {
+        let mut target = sample_target();
+        target.kind = "terminal-session".to_string();
+        target
+            .refs
+            .insert("sessionId".to_string(), "42".to_string());
+        target.metadata = serde_json::json!({ "terminalType": "local_terminal" });
+        target.terminal_buffer = Some("ready".to_string());
+        target.terminal_screen = Some(serde_json::json!({ "lines": ["ready"] }));
+
+        let readiness = ai_terminal_readiness_json(&target);
+
+        assert_eq!(readiness.get("sessionId"), Some(&serde_json::json!("42")));
+        assert_eq!(
+            readiness.get("terminalType"),
+            Some(&serde_json::json!("local_terminal"))
+        );
+        assert_eq!(readiness.get("writerReady"), Some(&serde_json::json!(true)));
+        assert!(readiness.get("renderBufferReady").is_some());
+        assert!(
+            readiness
+                .get("updatedAt")
+                .and_then(serde_json::Value::as_i64)
+                .is_some_and(|updated_at| updated_at > 0)
+        );
+    }
 
     #[test]
     pub(in crate::workspace) fn terminal_screen_payload_uses_tauri_cursor_and_buffer_shape() {
@@ -1140,7 +1174,7 @@ mod tests {
         );
         assert_eq!(
             result.envelope.pointer("/error/code"),
-            Some(&serde_json::json!("tool_not_available"))
+            Some(&serde_json::json!("legacy_tool_error"))
         );
     }
 
@@ -1158,10 +1192,6 @@ mod tests {
         assert_eq!(result.output, "");
         assert_eq!(result.error.as_deref(), Some("Tool call rejected by user."));
         assert_eq!(result.envelope.get("output"), Some(&serde_json::json!("")));
-        assert_eq!(
-            result.envelope.pointer("/error/code"),
-            Some(&serde_json::json!("user_rejected"))
-        );
         assert!(result.envelope.pointer("/meta/verified").is_none());
     }
 }

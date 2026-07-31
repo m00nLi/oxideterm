@@ -4,11 +4,10 @@ impl WorkspaceApp {
     pub(in crate::workspace) fn ai_provider_key_display_state(
         &self,
         provider: &AiProviderView,
-        cx: &App,
     ) -> AiProviderKeyDisplayState {
         ai_provider_key_display_state(
             &provider.provider_type,
-            self.ai_provider_has_key_cached(&provider.id, cx),
+            self.ai_provider_has_key_cached(&provider.id),
         )
     }
 
@@ -18,7 +17,7 @@ impl WorkspaceApp {
         provider: &AiProviderView,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        match self.ai_provider_key_display_state(provider, cx) {
+        match self.ai_provider_key_display_state(provider) {
             AiProviderKeyDisplayState::Keyless => div().into_any_element(),
             AiProviderKeyDisplayState::Stored => {
                 self.ai_provider_stored_key_input(index, provider, cx)
@@ -33,14 +32,13 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let input = SettingsInput::AiProviderApiKey(index);
-        let (focused, save_disabled) = {
-            let ai_workspace = self.ai_entity.read(cx);
-            let focused = ai_workspace.focused_settings_input() == Some(input);
-            let save_disabled = ai_workspace
-                .settings_input_value(input)
-                .is_none_or(|draft| draft.trim().is_empty());
-            (focused, save_disabled)
+        let focused = self.focused_settings_input == Some(input);
+        let draft = if focused {
+            self.settings_input_draft.as_str()
+        } else {
+            ""
         };
+        let save_disabled = draft.trim().is_empty();
         div()
             .w_full()
             .min_w(px(0.0))
@@ -64,7 +62,7 @@ impl WorkspaceApp {
                             .min_w(px(0.0))
                             .child(self.ai_provider_secret_input(
                                 input,
-                                "",
+                                draft,
                                 "sk-...".to_string(),
                                 focused,
                                 cx,
@@ -168,13 +166,9 @@ impl WorkspaceApp {
                                 ..ToolbarButtonOptions::default()
                             },
                             cx.listener(move |this, _event, _window, cx| {
-                                this.ai_entity.update(cx, |ai, cx| {
-                                    ai.open_provider_key_remove_confirm(
-                                        index,
-                                        provider_id.clone(),
-                                        cx,
-                                    );
-                                });
+                                this.ai_settings_dialog_presence.reopen();
+                                this.settings_page
+                                    .request_ai_provider_key_remove(index, provider_id.clone());
                                 this.reset_standard_confirm_focus();
                                 cx.stop_propagation();
                                 cx.notify();
@@ -196,58 +190,42 @@ impl WorkspaceApp {
     ) -> AnyElement {
         let target = WorkspaceImeTarget::Settings(input);
         let workspace = cx.entity();
-        let input_control = if ai_state::AiWorkspaceEntity::owns_settings_input(input) {
-            let ai_workspace = self.ai_entity.read(cx);
-            text_input(
-                &self.tokens,
-                TextInputView {
-                    value: ai_workspace.settings_input_value(input).unwrap_or_default(),
-                    placeholder,
-                    focused,
-                    caret_visible: self.input_caret.visible(),
-                    secret: true,
-                    selected_all: false,
-                    selected_range: self.ime_selected_range_for_target(target, cx),
-                    marked_text: self.marked_text_for_target(target, cx),
-                },
-            )
-        } else {
+        text_input_anchor_probe(
+            target.anchor_id(),
             text_input(
                 &self.tokens,
                 TextInputView {
                     value,
                     placeholder,
                     focused,
-                    caret_visible: self.input_caret.visible(),
+                    caret_visible: self.new_connection_caret_visible,
                     secret: true,
                     selected_all: false,
-                    selected_range: self.ime_selected_range_for_target(target, cx),
-                    marked_text: self.marked_text_for_target(target, cx),
+                    selected_range: self.ime_selected_range_for_target(target),
+                    marked_text: self.marked_text_for_target(target),
                 },
             )
-        };
-        text_input_anchor_probe(
-            target.anchor_id(),
-            input_control
-                .w_full()
-                .h(px(32.0))
-                .text_size(px(self.tokens.metrics.ui_text_xs))
-                .cursor(CursorStyle::IBeam)
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+            .w_full()
+            .h(px(32.0))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
+            .cursor(CursorStyle::IBeam)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    if this.focused_settings_input != Some(input) {
                         this.focus_settings_input(input, String::new(), cx);
-                        this.ime_marked_text = None;
-                        window.focus(&this.focus_handle, cx);
-                        this.begin_ime_selection_from_mouse_down(target, event, window, cx);
-                        cx.stop_propagation();
-                    }),
-                )
-                .on_mouse_move(
-                    cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
-                        this.update_ime_selection_drag_from_mouse_move(event, window, cx);
-                    }),
-                ),
+                    }
+                    this.ime_marked_text = None;
+                    window.focus(&this.focus_handle, cx);
+                    this.begin_ime_selection_from_mouse_down(target, event, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_move(cx.listener(
+                |this, event: &gpui::MouseMoveEvent, window, cx| {
+                    this.update_ime_selection_drag_from_mouse_move(event, window, cx);
+                },
+            )),
             move |anchor, _window, cx| {
                 let _ = workspace.update(cx, |this, cx| {
                     this.update_text_input_anchor(anchor, cx);
@@ -257,12 +235,13 @@ impl WorkspaceApp {
         .into_any_element()
     }
 
-    pub(in crate::workspace) fn ai_provider_has_key_cached(
-        &self,
-        provider_id: &str,
-        cx: &App,
-    ) -> bool {
-        self.ai_entity.read(cx).provider_has_key(provider_id)
+    pub(in crate::workspace) fn ai_provider_has_key_cached(&self, provider_id: &str) -> bool {
+        self.ai
+            .models
+            .provider_key_status
+            .get(provider_id)
+            .copied()
+            .unwrap_or(false)
     }
 
     pub(in crate::workspace) fn ensure_ai_provider_key_statuses(&mut self, cx: &mut Context<Self>) {
@@ -285,9 +264,108 @@ impl WorkspaceApp {
             .map(|provider| provider.id.clone())
             .collect();
 
-        self.ai_entity.update(cx, |ai, _cx| {
-            ai.request_provider_key_statuses(provider_jobs);
-        });
+        for provider_id in provider_jobs {
+            if self
+                .ai
+                .models
+                .provider_key_status
+                .contains_key(&provider_id)
+                || self
+                    .ai
+                    .models
+                    .provider_key_status_pending
+                    .contains(&provider_id)
+            {
+                continue;
+            }
+            self.ai
+                .models
+                .provider_key_status_pending
+                .insert(provider_id.clone());
+            if self.ai.models.provider_key_status_tx.is_none() {
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.ai.models.provider_key_status_tx = Some(tx);
+                self.ai.models.provider_key_status_rx = Some(rx);
+            }
+            let Some(ui_tx) = self.ai.models.provider_key_status_tx.as_ref().cloned() else {
+                continue;
+            };
+            let key_store = self.ai.models.key_store.clone();
+            self.forwarding_runtime.spawn(async move {
+                let provider_id_for_check = provider_id.clone();
+                let has_key = tokio::task::spawn_blocking(move || {
+                    key_store.has_provider_key(&provider_id_for_check)
+                })
+                .await
+                .unwrap_or(false);
+                let _ = ui_tx.send(AiProviderKeyStatusDelivery {
+                    provider_id,
+                    has_key,
+                });
+            });
+        }
+
+        if !self.ai.models.provider_key_status_pending.is_empty() {
+            self.schedule_ai_provider_key_status_poll(cx);
+        }
+    }
+
+    pub(in crate::workspace) fn poll_ai_provider_key_statuses(&mut self, cx: &mut Context<Self>) {
+        let Some(rx) = self.ai.models.provider_key_status_rx.take() else {
+            return;
+        };
+        let mut changed = false;
+        loop {
+            match rx.try_recv() {
+                Ok(delivery) => {
+                    self.ai
+                        .models
+                        .provider_key_status_pending
+                        .remove(&delivery.provider_id);
+                    let previous = self
+                        .ai
+                        .models
+                        .provider_key_status
+                        .insert(delivery.provider_id, delivery.has_key);
+                    changed |= previous != Some(delivery.has_key);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.ai.models.provider_key_status_pending.clear();
+                    self.ai.models.provider_key_status_tx = None;
+                    break;
+                }
+            }
+        }
+        if changed {
+            cx.notify();
+        }
+        if self.ai.models.provider_key_status_pending.is_empty() {
+            self.ai.models.provider_key_status_tx = None;
+        } else {
+            self.ai.models.provider_key_status_rx = Some(rx);
+        }
+    }
+
+    pub(in crate::workspace) fn schedule_ai_provider_key_status_poll(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ai.models.provider_key_status_polling {
+            return;
+        }
+        self.ai.models.provider_key_status_polling = true;
+        cx.spawn(async move |weak, cx| {
+            Timer::after(Duration::from_millis(50)).await;
+            let _ = weak.update(cx, |this, cx| {
+                this.ai.models.provider_key_status_polling = false;
+                this.poll_ai_provider_key_statuses(cx);
+                if !this.ai.models.provider_key_status_pending.is_empty() {
+                    this.schedule_ai_provider_key_status_poll(cx);
+                }
+            });
+        })
+        .detach();
     }
 
     pub(in crate::workspace) fn save_ai_provider_api_key(
@@ -305,20 +383,59 @@ impl WorkspaceApp {
         else {
             return;
         };
+        if self.focused_settings_input != Some(SettingsInput::AiProviderApiKey(index)) {
+            cx.notify();
+            return;
+        }
+
         // Match Tauri ProviderKeyInput: the visible UI draft is moved into a
         // zeroizing owner before crossing into the keychain boundary, and it is
         // never written into persisted settings.
-        let input = SettingsInput::AiProviderApiKey(index);
-        let Some(secret) = self
-            .ai_entity
-            .update(cx, |ai, _cx| ai.take_provider_key_secret(input))
-        else {
+        let Some(secret) = ai_take_provider_key_secret(&mut self.settings_input_draft) else {
             cx.notify();
             return;
         };
-        self.ai_entity.update(cx, |ai, cx| {
-            ai.store_provider_key(index, provider_id, secret, cx);
-        });
+        let key_store = self.ai.models.key_store.clone();
+        let runtime = self.forwarding_runtime.clone();
+        cx.spawn(async move |weak, cx| {
+            let provider_id_for_store = provider_id.clone();
+            let result = runtime
+                .spawn_blocking(move || {
+                    key_store.store_provider_key(&provider_id_for_store, secret)
+                })
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|result| result.map_err(|error| error.to_string()));
+            let _ = weak.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        this.ai
+                            .models
+                            .provider_key_status
+                            .insert(provider_id.clone(), true);
+                        this.focused_settings_input = None;
+                        if let Some(provider) = this
+                            .settings_store
+                            .settings()
+                            .ai
+                            .providers
+                            .get(index)
+                            .and_then(ai_provider_view)
+                        {
+                            this.refresh_ai_provider_models(index, provider, cx);
+                        }
+                    }
+                    Err(error) => {
+                        this.push_ai_settings_toast(
+                            this.ai_i18n_error("settings_view.ai.save_failed", &error),
+                            TerminalNoticeVariant::Error,
+                        );
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -328,9 +445,35 @@ impl WorkspaceApp {
         provider_id: &str,
         cx: &mut Context<Self>,
     ) {
-        self.ai_entity.update(cx, |ai, cx| {
-            ai.remove_provider_key(provider_id.to_string(), cx);
-        });
+        let provider_id = provider_id.to_string();
+        let key_store = self.ai.models.key_store.clone();
+        let runtime = self.forwarding_runtime.clone();
+        cx.spawn(async move |weak, cx| {
+            let provider_id_for_delete = provider_id.clone();
+            let result = runtime
+                .spawn_blocking(move || key_store.delete_provider_key(&provider_id_for_delete))
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|result| result.map_err(|error| error.to_string()));
+            let _ = weak.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        this.ai
+                            .models
+                            .provider_key_status
+                            .insert(provider_id.clone(), false);
+                    }
+                    Err(error) => {
+                        this.push_ai_settings_toast(
+                            this.ai_i18n_error("settings_view.ai.remove_failed", &error),
+                            TerminalNoticeVariant::Error,
+                        );
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 }

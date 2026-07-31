@@ -255,8 +255,6 @@
       "copy_on_select_hint": "マウス選択が落ち着いたら、自動的にターミナルテキストをシステムクリップボードにコピーします",
       "middle_click_paste": "中クリック貼り付け",
       "middle_click_paste_hint": "ターミナルがマウス追跡モードでない場合、中クリックで現在のクリップボード内容を貼り付けます",
-      "right_click_paste": "右クリック貼り付け",
-      "right_click_paste_hint": "マウス追跡モードでない場合、修飾キーなしの右クリックで貼り付けます。Shift+右クリックでコンテキストメニューを開きます",
       "open_links_with_modifier": "修飾キーを押してリンクを開く",
       "open_links_with_modifier_hint": "ターミナルのリンクを Ctrl + クリックでのみ開きます。macOS では Command + クリックを使用します。無効にすると直接クリックで開きます",
       "smart_copy": "スマート Ctrl+C コピー",
@@ -267,9 +265,9 @@
       "selection_requires_shift_hint": "有効にすると、通常のドラッグは端末操作を維持し、Shift + ドラッグでのみテキスト選択を開始します",
       "free_type_mode": "自由入力モード",
       "backspace_sequence": "Backspace キー",
-      "backspace_sequence_hint": "Backspace シーケンスのアプリ既定値です。保存済みホストごとに上書きできます。",
+      "backspace_sequence_hint": "従来の端末アプリへ Backspace キーが送るシーケンスを選択します。既定値は DEL (0x7F) です",
       "delete_sequence": "Delete キー",
-      "delete_sequence_hint": "Delete シーケンスのアプリ既定値です。保存済みホストごとに上書きできます。",
+      "delete_sequence_hint": "従来の端末アプリへ Delete キーが送るシーケンスを選択します。既定値は CSI 3~ です",
       "free_type_mode_hint": "アクティブなシェルコマンドをマウスで編集します。クリックでカーソルを移動し、対応する括弧内をダブルクリックして内容を選択できます。選択したコマンド文字列はドラッグで移動、Ctrl+ドラッグでコピー、Alt+ドラッグで現在のコマンドを置換します。全画面の Vim、Neovim、Emacs では OxideTerm アダプターの明示的な読み込みが必要で、その他の全画面・マウス追跡アプリは入力を引き続き制御します",
       "in_band_transfer": {
         "title": "インバンドファイル転送",
@@ -419,7 +417,7 @@
         }
       },
       "encoding": "Terminal Encoding",
-      "encoding_hint": "ローカル端末と上書きのないホスト向けのアプリ既定値です。保存済みホストごとに文字コードを選べます。",
+      "encoding_hint": "Text encoding for terminal input/output. Keep UTF-8 unless the remote host uses a legacy locale.",
       "autosuggest_local_history": "Command Bar: ローカル Shell 履歴",
       "autosuggest_local_history_hint": "ローカル zsh/bash/fish 履歴を Command Bar の履歴パネルの候補元として使います。端末内 ghost text は有効にしません。",
       "command_bar": "Command Bar",
@@ -448,8 +446,6 @@
       "gpu_canvas_experiments_hint": "Experimental GPU-backed visualizations. Does not replace the terminal renderer.",
       "quick_commands": "Quick Commands",
       "quick_commands_hint": "Show a built-in quick command library in the Command Bar.",
-      "quick_bar": "クイックコマンドバー",
-      "quick_bar_hint": "保存したクイックコマンドをコマンドバー上部の任意の横向きバーに表示します。",
       "quick_commands_confirm": "Confirm Quick Command Run",
       "quick_commands_confirm_hint": "Ask before running a quick command from the Run button.",
       "quick_commands_toast": "Quick Command Toast",
@@ -470,6 +466,7 @@
       "page_awareness": "認識と統合",
       "page_transfer": "転送",
       "page_highlight": "ハイライト",
+      "page_keepalive": "キープアライブ",
       "page_local": "ローカル"
     },
     "appearance": {
@@ -967,7 +964,10 @@
       "acp_agent_error_command_not_found": "コマンドが見つかりません",
       "acp_agent_error_config": "設定が無効です",
       "acp_agent_error_initialize": "初期化に失敗しました",
-      "acp_agent_error_unknown": "不明なエラー"
+      "acp_agent_error_unknown": "不明なエラー",
+      "acp_agent_auth_token": "認証トークン",
+      "acp_agent_auth_token_placeholder": "キーチェーンにトークンを保存",
+      "acp_agent_auth_token_saved": "トークンはキーチェーンに保存済みです"
     },
     "sftp": {
       "title": "ファイル転送",
@@ -1151,8 +1151,8 @@
       "clear_skip": "解除",
       "portable_mode": "ポータブルモード",
       "portable_mode_hint": "このセッションではポータブル起動フローを使用しており、データは実行ファイルの横に保存されます。",
-      "portable_updates": "ポータブル版の自動更新",
-      "portable_updates_hint": "自動確認とアプリ内更新ではプログラムファイルだけを置き換えます。ポータブルデータ、プラグイン、キーストア、portable.json、カスタムデータディレクトリは保持されます。",
+      "updates_manual_only": "更新は手動のみ",
+      "updates_manual_only_hint": "ポータブルモードでは自動更新チェックとアプリ内インストールが無効です。更新するには、ポータブルフォルダー全体を新しい OxideTerm ビルドに置き換えてください。",
       "update_channel": "更新チャンネル",
       "update_channel_hint": "Stable、Beta、GPUI Preview は別々の更新チャンネルを使用します",
       "channel_stable": "安定版",

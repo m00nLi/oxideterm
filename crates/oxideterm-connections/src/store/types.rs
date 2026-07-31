@@ -103,57 +103,6 @@ impl SavedAuth {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConnectionTerminalEncoding {
-    #[serde(rename = "utf-8")]
-    Utf8,
-    Gbk,
-    Gb18030,
-    Big5,
-    ShiftJis,
-    #[serde(rename = "euc-jp")]
-    EucJp,
-    #[serde(rename = "euc-kr")]
-    EucKr,
-    #[serde(rename = "windows-1252")]
-    Windows1252,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ConnectionTerminalBackspaceSequence {
-    Delete,
-    ControlH,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ConnectionTerminalDeleteSequence {
-    Csi3Tilde,
-    Delete,
-    ControlH,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConnectionTerminalOptions {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub encoding: Option<ConnectionTerminalEncoding>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub backspace_sequence: Option<ConnectionTerminalBackspaceSequence>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delete_sequence: Option<ConnectionTerminalDeleteSequence>,
-}
-
-impl ConnectionTerminalOptions {
-    pub fn inherits_application_defaults(&self) -> bool {
-        self.encoding.is_none()
-            && self.backspace_sequence.is_none()
-            && self.delete_sequence.is_none()
-    }
-}
-
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ConnectionOptions {
     #[serde(default)]
@@ -172,15 +121,10 @@ pub struct ConnectionOptions {
     pub agent_forwarding_socket: Option<String>,
     #[serde(default)]
     pub legacy_ssh_compatibility: bool,
+    #[serde(default)]
+    pub skip_remote_env_detection: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_connect_command: Option<String>,
-    /// Terminal protocol behavior is host-specific; absent values inherit the
-    /// application defaults so existing saved connections remain compatible.
-    #[serde(
-        default,
-        skip_serializing_if = "ConnectionTerminalOptions::inherits_application_defaults"
-    )]
-    pub terminal: ConnectionTerminalOptions,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -426,6 +370,8 @@ pub struct ConnectionInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_forwarding_socket: Option<String>,
     pub legacy_ssh_compatibility: bool,
+    #[serde(default)]
+    pub skip_remote_env_detection: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_connect_command: Option<String>,
 }
@@ -528,6 +474,7 @@ impl From<&SavedConnection> for ConnectionInfo {
             identity_agent: conn.options.identity_agent.clone(),
             agent_forwarding_socket: conn.options.agent_forwarding_socket.clone(),
             legacy_ssh_compatibility: conn.options.legacy_ssh_compatibility,
+            skip_remote_env_detection: conn.options.skip_remote_env_detection,
             post_connect_command: conn.post_connect_command().map(ToOwned::to_owned),
         }
     }
@@ -606,11 +553,6 @@ pub struct TelnetProfile {
     pub icon_background_color: Option<String>,
     pub host: String,
     pub port: u16,
-    #[serde(
-        default,
-        skip_serializing_if = "ConnectionTerminalOptions::inherits_application_defaults"
-    )]
-    pub terminal: ConnectionTerminalOptions,
     #[serde(default, skip_serializing_if = "is_false")]
     pub connect_on_open: bool,
     pub created_at: DateTime<Utc>,
@@ -629,7 +571,6 @@ pub struct SaveTelnetProfileRequest {
     pub icon_background_color: Option<String>,
     pub host: String,
     pub port: u16,
-    pub terminal: ConnectionTerminalOptions,
     pub connect_on_open: Option<bool>,
 }
 
@@ -746,7 +687,6 @@ impl TelnetProfile {
             icon_background_color: None,
             host: host.into(),
             port,
-            terminal: ConnectionTerminalOptions::default(),
             connect_on_open: false,
             created_at: now,
             updated_at: now,
@@ -844,41 +784,8 @@ pub struct SaveConnectionRequest {
     pub identity_agent: Option<String>,
     pub agent_forwarding_socket: Option<String>,
     pub legacy_ssh_compatibility: bool,
+    pub skip_remote_env_detection: bool,
     pub post_connect_command: Option<String>,
-    pub terminal: ConnectionTerminalOptions,
-}
-
-/// Returns the original plaintext allocations after persistence for one runtime handoff.
-///
-/// The saved record never owns these values. Dropping this bundle zeroizes every secret.
-pub struct SavedConnectionRuntimeSecrets {
-    pub auth: Option<SecretString>,
-    pub proxy_chain: Vec<Option<SecretString>>,
-    pub upstream_proxy: Option<SecretString>,
-}
-
-impl fmt::Debug for SavedConnectionRuntimeSecrets {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("SavedConnectionRuntimeSecrets")
-            .field("auth", &self.auth.as_ref().map(|_| "[redacted secret]"))
-            .field(
-                "proxy_chain",
-                &self
-                    .proxy_chain
-                    .iter()
-                    .map(|secret| secret.as_ref().map(|_| "[redacted secret]"))
-                    .collect::<Vec<_>>(),
-            )
-            .field(
-                "upstream_proxy",
-                &self
-                    .upstream_proxy
-                    .as_ref()
-                    .map(|_| "[redacted secret]"),
-            )
-            .finish()
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

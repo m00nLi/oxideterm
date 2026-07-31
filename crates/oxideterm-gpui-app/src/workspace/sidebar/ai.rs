@@ -1,9 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
-use crate::workspace::ai_state::{
-    AiChatInitializationOutcome, AiChatPopover, AiWorkspaceEntity, AiWorkspaceVisibility,
-};
 use crate::workspace::ime::WorkspaceImeTarget;
+use crate::workspace::root::init::ai_chat_initialization_error;
 use crate::workspace::*;
 use gpui::{Context, Div, MouseDownEvent, Rgba, Window};
 use oxideterm_ai::stream_state::*;
@@ -12,15 +10,15 @@ use oxideterm_ai::{
     AiChatStreamConfig, AiConversation, AiExecutionBackend, AiMessageBranches,
     AiOrchestratorObligation, AiOrchestratorObligationMode, AiPolicySafetyMode, AiProviderView,
     AiReasoningLevel, AiReferenceMatch, AiStreamEvent, AiToolCall, AiToolUsePolicy,
-    ModelSelectorProviderProbe, ToolSessionId, active_model_selection, active_provider_view,
+    ModelSelectorProviderProbe, active_model_selection, active_provider_view,
     ai_autocomplete_candidates, ai_classify_orchestrator_obligation,
     ai_detected_intent_system_prompt, ai_help_markdown as ai_help_markdown_core,
-    ai_input_system_prompt, ai_input_token_at_cursor, ai_orchestrator_obligation_prompt,
-    ai_reference_context_block, ai_required_tool_retry_prompt, ai_should_trigger_hard_deny,
-    ai_user_explicitly_requested_json, ai_visible_suggestion_content, apply_chat_request_overrides,
-    detect_ai_intent, extract_ai_error_context, generate_chat_title, infer_ai_cwd,
-    model_max_response_tokens as ai_model_max_response_tokens, model_reasoning_capability,
-    model_selector_display_name, model_selector_truncated_label,
+    ai_input_system_prompt, ai_orchestrator_obligation_prompt, ai_reference_context_block,
+    ai_required_tool_retry_prompt, ai_should_trigger_hard_deny, ai_user_explicitly_requested_json,
+    ai_visible_suggestion_content, apply_ai_autocomplete_candidate, apply_chat_request_overrides,
+    check_model_selector_provider_online, detect_ai_intent, extract_ai_error_context,
+    generate_chat_title, infer_ai_cwd, model_max_response_tokens as ai_model_max_response_tokens,
+    model_reasoning_capability, model_selector_display_name, model_selector_truncated_label,
     model_selector_visible_provider_groups, parse_ai_user_input,
     provider_chat_requires_key as ai_provider_chat_requires_key,
     provider_views as ai_provider_views, resolve_ai_policy_decision, resolve_ai_slash_command,
@@ -56,10 +54,7 @@ use oxideterm_gpui_ui::{
         ai_tool_args_pre, ai_tool_block, ai_tool_details, ai_tool_heading, ai_tool_item,
         ai_tool_item_header, ai_tool_output_pre, ai_tool_section_label,
     },
-    button::{
-        ButtonOptions, ButtonRadius, ButtonSize, ButtonVariant, IconButtonOptions,
-        ToolbarButtonOptions,
-    },
+    button::{ButtonRadius, ButtonVariant, IconButtonOptions, ToolbarButtonOptions},
     context_menu::{ContextMenuActionableStyle, context_menu_action, context_menu_actionable_row},
     modal::overlay_content_boundary,
     text_input::{
@@ -82,22 +77,6 @@ pub(in crate::workspace) struct AiAcpSessionState {
     pub(in crate::workspace) config_options: Vec<oxideterm_ai::AcpSessionConfigOption>,
     #[serde(default)]
     pub(in crate::workspace) model_selection: Option<oxideterm_ai::AcpSessionConfigSelection>,
-    #[serde(default)]
-    pub(in crate::workspace) config_selections: Vec<oxideterm_ai::AcpSessionConfigSelection>,
-    #[serde(default)]
-    pub(in crate::workspace) current_mode_id: Option<String>,
-    #[serde(default)]
-    pub(in crate::workspace) available_modes: Vec<oxideterm_ai::AcpSessionMode>,
-    #[serde(default)]
-    pub(in crate::workspace) available_commands: Vec<serde_json::Value>,
-    #[serde(default)]
-    pub(in crate::workspace) plan: Option<serde_json::Value>,
-    #[serde(default)]
-    pub(in crate::workspace) usage: Option<serde_json::Value>,
-    #[serde(default)]
-    pub(in crate::workspace) title: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(in crate::workspace) handoff_cursor: Option<oxideterm_ai::AcpConversationHandoffCursor>,
 }
 
 pub(in crate::workspace) fn ai_acp_session_state(
@@ -111,32 +90,13 @@ pub(in crate::workspace) fn ai_acp_session_state(
         .and_then(|value| serde_json::from_value(value).ok())
 }
 
-pub(in crate::workspace) fn ai_message_backend_for_stream(
-    config: &AiChatStreamConfig,
-) -> oxideterm_ai::AiMessageBackendProvenance {
-    match config.execution_backend {
-        AiExecutionBackend::Provider => oxideterm_ai::AiMessageBackendProvenance {
-            kind: oxideterm_ai::AiMessageBackendKind::Provider,
-            backend_id: config
-                .provider_id
-                .clone()
-                .unwrap_or_else(|| config.provider_type.clone()),
-            model: config.model.clone(),
-        },
-        AiExecutionBackend::Acp => oxideterm_ai::AiMessageBackendProvenance {
-            kind: oxideterm_ai::AiMessageBackendKind::Acp,
-            backend_id: config.acp_agent_id.clone().unwrap_or_default(),
-            model: config.model.clone(),
-        },
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::workspace) enum AiHeaderAction {
     NewChat,
     Settings,
 }
 
+#[derive(Clone)]
 pub(in crate::workspace) struct AiPendingChatStream {
     pub(super) conversation_id: String,
     pub(super) config: AiChatStreamConfig,
@@ -173,11 +133,9 @@ impl WorkspaceApp {
             disabled,
             loading,
             cx.listener(move |this, event, window, cx| {
-                this.ai_entity.update(cx, |ai, _cx| {
-                    ai.set_chat_popover_open(AiChatPopover::Menu, false);
-                    ai.set_chat_popover_open(AiChatPopover::ConversationList, false);
-                    ai.set_chat_popover_open(AiChatPopover::Safety, false);
-                });
+                this.ai.chat.menu_open = false;
+                this.ai.chat.conversation_list_open = false;
+                this.ai.chat.safety_menu_open = false;
                 listener(this, event, window, cx);
                 cx.stop_propagation();
                 cx.notify();

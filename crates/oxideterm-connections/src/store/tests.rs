@@ -33,132 +33,13 @@ mod tests {
             identity_agent: None,
             agent_forwarding_socket: None,
             legacy_ssh_compatibility: false,
+            skip_remote_env_detection: false,
             post_connect_command: None,
-            terminal: ConnectionTerminalOptions::default(),
         }
     }
 
     fn load_empty_store(name: &str) -> ConnectionStore {
         ConnectionStore::load(temp_store_path(name)).expect("store should load")
-    }
-
-    #[test]
-    fn terminal_options_round_trip_without_changing_legacy_defaults() {
-        let default_options = serde_json::to_value(ConnectionOptions::default()).unwrap();
-        assert!(default_options.get("terminal").is_none());
-
-        let options = ConnectionOptions {
-            terminal: ConnectionTerminalOptions {
-                encoding: Some(ConnectionTerminalEncoding::Utf8),
-                backspace_sequence: Some(ConnectionTerminalBackspaceSequence::ControlH),
-                delete_sequence: Some(ConnectionTerminalDeleteSequence::Delete),
-            },
-            ..ConnectionOptions::default()
-        };
-        let serialized = serde_json::to_value(&options).unwrap();
-        assert_eq!(serialized["terminal"]["encoding"], "utf-8");
-        assert_eq!(serialized["terminal"]["backspaceSequence"], "controlH");
-        assert_eq!(serialized["terminal"]["deleteSequence"], "delete");
-        assert_eq!(
-            serde_json::to_value(ConnectionTerminalEncoding::EucJp).unwrap(),
-            "euc-jp"
-        );
-        assert_eq!(
-            serde_json::to_value(ConnectionTerminalEncoding::Windows1252).unwrap(),
-            "windows-1252"
-        );
-
-        let decoded: ConnectionOptions = serde_json::from_value(serialized).unwrap();
-        assert_eq!(decoded.terminal, options.terminal);
-
-        let legacy: ConnectionOptions = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert!(legacy.terminal.inherits_application_defaults());
-    }
-
-    #[test]
-    fn upsert_runtime_handoff_preserves_secret_allocations_and_persists_no_plaintext() {
-        let store_path = temp_store_path("runtime-secret-handoff");
-        let mut store = ConnectionStore::load(&store_path).expect("store should load");
-        let target_secret = SecretString::from("target-secret-marker");
-        let target_pointer = target_secret.expose_secret().as_ptr();
-        let proxy_secret = SecretString::from("proxy-secret-marker");
-        let proxy_pointer = proxy_secret.expose_secret().as_ptr();
-        let upstream_secret = SecretString::from("upstream-secret-marker");
-        let upstream_pointer = upstream_secret.expose_secret().as_ptr();
-        let mut request = request(
-            "conn-runtime-handoff",
-            SavedAuth::Password {
-                keychain_id: None,
-                plaintext_password: Some(target_secret),
-            },
-        );
-        request.proxy_chain.push(SavedProxyHop {
-            host: "jump.example.com".to_string(),
-            port: 22,
-            username: "ops".to_string(),
-            auth: SavedAuth::Password {
-                keychain_id: None,
-                plaintext_password: Some(proxy_secret),
-            },
-            agent_forwarding: false,
-            identity_agent: None,
-            agent_forwarding_socket: None,
-            legacy_ssh_compatibility: false,
-        });
-        request.upstream_proxy = SavedUpstreamProxyPolicy::Custom {
-            proxy: SavedUpstreamProxyConfig {
-                protocol: SavedUpstreamProxyProtocol::Socks5,
-                host: "proxy.example.com".to_string(),
-                port: 1080,
-                auth: SavedUpstreamProxyAuth::Password {
-                    username: "proxy-user".to_string(),
-                    keychain_id: None,
-                    plaintext_password: Some(upstream_secret),
-                },
-                remote_dns: true,
-                no_proxy: String::new(),
-            },
-        };
-
-        let (_connection, handoff) = store
-            .upsert_with_runtime_secrets(request)
-            .expect("connection should save");
-
-        assert_eq!(
-            handoff
-                .auth
-                .as_ref()
-                .expect("target runtime secret")
-                .expose_secret()
-                .as_ptr(),
-            target_pointer
-        );
-        assert_eq!(
-            handoff.proxy_chain[0]
-                .as_ref()
-                .expect("proxy runtime secret")
-                .expose_secret()
-                .as_ptr(),
-            proxy_pointer
-        );
-        assert_eq!(
-            handoff
-                .upstream_proxy
-                .as_ref()
-                .expect("upstream runtime secret")
-                .expose_secret()
-                .as_ptr(),
-            upstream_pointer
-        );
-        let persisted = fs::read_to_string(store_path).expect("persisted connection store");
-        for secret in [
-            "target-secret-marker",
-            "proxy-secret-marker",
-            "upstream-secret-marker",
-        ] {
-            assert!(!persisted.contains(secret));
-            assert!(!format!("{handoff:?}").contains(secret));
-        }
     }
 
     #[test]
@@ -1635,8 +1516,8 @@ mod tests {
             identity_agent: None,
             agent_forwarding_socket: None,
             legacy_ssh_compatibility: true,
+            skip_remote_env_detection: false,
             post_connect_command: Some("uname -a".to_string()),
-            terminal: ConnectionTerminalOptions::default(),
         };
         source.save().unwrap();
 
@@ -1806,11 +1687,6 @@ mod tests {
             icon_background_color: Some("#052e16".to_string()),
             host: "192.168.1.1".to_string(),
             port: 23,
-            terminal: ConnectionTerminalOptions {
-                encoding: Some(ConnectionTerminalEncoding::Big5),
-                backspace_sequence: None,
-                delete_sequence: Some(ConnectionTerminalDeleteSequence::ControlH),
-            },
             connect_on_open: true,
             created_at: now,
             updated_at: now,
@@ -1826,10 +1702,6 @@ mod tests {
         assert_eq!(value["telnet_profiles"][0]["id"], "telnet-1");
         assert_eq!(value["telnet_profiles"][0]["icon"], "network");
         assert_eq!(value["telnet_profiles"][0]["color"], "#86efac");
-        assert_eq!(
-            value["telnet_profiles"][0]["terminal"]["encoding"],
-            "big5"
-        );
         assert_eq!(
             value["telnet_profiles"][0]["icon_background_color"],
             "#052e16"

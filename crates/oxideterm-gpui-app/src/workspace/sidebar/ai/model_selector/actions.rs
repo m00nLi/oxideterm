@@ -1,96 +1,3 @@
-impl AiWorkspaceEntity {
-    fn set_active_reasoning_level(
-        &mut self,
-        provider_id: &str,
-        model: &str,
-        level: AiReasoningLevel,
-    ) {
-        if let Some(conversation) = self.conversation_state_mut().active_conversation_mut() {
-            store_ai_reasoning_level_in_conversation(conversation, provider_id, model, level);
-            self.persist_chat_state();
-        }
-    }
-
-    fn set_active_acp_model_selection(
-        &mut self,
-        agent_id: &str,
-        discovered_options: Vec<oxideterm_ai::AcpSessionConfigOption>,
-        config_id: &str,
-        value_id: &str,
-    ) -> bool {
-        let Some(conversation) = self.conversation_state_mut().active_conversation_mut() else {
-            return false;
-        };
-        let stored = store_ai_acp_model_selection_in_conversation(
-            conversation,
-            agent_id,
-            discovered_options,
-            config_id,
-            value_id,
-        );
-        if stored {
-            self.persist_chat_state();
-        }
-        stored
-    }
-
-    fn set_active_acp_config_selection(
-        &mut self,
-        agent_id: &str,
-        discovered_options: Vec<oxideterm_ai::AcpSessionConfigOption>,
-        config_id: &str,
-        value_id: &str,
-    ) -> bool {
-        let Some(conversation) = self.conversation_state_mut().active_conversation_mut() else {
-            return false;
-        };
-        let stored = store_ai_acp_config_selection_in_conversation(
-            conversation,
-            agent_id,
-            discovered_options,
-            config_id,
-            value_id,
-            false,
-        );
-        if stored {
-            self.persist_chat_state();
-        }
-        stored
-    }
-
-    fn set_active_acp_mode(&mut self, agent_id: &str, mode_id: &str) -> bool {
-        let Some(conversation) = self.conversation_state_mut().active_conversation_mut() else {
-            return false;
-        };
-        let Some(mut state) =
-            ai_acp_session_state(conversation).filter(|state| state.agent_id == agent_id)
-        else {
-            return false;
-        };
-        if !state
-            .available_modes
-            .iter()
-            .any(|mode| mode.mode_id == mode_id)
-        {
-            return false;
-        }
-        state.current_mode_id = Some(mode_id.to_string());
-        let Some(metadata) = conversation
-            .session_metadata
-            .as_mut()
-            .and_then(serde_json::Value::as_object_mut)
-        else {
-            return false;
-        };
-        let Ok(value) = serde_json::to_value(state) else {
-            return false;
-        };
-        metadata.insert(AI_ACP_SESSION_METADATA_KEY.to_string(), value);
-        self.persist_chat_state();
-        true
-    }
-}
-
 impl WorkspaceApp {
     pub(in crate::workspace) fn select_ai_reasoning_level(
         &mut self,
@@ -105,10 +12,16 @@ impl WorkspaceApp {
             &model,
             level.as_str(),
         );
-        self.ai_entity.update(cx, |ai, _cx| {
-            ai.set_chat_popover_open(AiChatPopover::Reasoning, false);
-            ai.set_active_reasoning_level(&provider_id, &model, level);
-        });
+        self.ai.chat.reasoning_menu_open = false;
+        if let Some(conversation) = self.ai.chat.conversation_state.active_conversation_mut() {
+            store_ai_reasoning_level_in_conversation(
+                conversation,
+                &provider_id,
+                &model,
+                level,
+            );
+            self.persist_ai_chat_state();
+        }
         self.edit_settings(
             move |settings| {
                 set_ai_model_reasoning_override(
@@ -126,36 +39,43 @@ impl WorkspaceApp {
     pub(in crate::workspace) fn ai_acp_model_options_for_agent(
         &self,
         agent_id: &str,
-        cx: &App,
     ) -> Option<Vec<oxideterm_ai::AcpSessionConfigOption>> {
-        if let Some(state) = self.active_ai_acp_session_state(agent_id, cx)
+        if let Some(state) = self.active_ai_acp_session_state(agent_id)
             && oxideterm_ai::acp_model_config_option(&state.config_options)
                 .is_some_and(|option| !option.choices.is_empty())
         {
             return Some(state.config_options);
         }
-        let conversation_id = self.ai_entity.read(cx).conversation_state()
+        let conversation_id = self
+            .ai
+            .chat
+            .conversation_state
             .active_conversation()
             .map(|conversation| conversation.id.as_str())?;
-        self.ai_entity
-            .read(cx)
-            .acp_model_options(conversation_id, agent_id)
+        self.ai
+            .models
+            .acp_model_options
+            .get(&(conversation_id.to_string(), agent_id.to_string()))
+            .cloned()
     }
 
     pub(in crate::workspace) fn ai_acp_model_discovery_is_pending(
         &self,
         agent_id: &str,
-        cx: &App,
     ) -> bool {
-        let Some(conversation_id) = self.ai_entity.read(cx).conversation_state()
+        let Some(conversation_id) = self
+            .ai
+            .chat
+            .conversation_state
             .active_conversation()
             .map(|conversation| conversation.id.as_str())
         else {
             return false;
         };
-        self.ai_entity
-            .read(cx)
-            .acp_model_discovery_is_pending(conversation_id, agent_id)
+        self.ai
+            .models
+            .acp_model_discovery_pending
+            .contains(&(conversation_id.to_string(), agent_id.to_string()))
     }
 
     pub(in crate::workspace) fn schedule_ai_acp_model_discovery(
@@ -163,22 +83,24 @@ impl WorkspaceApp {
         agent_id: String,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .ai_acp_model_options_for_agent(&agent_id, cx)
-            .is_some()
-        {
+        if self.ai_acp_model_options_for_agent(&agent_id).is_some() {
             return;
         }
-        let Some(conversation_id) = self.ai_entity.read(cx).conversation_state()
+        let Some(conversation_id) = self
+            .ai
+            .chat
+            .conversation_state
             .active_conversation()
             .map(|conversation| conversation.id.clone())
         else {
             return;
         };
+        let discovery_key = (conversation_id.clone(), agent_id.clone());
         if self
-            .ai_entity
-            .read(cx)
-            .acp_model_discovery_is_pending(&conversation_id, &agent_id)
+            .ai
+            .models
+            .acp_model_discovery_pending
+            .contains(&discovery_key)
         {
             return;
         }
@@ -198,65 +120,123 @@ impl WorkspaceApp {
         if !oxideterm_ai::acp_model_report_is_available_during_session_start(&agent.args) {
             return;
         }
+        if self.ai.models.acp_model_discovery_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.ai.models.acp_model_discovery_tx = Some(tx);
+            self.ai.models.acp_model_discovery_rx = Some(rx);
+        }
+        let Some(ui_tx) = self.ai.models.acp_model_discovery_tx.as_ref().cloned() else {
+            return;
+        };
+        self.ai
+            .models
+            .acp_model_discovery_pending
+            .insert(discovery_key);
+        let launch_config = acp_launch_config_from_agent(&agent);
+        let capability_policy = acp_host_capability_policy_from_agent(&agent);
         let session_cwd = acp_session_cwd_from_agent(&agent);
-        self.ai_entity.update(cx, |ai, _cx| {
-            ai.request_acp_model_discovery(conversation_id, agent, session_cwd);
+        self.forwarding_runtime.spawn(async move {
+            let config_options = match oxideterm_ai::build_acp_stdio_launcher(launch_config) {
+                Ok(launcher) => oxideterm_ai::discover_acp_session_config_options(
+                    launcher,
+                    env!("CARGO_PKG_VERSION").to_string(),
+                    capability_policy,
+                    session_cwd,
+                )
+                .await
+                .ok()
+                .filter(|options| {
+                    oxideterm_ai::acp_model_config_option(options)
+                        .is_some_and(|option| !option.choices.is_empty())
+                }),
+                Err(_) => None,
+            };
+            let _ = ui_tx.send(AcpModelDiscoveryDelivery {
+                conversation_id,
+                agent_id,
+                config_options,
+            });
         });
+        self.schedule_ai_acp_model_discovery_poll(cx);
         cx.notify();
+    }
+
+    pub(in crate::workspace) fn poll_ai_acp_model_discovery_results(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(rx) = self.ai.models.acp_model_discovery_rx.take() else {
+            return;
+        };
+        let mut keep_rx = true;
+        loop {
+            match rx.try_recv() {
+                Ok(delivery) => {
+                    let key = (delivery.conversation_id.clone(), delivery.agent_id);
+                    self.ai.models.acp_model_discovery_pending.remove(&key);
+                    if let Some(options) = delivery.config_options
+                        && self
+                            .ai
+                            .chat
+                            .conversation_state
+                            .conversations
+                            .iter()
+                            .any(|conversation| conversation.id == delivery.conversation_id)
+                    {
+                        self.ai.models.acp_model_options.insert(key, options);
+                    }
+                    cx.notify();
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    keep_rx = false;
+                    self.ai.models.acp_model_discovery_tx = None;
+                    self.ai.models.acp_model_discovery_pending.clear();
+                    break;
+                }
+            }
+        }
+        if keep_rx && !self.ai.models.acp_model_discovery_pending.is_empty() {
+            self.ai.models.acp_model_discovery_rx = Some(rx);
+        } else if self.ai.models.acp_model_discovery_pending.is_empty() {
+            self.ai.models.acp_model_discovery_tx = None;
+        }
+    }
+
+    pub(in crate::workspace) fn schedule_ai_acp_model_discovery_poll(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ai.models.acp_model_discovery_polling {
+            return;
+        }
+        self.ai.models.acp_model_discovery_polling = true;
+        cx.spawn(async move |weak, cx| {
+            Timer::after(Duration::from_millis(50)).await;
+            let _ = weak.update(cx, |this, cx| {
+                this.ai.models.acp_model_discovery_polling = false;
+                this.poll_ai_acp_model_discovery_results(cx);
+                if !this.ai.models.acp_model_discovery_pending.is_empty() {
+                    this.schedule_ai_acp_model_discovery_poll(cx);
+                }
+            });
+        })
+        .detach();
     }
 
     pub(in crate::workspace) fn ensure_ai_model_selector_mount_statuses(
         &mut self,
         cx: &mut Context<Self>,
     ) {
-        let providers = self.ai_model_selector_providers(cx);
+        let providers = self.ai_model_selector_providers();
         let signature = ai_model_selector_status_signature(&providers);
-        if self
-            .ai_entity
-            .read(cx)
-            .model_selector_status_signature_matches(signature)
-        {
+        if self.ai.models.selector_status_signature == signature {
             return;
         }
-        self.ai_entity.update(cx, |ai, _cx| {
-            ai.set_model_selector_status_signature(Some(signature));
-        });
+        self.ai.models.selector_status_signature = signature;
         // Mirrors Tauri ModelSelector's mount/provider-change checkAllKeys
         // effect: the trigger indicator starts probing before the user opens it.
         self.refresh_ai_model_selector_provider_statuses(cx);
-    }
-
-    pub(in crate::workspace) fn sync_ai_workspace_visibility(&mut self, cx: &mut Context<Self>) {
-        // Inline AI can be mounted in a detached terminal window, so its own
-        // open state is the stable cross-window visibility signal.
-        let terminal_inline_surface = self.ai_entity.read(cx).terminal_inline_panel().open;
-        let model_selector_surface = self.ai_sidebar_visible() || terminal_inline_surface;
-        let main_settings_surface = self
-            .active_tab(cx)
-            .is_some_and(|tab| tab.kind == TabKind::Settings);
-        let detached_settings_surface = self.tabs(cx).iter().any(|tab| {
-            tab.kind == TabKind::Settings && self.tab_host.read(cx).is_outside_main_window(tab.id)
-        });
-        let settings_surface = !self.app_lock.locked
-            && (main_settings_surface || detached_settings_surface)
-            && self.settings_workspace.read(cx).route_snapshot().active_tab == SettingsTab::Ai;
-        let visibility = AiWorkspaceVisibility {
-            model_selector_surface: !self.app_lock.locked && model_selector_surface,
-            settings_surface,
-        };
-        let changed = self
-            .ai_entity
-            .update(cx, |ai, _cx| ai.set_workspace_visibility(visibility));
-        if changed && !visibility.model_selector_surface {
-            // A later remount must re-run status checks even when provider
-            // configuration stayed unchanged while the surface was hidden.
-            self.ai_entity.update(cx, |ai, _cx| {
-                ai.set_model_selector_status_signature(None);
-            });
-        }
-        if visibility.model_selector_surface {
-            self.ensure_ai_model_selector_mount_statuses(cx);
-        }
     }
 
     pub(in crate::workspace) fn toggle_ai_model_selector(
@@ -265,13 +245,13 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let next_open = !self.ai_entity.read(cx).model_selector_is_open(scope);
-        self.close_ai_sidebar_popovers(cx);
-        self.ai_entity.update(cx, |ai, _cx| {
-            ai.set_model_selector_open(scope, next_open);
-        });
-        if next_open {
-            let providers = self.ai_model_selector_providers(cx);
+        let next_open =
+            !(self.ai.models.selector_open && self.ai.models.selector_scope == Some(scope));
+        self.close_ai_sidebar_popovers();
+        self.ai.models.selector_open = next_open;
+        self.ai.models.selector_scope = next_open.then_some(scope);
+        if self.ai.models.selector_open {
+            let providers = self.ai_model_selector_providers();
             let mut active_acp_agent_id = None;
             if let Some(provider) = active_provider_view(
                 &providers,
@@ -279,21 +259,22 @@ impl WorkspaceApp {
             ) {
                 active_acp_agent_id =
                     Self::ai_acp_agent_id_from_provider_id(&provider.id).map(str::to_string);
-                self.ai_entity.update(cx, |ai, _cx| {
-                    ai.expand_model_selector_provider(provider.id.clone());
-                });
+                self.ai
+                    .models
+                    .selector_expanded_providers
+                    .insert(provider.id.clone());
             }
             if let Some(agent_id) = active_acp_agent_id {
                 self.schedule_ai_acp_model_discovery(agent_id, cx);
             }
-            self.ai_entity.update(cx, |ai, _cx| {
-                ai.blur_chat_input(false);
-                ai.terminal_inline_panel_mut().prompt_focused = false;
-            });
+            self.ai.models.selector_search_focused = true;
+            self.ai.models.selector_highlighted_model = None;
+            self.ai.chat.input_focused = false;
+            self.ai.chat.inline_panel.prompt_focused = false;
             self.refresh_ai_model_selector_provider_statuses(cx);
-            window.focus(&self.focus_handle, cx);
+window.focus(&self.focus_handle, cx);
         } else {
-            self.close_ai_model_selector(cx);
+            self.close_ai_model_selector();
         }
         self.ime_marked_text = None;
         cx.notify();
@@ -301,26 +282,25 @@ impl WorkspaceApp {
 
     pub(in crate::workspace) fn ai_model_selector_visible_model_keys(
         &self,
-        cx: &App,
     ) -> Vec<(String, String)> {
-        let providers = self.ai_model_selector_providers(cx);
-        let ai = self.ai_entity.read(cx);
-        let model_ui = ai.model_ui();
-        let searching = !model_ui.selector_search_query.trim().is_empty();
+        let providers = self.ai_model_selector_providers();
+        let searching = !self.ai.models.selector_search_query.trim().is_empty();
         // Tauri renders models as focusable dropdown items only for expanded
         // providers, while search mode expands matching providers. Keep the
         // keyboard target list identical to the rendered, selectable rows.
-        model_selector_visible_provider_groups(&providers, &model_ui.selector_search_query)
+        model_selector_visible_provider_groups(&providers, &self.ai.models.selector_search_query)
             .into_iter()
             .filter(|group| {
                 searching
-                    || model_ui
+                    || self
+                        .ai
+                        .models
                         .selector_expanded_providers
                         .contains(&group.provider.id)
             })
             .filter(|group| {
-                self.ai_model_selector_has_key(&group.provider, cx)
-                    && self.ai_model_selector_provider_is_online(&group.provider, cx)
+                self.ai_model_selector_has_key(&group.provider)
+                    && self.ai_model_selector_provider_is_online(&group.provider)
             })
             .flat_map(|group| {
                 let provider_id = group.provider.id;
@@ -332,56 +312,55 @@ impl WorkspaceApp {
             .collect()
     }
 
-    pub(in crate::workspace) fn move_ai_model_selector_highlight(
-        &mut self,
-        delta: isize,
-        cx: &mut Context<Self>,
-    ) {
-        let rows = self.ai_model_selector_visible_model_keys(cx);
-        self.ai_entity.update(cx, |ai, _cx| {
-            ai.move_model_selector_highlight(&rows, delta);
-        });
+    pub(in crate::workspace) fn move_ai_model_selector_highlight(&mut self, delta: isize) {
+        let rows = self.ai_model_selector_visible_model_keys();
+        if rows.is_empty() {
+            self.ai.models.selector_highlighted_model = None;
+            return;
+        }
+        let current = self
+            .ai
+            .models
+            .selector_highlighted_model
+            .as_ref()
+            .and_then(|highlighted| rows.iter().position(|row| row == highlighted));
+        let next = match (current, delta.is_negative()) {
+            (Some(index), false) => (index + delta as usize).min(rows.len() - 1),
+            (Some(index), true) => index.saturating_sub(delta.unsigned_abs()),
+            (None, false) => 0,
+            (None, true) => rows.len() - 1,
+        };
+        self.ai.models.selector_highlighted_model = rows.get(next).cloned();
     }
 
-    pub(in crate::workspace) fn set_ai_model_selector_highlight_edge(
-        &mut self,
-        last: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let rows = self.ai_model_selector_visible_model_keys(cx);
+    pub(in crate::workspace) fn set_ai_model_selector_highlight_edge(&mut self, last: bool) {
+        let rows = self.ai_model_selector_visible_model_keys();
         // Home/End in Radix-style menu focus moves to the first/last selectable
         // model row, not to provider headers or disabled provider messages.
-        self.ai_entity.update(cx, |ai, _cx| {
-            ai.set_model_selector_highlight_edge(&rows, last);
-        });
+        self.ai.models.selector_highlighted_model = if last {
+            rows.last().cloned()
+        } else {
+            rows.first().cloned()
+        };
     }
 
     pub(in crate::workspace) fn select_highlighted_ai_model(
         &mut self,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some((provider_id, model)) = self
-            .ai_entity
-            .read(cx)
-            .model_selector_highlight()
-            .cloned()
-        else {
+        let Some((provider_id, model)) = self.ai.models.selector_highlighted_model.clone() else {
             return false;
         };
         if !self
-            .ai_model_selector_visible_model_keys(cx)
+            .ai_model_selector_visible_model_keys()
             .iter()
             .any(|row| row == &(provider_id.clone(), model.clone()))
         {
-            self.ai_entity.update(cx, |ai, _cx| {
-                ai.set_model_selector_highlight(None);
-            });
+            self.ai.models.selector_highlighted_model = None;
             return false;
         }
         self.select_ai_model_from_selector(provider_id, model, cx);
-        self.ai_entity.update(cx, |ai, _cx| {
-            ai.set_model_selector_highlight(None);
-        });
+        self.ai.models.selector_highlighted_model = None;
         true
     }
 
@@ -390,48 +369,168 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) {
         self.ensure_ai_provider_key_statuses(cx);
-        let providers = self.ai_model_selector_providers(cx);
+        let providers = self.ai_model_selector_providers();
         for provider in providers {
             if Self::ai_acp_agent_id_from_provider_id(&provider.id).is_some() {
-                self.ai_entity.update(cx, |ai, _cx| {
-                    ai.set_provider_key_status(provider.id.clone(), true);
-                });
+                self.ai
+                    .models
+                    .provider_key_status
+                    .insert(provider.id.clone(), true);
+                self.ai.models.selector_provider_online.insert(
+                    provider.id.clone(),
+                    self.ai_acp_provider_ready(&provider.id),
+                );
                 continue;
             }
             match resolve_model_selector_provider_probe(&provider) {
                 ModelSelectorProviderProbe::Disabled => {
-                    self.ai_entity.update(cx, |ai, _cx| {
-                        ai.set_provider_key_status(provider.id.clone(), false);
-                        ai.set_selector_provider_online(provider.id.clone(), false);
-                    });
+                    self.ai
+                        .models
+                        .provider_key_status
+                        .insert(provider.id.clone(), false);
+                    self.ai
+                        .models
+                        .selector_provider_online
+                        .insert(provider.id.clone(), false);
                 }
                 ModelSelectorProviderProbe::StoredKey => {
-                    self.ai_entity.update(cx, |ai, _cx| {
-                        ai.set_selector_provider_online(provider.id.clone(), true);
-                    });
+                    let has_key = self.ai_provider_has_key(&provider.id);
+                    self.ai
+                        .models
+                        .provider_key_status
+                        .insert(provider.id.clone(), has_key);
+                    self.ai
+                        .models
+                        .selector_provider_online
+                        .insert(provider.id.clone(), true);
                 }
                 ModelSelectorProviderProbe::ImplicitKey { endpoint } => {
-                    self.ai_entity.update(cx, |ai, _cx| {
-                        ai.set_provider_key_status(provider.id.clone(), true);
-                    });
+                    self.ai
+                        .models
+                        .provider_key_status
+                        .insert(provider.id.clone(), true);
                     if let Some(endpoint) = endpoint {
-                        self.ai_entity.update(cx, |ai, _cx| {
-                            ai.request_selector_provider_probe(provider, endpoint);
-                        });
+                        self.schedule_ai_model_selector_online_probe(
+                            provider.clone(),
+                            endpoint,
+                            cx,
+                        );
                     } else {
-                        self.ai_entity.update(cx, |ai, _cx| {
-                            ai.set_selector_provider_online(provider.id, true);
-                        });
+                        self.ai
+                            .models
+                            .selector_provider_online
+                            .insert(provider.id.clone(), true);
                     }
                 }
             }
         }
     }
 
+    pub(in crate::workspace) fn schedule_ai_model_selector_online_probe(
+        &mut self,
+        provider: AiProviderView,
+        endpoint: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        self.ai.models.next_selector_probe_generation = self
+            .ai
+            .models
+            .next_selector_probe_generation
+            .saturating_add(1);
+        let generation = self.ai.models.next_selector_probe_generation;
+        let provider_id = provider.id.clone();
+        self.ai
+            .models
+            .selector_probe_generations
+            .insert(provider_id.clone(), generation);
+        if self.ai.models.selector_probe_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.ai.models.selector_probe_tx = Some(tx);
+            self.ai.models.selector_probe_rx = Some(rx);
+        }
+        let Some(ui_tx) = self.ai.models.selector_probe_tx.as_ref().cloned() else {
+            return;
+        };
+        self.ai.models.selector_probe_pending =
+            self.ai.models.selector_probe_pending.saturating_add(1);
+        self.forwarding_runtime.spawn(async move {
+            let online = check_model_selector_provider_online(&provider.base_url, endpoint).await;
+            let _ = ui_tx.send(AiModelSelectorProbeDelivery {
+                provider_id,
+                generation,
+                online,
+            });
+        });
+        self.schedule_ai_model_selector_probe_poll(cx);
+    }
+
+    pub(in crate::workspace) fn poll_ai_model_selector_probe_results(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(rx) = self.ai.models.selector_probe_rx.take() else {
+            return;
+        };
+        let mut keep_rx = true;
+        loop {
+            match rx.try_recv() {
+                Ok(delivery) => {
+                    self.ai.models.selector_probe_pending =
+                        self.ai.models.selector_probe_pending.saturating_sub(1);
+                    if self
+                        .ai
+                        .models
+                        .selector_probe_generations
+                        .get(&delivery.provider_id)
+                        == Some(&delivery.generation)
+                    {
+                        self.ai
+                            .models
+                            .selector_provider_online
+                            .insert(delivery.provider_id, delivery.online);
+                        cx.notify();
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    keep_rx = false;
+                    self.ai.models.selector_probe_tx = None;
+                    self.ai.models.selector_probe_pending = 0;
+                    break;
+                }
+            }
+        }
+        if keep_rx && self.ai.models.selector_probe_pending > 0 {
+            self.ai.models.selector_probe_rx = Some(rx);
+        } else if self.ai.models.selector_probe_pending == 0 {
+            self.ai.models.selector_probe_tx = None;
+        }
+    }
+
+    pub(in crate::workspace) fn schedule_ai_model_selector_probe_poll(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ai.models.selector_probe_polling {
+            return;
+        }
+        self.ai.models.selector_probe_polling = true;
+        cx.spawn(async move |weak, cx| {
+            Timer::after(Duration::from_millis(50)).await;
+            let _ = weak.update(cx, |this, cx| {
+                this.ai.models.selector_probe_polling = false;
+                this.poll_ai_model_selector_probe_results(cx);
+                if this.ai.models.selector_probe_pending > 0 {
+                    this.schedule_ai_model_selector_probe_poll(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
     pub(in crate::workspace) fn ai_model_selector_has_key(
         &self,
         provider: &AiProviderView,
-        cx: &App,
     ) -> bool {
         if Self::ai_acp_agent_id_from_provider_id(&provider.id).is_some() {
             return provider.enabled;
@@ -439,14 +538,13 @@ impl WorkspaceApp {
         match resolve_model_selector_provider_probe(provider) {
             ModelSelectorProviderProbe::Disabled => false,
             ModelSelectorProviderProbe::ImplicitKey { .. } => true,
-            ModelSelectorProviderProbe::StoredKey => self.ai_provider_has_key(&provider.id, cx),
+            ModelSelectorProviderProbe::StoredKey => self.ai_provider_has_key(&provider.id),
         }
     }
 
     pub(in crate::workspace) fn ai_model_selector_provider_is_online(
         &self,
         provider: &AiProviderView,
-        cx: &App,
     ) -> bool {
         if Self::ai_acp_agent_id_from_provider_id(&provider.id).is_some() {
             return self.ai_acp_provider_ready(&provider.id);
@@ -454,9 +552,13 @@ impl WorkspaceApp {
         match resolve_model_selector_provider_probe(provider) {
             ModelSelectorProviderProbe::Disabled => false,
             ModelSelectorProviderProbe::StoredKey => true,
-            ModelSelectorProviderProbe::ImplicitKey { .. } => {
-                self.ai_entity.read(cx).selector_provider_is_online(&provider.id)
-            }
+            ModelSelectorProviderProbe::ImplicitKey { .. } => self
+                .ai
+                .models
+                .selector_provider_online
+                .get(&provider.id)
+                .copied()
+                .unwrap_or(true),
         }
     }
 
@@ -465,20 +567,18 @@ impl WorkspaceApp {
         provider: AiProviderView,
         cx: &mut Context<Self>,
     ) {
-        if !self.ai_model_selector_has_key(&provider, cx) {
+        if !self.ai_model_selector_has_key(&provider) {
             self.push_ai_settings_toast(
                 self.i18n.t("ai.model_selector.no_key_warning"),
                 TerminalNoticeVariant::Warning,
-                cx,
             );
             cx.notify();
             return;
         }
-        if !self.ai_model_selector_provider_is_online(&provider, cx) {
+        if !self.ai_model_selector_provider_is_online(&provider) {
             self.push_ai_settings_toast(
                 self.i18n.t("ai.model_selector.offline"),
                 TerminalNoticeVariant::Warning,
-                cx,
             );
             cx.notify();
             return;
@@ -506,7 +606,7 @@ impl WorkspaceApp {
             Self::ai_acp_agent_id_from_provider_id(&provider_id).map(str::to_string)
         {
             let session_model_selection = self
-                .ai_acp_model_options_for_agent(&agent_id, cx)
+                .ai_acp_model_options_for_agent(&agent_id)
                 .and_then(|options| {
                     let option = oxideterm_ai::acp_model_config_option(&options)?;
                     let choice = option.choices.iter().find(|choice| choice.label == model)?;
@@ -528,7 +628,7 @@ impl WorkspaceApp {
                 },
                 cx,
             );
-            self.close_ai_model_selector(cx);
+            self.close_ai_model_selector();
             cx.notify();
             return;
         }
@@ -545,13 +645,13 @@ impl WorkspaceApp {
             cx,
         );
         if previous_model.as_deref() != Some(model.as_str()) {
-            self.update_ai_model_switch_warning(&provider_id, &model, cx);
+            self.update_ai_model_switch_warning(&provider_id, &model);
         }
-        self.close_ai_model_selector(cx);
+        self.close_ai_model_selector();
         cx.notify();
     }
 
-    pub(in crate::workspace) fn ai_model_selector_providers(&self, cx: &App) -> Vec<AiProviderView> {
+    pub(in crate::workspace) fn ai_model_selector_providers(&self) -> Vec<AiProviderView> {
         let settings = self.settings_store.settings();
         let mut providers = ai_provider_views(&settings.ai.providers);
         providers.extend(
@@ -559,7 +659,7 @@ impl WorkspaceApp {
                 .ai
                 .acp_agents
                 .iter()
-                .map(|agent| self.ai_acp_agent_provider_view(agent, cx)),
+                .map(|agent| self.ai_acp_agent_provider_view(agent)),
         );
         providers
     }
@@ -579,12 +679,11 @@ impl WorkspaceApp {
     pub(in crate::workspace) fn ai_acp_agent_provider_view(
         &self,
         agent: &AcpAgentConfig,
-        cx: &App,
     ) -> AiProviderView {
         let label = Self::ai_acp_agent_label(agent);
-        let fallback_model = self.ai_acp_agent_model_fallback_label(&agent.id, cx);
+        let fallback_model = self.ai_acp_agent_model_fallback_label(&agent.id);
         let models = self
-            .ai_acp_model_options_for_agent(&agent.id, cx)
+            .ai_acp_model_options_for_agent(&agent.id)
             .and_then(|options| oxideterm_ai::acp_model_config_option(&options).cloned())
             .map(|option| {
                 option
@@ -628,7 +727,6 @@ impl WorkspaceApp {
     pub(in crate::workspace) fn ai_acp_agent_model_fallback_label(
         &self,
         agent_id: &str,
-        cx: &App,
     ) -> String {
         let agent = self
             .settings_store
@@ -644,7 +742,7 @@ impl WorkspaceApp {
                 oxideterm_ai::AcpLaunchModelHint::Automatic => None,
             });
         explicit_model.unwrap_or_else(|| {
-            if self.ai_acp_model_discovery_is_pending(agent_id, cx) {
+            if self.ai_acp_model_discovery_is_pending(agent_id) {
                 self.i18n.t("ai.model_selector.agent_model_loading")
             } else if agent.is_some_and(|agent| {
                 oxideterm_ai::acp_model_report_is_deferred_until_first_prompt(&agent.args)
@@ -677,36 +775,19 @@ impl WorkspaceApp {
         value_id: String,
         cx: &mut Context<Self>,
     ) {
-        let Some(discovered_options) = self.ai_acp_model_options_for_agent(&agent_id, cx) else {
+        let Some(discovered_options) = self.ai_acp_model_options_for_agent(&agent_id) else {
             return;
         };
-        let conversation_id = self
-            .ai_entity
-            .read(cx)
-            .conversation_state()
-            .active_conversation()
-            .map(|conversation| conversation.id.clone());
-        let sent_to_session = conversation_id.as_deref().is_some_and(|conversation_id| {
-            self.acp_entity.update(cx, |entity, _cx| {
-                entity.set_config_selection(
-                    conversation_id,
-                    oxideterm_ai::AcpSessionConfigSelection {
-                        config_id: config_id.clone(),
-                        value_id: value_id.clone(),
-                    },
-                )
-            })
-        });
-        let accepted = sent_to_session
-            || self.ai_entity.update(cx, |ai, _cx| {
-                ai.set_active_acp_model_selection(
-                    &agent_id,
-                    discovered_options,
-                    &config_id,
-                    &value_id,
-                )
-            });
-        if !accepted {
+        let Some(conversation) = self.ai.chat.conversation_state.active_conversation_mut() else {
+            return;
+        };
+        if !store_ai_acp_model_selection_in_conversation(
+            conversation,
+            &agent_id,
+            discovered_options,
+            &config_id,
+            &value_id,
+        ) {
             return;
         }
         self.edit_settings(
@@ -716,80 +797,8 @@ impl WorkspaceApp {
             },
             cx,
         );
-        self.close_ai_model_selector(cx);
-        cx.notify();
-    }
-
-    pub(in crate::workspace) fn select_ai_acp_config_from_selector(
-        &mut self,
-        agent_id: String,
-        config_id: String,
-        value_id: String,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(conversation_id) = self
-            .ai_entity
-            .read(cx)
-            .conversation_state()
-            .active_conversation()
-            .map(|conversation| conversation.id.clone())
-        else {
-            return;
-        };
-        let Some(discovered_options) = self
-            .active_ai_acp_session_state(&agent_id, cx)
-            .map(|state| state.config_options)
-            .or_else(|| self.ai_acp_model_options_for_agent(&agent_id, cx))
-        else {
-            return;
-        };
-        let selection = oxideterm_ai::AcpSessionConfigSelection {
-            config_id: config_id.clone(),
-            value_id: value_id.clone(),
-        };
-        let sent_to_session = self.acp_entity.update(cx, |entity, _cx| {
-            entity.set_config_selection(&conversation_id, selection)
-        });
-        let accepted = sent_to_session
-            || self.ai_entity.update(cx, |ai, _cx| {
-                ai.set_active_acp_config_selection(
-                    &agent_id,
-                    discovered_options,
-                    &config_id,
-                    &value_id,
-                )
-            });
-        if !accepted {
-            return;
-        }
-        cx.notify();
-    }
-
-    pub(in crate::workspace) fn select_ai_acp_mode_from_selector(
-        &mut self,
-        agent_id: String,
-        mode_id: String,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(conversation_id) = self
-            .ai_entity
-            .read(cx)
-            .conversation_state()
-            .active_conversation()
-            .map(|conversation| conversation.id.clone())
-        else {
-            return;
-        };
-        let sent_to_session = self.acp_entity.update(cx, |entity, _cx| {
-            entity.set_mode(&conversation_id, mode_id.clone())
-        });
-        let accepted = sent_to_session
-            || self
-                .ai_entity
-                .update(cx, |ai, _cx| ai.set_active_acp_mode(&agent_id, &mode_id));
-        if !accepted {
-            return;
-        }
+        self.persist_ai_chat_state();
+        self.close_ai_model_selector();
         cx.notify();
     }
 
@@ -797,9 +806,8 @@ impl WorkspaceApp {
         &mut self,
         provider_id: &str,
         model: &str,
-        cx: &mut Context<Self>,
     ) {
-        let Some(conversation) = self.ai_entity.read(cx).conversation_state().active_conversation() else {
+        let Some(conversation) = self.ai.chat.conversation_state.active_conversation() else {
             return;
         };
         let total_tokens = ai_conversation_message_tokens(conversation);
@@ -816,9 +824,7 @@ impl WorkspaceApp {
         .unwrap_or(AI_COMPACTION_DEFAULT_CONTEXT_WINDOW);
         let percentage = ai_context_percentage(total_tokens, max_tokens);
         if percentage > AI_CONTEXT_WARNING_PERCENT {
-            self.ai_entity.update(cx, |ai, _cx| {
-                ai.set_model_switch_warning(Some(percentage.round() as usize));
-            });
+            self.ai.chat.model_switch_warning_percentage = Some(percentage.round() as usize);
         }
     }
 }
@@ -883,24 +889,6 @@ pub(in crate::workspace) fn store_ai_acp_model_selection_in_conversation(
     config_id: &str,
     value_id: &str,
 ) -> bool {
-    store_ai_acp_config_selection_in_conversation(
-        conversation,
-        agent_id,
-        discovered_options,
-        config_id,
-        value_id,
-        true,
-    )
-}
-
-pub(in crate::workspace) fn store_ai_acp_config_selection_in_conversation(
-    conversation: &mut AiConversation,
-    agent_id: &str,
-    discovered_options: Vec<oxideterm_ai::AcpSessionConfigOption>,
-    config_id: &str,
-    value_id: &str,
-    is_model_selection: bool,
-) -> bool {
     let mut state = ai_acp_session_state(conversation)
         .filter(|state| state.agent_id == agent_id)
         .unwrap_or_else(|| AiAcpSessionState {
@@ -909,14 +897,6 @@ pub(in crate::workspace) fn store_ai_acp_config_selection_in_conversation(
             metadata: None,
             config_options: discovered_options,
             model_selection: None,
-            config_selections: Vec::new(),
-            current_mode_id: None,
-            available_modes: Vec::new(),
-            available_commands: Vec::new(),
-            plan: None,
-            usage: None,
-            title: None,
-            handoff_cursor: None,
         });
     let Some(option) = state
         .config_options
@@ -936,17 +916,10 @@ pub(in crate::workspace) fn store_ai_acp_config_selection_in_conversation(
     // An empty session id marks a pre-prompt choice. The prompt path creates a
     // real session and applies this value before sending the user's message.
     option.current_value_id = value_id.to_string();
-    let selection = oxideterm_ai::AcpSessionConfigSelection {
+    state.model_selection = Some(oxideterm_ai::AcpSessionConfigSelection {
         config_id: config_id.to_string(),
         value_id: value_id.to_string(),
-    };
-    if is_model_selection {
-        state.model_selection = Some(selection.clone());
-    }
-    state
-        .config_selections
-        .retain(|existing| existing.config_id != config_id);
-    state.config_selections.push(selection);
+    });
     let conversation_id = conversation.id.clone();
     let metadata = conversation.session_metadata.get_or_insert_with(|| {
         serde_json::json!({
@@ -962,6 +935,12 @@ pub(in crate::workspace) fn store_ai_acp_config_selection_in_conversation(
     };
     metadata.insert(AI_ACP_SESSION_METADATA_KEY.to_string(), value);
     true
+}
+
+pub(in crate::workspace) struct AiModelSelectorProbeDelivery {
+    pub(in crate::workspace) provider_id: String,
+    pub(in crate::workspace) generation: u64,
+    pub(in crate::workspace) online: bool,
 }
 
 pub(in crate::workspace) fn ai_model_selector_status_signature(

@@ -65,7 +65,7 @@ impl PooledSshConnection {
         }
     }
 
-    async fn is_closed(&self) -> bool {
+    pub(crate) async fn is_closed(&self) -> bool {
         self.target.is_closed()
     }
 }
@@ -286,6 +286,7 @@ impl SshConnectionHandle {
         timeout: Duration,
         max_output_size: usize,
     ) -> Result<String, SshTransportError> {
+        tracing::debug!(connection_id = %self.connection_id(), command = %command.chars().take(80).collect::<String>(), "run_command: opening exec channel");
         let Some(pooled) = self.physical::<PooledSshConnection>() else {
             return Err(SshTransportError::ConnectionFailed(
                 "no active SSH connection is available for remote command execution".to_string(),
@@ -461,6 +462,7 @@ impl SshConnectionHandle {
         &self,
         init_command: &str,
     ) -> Result<SshShellChannel, SshTransportError> {
+        tracing::debug!(connection_id = %self.connection_id(), "open_persistent_shell_channel: opening monitor shell channel");
         let channel = self.open_session_channel().await?;
         channel
             .request_shell(false)

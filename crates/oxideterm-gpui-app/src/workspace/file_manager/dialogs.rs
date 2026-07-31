@@ -40,18 +40,13 @@ impl WorkspaceApp {
             max_height,
             8.0,
         );
-        let (selected_count, menu_loading, has_clipboard) = {
-            let file_manager = self.file_manager.read(cx);
-            (
-                file_manager.selected.len(),
-                file_manager.loading
-                    || file_manager
-                        .operation_progress
-                        .as_ref()
-                        .is_some_and(|progress| progress.active),
-                file_manager.clipboard.is_some(),
-            )
-        };
+        let selected_count = self.file_manager.selected.len();
+        let menu_loading = self.file_manager.loading
+            || self
+                .file_manager
+                .operation_progress
+                .as_ref()
+                .is_some_and(|progress| progress.active);
         let popup = context_menu_event_boundary(
             div()
                 .w(px(FILE_MANAGER_CONTEXT_MENU_WIDTH))
@@ -77,8 +72,8 @@ impl WorkspaceApp {
                     has_background,
                     {
                         let file = file;
-                        move |this, _event, _window, cx| {
-                            this.set_file_manager_path(file.path.clone(), cx);
+                        move |this, _event, _window, _cx| {
+                            this.set_file_manager_path(file.path.clone());
                         }
                     },
                     cx,
@@ -92,13 +87,12 @@ impl WorkspaceApp {
                         has_background,
                         {
                             let file = file.clone();
-                            move |this, _event, _window, cx| {
+                            move |this, _event, _window, _cx| {
                                 if let Err(error) = open_path_external(&file.path) {
                                     this.push_file_manager_toast(
                                         this.i18n.t("fileManager.error"),
                                         Some(error),
                                         TerminalNoticeVariant::Error,
-                                        cx,
                                     );
                                 }
                             }
@@ -128,7 +122,7 @@ impl WorkspaceApp {
                 has_background,
                 {
                     let file = menu.file.clone();
-                    move |this, _event, _window, cx| {
+                    move |this, _event, _window, _cx| {
                         if let Some(file) = file.as_ref()
                             && let Err(error) = reveal_path_external(&file.path)
                         {
@@ -136,7 +130,6 @@ impl WorkspaceApp {
                                 this.i18n.t("fileManager.error"),
                                 Some(error),
                                 TerminalNoticeVariant::Error,
-                                cx,
                             );
                         }
                     }
@@ -217,7 +210,7 @@ impl WorkspaceApp {
                 ))
             },
         )
-        .when(has_clipboard, |menu_el| {
+        .when(self.file_manager.clipboard.is_some(), |menu_el| {
             menu_el.child(self.render_file_manager_context_menu_guarded_item(
                 LucideIcon::Download,
                 self.i18n.t("fileManager.paste"),
@@ -242,9 +235,9 @@ impl WorkspaceApp {
                     has_background,
                     {
                         let file = menu.file.clone();
-                        move |this, _event, _window, cx| {
+                        move |this, _event, _window, _cx| {
                             if let Some(file) = file.as_ref() {
-                                this.open_file_manager_rename_dialog(file.name.clone(), cx);
+                                this.open_file_manager_rename_dialog(file.name.clone());
                             }
                         }
                     },
@@ -280,12 +273,12 @@ impl WorkspaceApp {
                     has_background,
                     {
                         let file = menu.file.clone();
-                        move |this, _event, _window, cx| {
+                        move |this, _event, _window, _cx| {
                             if let Some(file) = file
                                 .clone()
-                                .or_else(|| this.single_selected_file_manager_file(cx))
+                                .or_else(|| this.single_selected_file_manager_file())
                             {
-                                this.open_file_manager_properties(file, cx);
+                                this.open_file_manager_properties(file);
                             }
                         }
                     },
@@ -298,8 +291,8 @@ impl WorkspaceApp {
                     false,
                     menu_loading,
                     has_background,
-                    |this, _event, _window, cx| {
-                        this.open_file_manager_delete_dialog(cx);
+                    |this, _event, _window, _cx| {
+                        this.open_file_manager_delete_dialog();
                     },
                     cx,
                 ))
@@ -312,8 +305,8 @@ impl WorkspaceApp {
             false,
             menu_loading,
             has_background,
-            |this, _event, _window, cx| {
-                this.open_file_manager_new_folder_dialog(cx);
+            |this, _event, _window, _cx| {
+                this.open_file_manager_new_folder_dialog();
             },
             cx,
         ))
@@ -324,8 +317,8 @@ impl WorkspaceApp {
             false,
             menu_loading,
             has_background,
-            |this, _event, _window, cx| {
-                this.open_file_manager_new_file_dialog(cx);
+            |this, _event, _window, _cx| {
+                this.open_file_manager_new_file_dialog();
             },
             cx,
         ))
@@ -334,8 +327,8 @@ impl WorkspaceApp {
             self.i18n.t("fileManager.selectAll"),
             false,
             has_background,
-            |this, _event, _window, cx| {
-                this.select_all_file_manager_files(cx);
+            |this, _event, _window, _cx| {
+                this.select_all_file_manager_files();
             },
             cx,
         ))
@@ -344,8 +337,8 @@ impl WorkspaceApp {
             self.i18n.t("fileManager.refresh"),
             false,
             has_background,
-            |this, _event, _window, cx| {
-                this.refresh_file_manager_with_drives(cx);
+            |this, _event, _window, _cx| {
+                this.refresh_file_manager_with_drives();
             },
             cx,
         ))
@@ -354,8 +347,8 @@ impl WorkspaceApp {
             self.i18n.t("fileManager.showDrives"),
             false,
             has_background,
-            |this, _event, _window, cx| {
-                this.open_file_manager_drives_dialog(cx);
+            |this, _event, _window, _cx| {
+                this.open_file_manager_drives_dialog();
             },
             cx,
         ));
@@ -408,7 +401,7 @@ impl WorkspaceApp {
     ) -> AnyElement {
         let theme = self.tokens.ui;
         let disabled = disabled
-            || self.file_manager.read(cx).context_menu_presence.phase()
+            || self.file_manager.context_menu_presence.phase()
                 == oxideterm_gpui_ui::motion::ExitPhase::Exiting;
         let color = if danger { FILE_MANAGER_RED } else { theme.text };
         let item = div()
@@ -440,14 +433,6 @@ impl WorkspaceApp {
         // like disabled browser/Radix menu items.
         // The shared workspace menu helper owns cx.listener wrapping, so callers
         // pass plain WorkspaceApp closures and avoid nested same-entity updates.
-        let listener_with_dismissal =
-            move |this: &mut Self,
-                  event: &MouseDownEvent,
-                  window: &mut Window,
-                  cx: &mut Context<Self>| {
-                this.dismiss_file_manager_context_menu(cx);
-                listener(this, event, window, cx);
-            };
         self.workspace_context_menu_styled_action(
             item,
             disabled,
@@ -456,8 +441,10 @@ impl WorkspaceApp {
                 hover_background: Some(file_manager_hover_bg(theme.bg_hover, has_background)),
                 hover_text_color: None,
             },
-            |_| {},
-            listener_with_dismissal,
+            |this| {
+                this.dismiss_file_manager_context_menu();
+            },
+            listener,
             cx,
         )
         .into_any_element()
@@ -477,7 +464,7 @@ impl WorkspaceApp {
         has_background: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(dialog) = self.file_manager.read(cx).dialog.clone() else {
+        let Some(dialog) = self.file_manager.dialog.clone() else {
             return div().into_any_element();
         };
         if let FileManagerDialog::Preview { entry } = &dialog {
@@ -534,7 +521,7 @@ impl WorkspaceApp {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event, _window, cx| {
-                    this.close_file_manager_dialog(cx);
+                    this.close_file_manager_dialog();
                     cx.stop_propagation();
                     cx.notify();
                 }),
@@ -613,7 +600,7 @@ impl WorkspaceApp {
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(|this, _event, _window, cx| {
-                                            this.close_file_manager_dialog(cx);
+                                            this.close_file_manager_dialog();
                                             cx.stop_propagation();
                                             cx.notify();
                                         }),
@@ -649,7 +636,7 @@ impl WorkspaceApp {
             .min(FILE_MANAGER_QUICKLOOK_HEIGHT)
             .max(min_height)
             .min(max_height);
-        let form_visible = self.file_manager.read(cx).dialog_presence.phase()
+        let form_visible = self.file_manager.dialog_presence.phase()
             == oxideterm_gpui_ui::motion::ExitPhase::Visible;
         quicklook_backdrop()
             .on_mouse_down(
@@ -713,7 +700,7 @@ impl WorkspaceApp {
         } else {
             icon_color
         };
-        let form_visible = self.file_manager.read(cx).dialog_presence.phase()
+        let form_visible = self.file_manager.dialog_presence.phase()
             == oxideterm_gpui_ui::motion::ExitPhase::Visible;
         dismissible_dialog_backdrop()
             .on_mouse_down(
@@ -855,15 +842,7 @@ impl WorkspaceApp {
     ) -> AnyElement {
         let target = WorkspaceImeTarget::FileManager(FileManagerInput::DialogValue);
         let workspace = cx.entity();
-        let (dialog, dialog_value, focused) = {
-            let file_manager = self.file_manager.read(cx);
-            (
-                file_manager.dialog.clone(),
-                file_manager.dialog_value.clone(),
-                file_manager.focused_input == Some(FileManagerInput::DialogValue),
-            )
-        };
-        let placeholder = match dialog {
+        let placeholder = match self.file_manager.dialog {
             Some(FileManagerDialog::NewFolder) => self.i18n.t("fileManager.folderName"),
             Some(FileManagerDialog::NewFile) => self.i18n.t("fileManager.fileName"),
             Some(FileManagerDialog::EditBookmark { .. }) => self.i18n.t("fileManager.bookmarkName"),
@@ -879,14 +858,15 @@ impl WorkspaceApp {
                 text_input(
                     &self.tokens,
                     TextInputView {
-                        value: &dialog_value,
+                        value: &self.file_manager.dialog_value,
                         placeholder,
-                        focused,
-                        caret_visible: self.input_caret.visible(),
+                        focused: self.file_manager.focused_input
+                            == Some(FileManagerInput::DialogValue),
+                        caret_visible: self.new_connection_caret_visible,
                         secret: false,
                         selected_all: false,
-                        selected_range: self.ime_selected_range_for_target(target, cx),
-                        marked_text: self.marked_text_for_target(target, cx),
+                        selected_range: self.ime_selected_range_for_target(target),
+                        marked_text: self.marked_text_for_target(target),
                     },
                 )
                 .bg(file_manager_bg(self.tokens.ui.bg_sunken, has_background))
@@ -894,11 +874,8 @@ impl WorkspaceApp {
                     MouseButton::Left,
                     cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                         window.focus(&this.focus_handle, cx);
-                        this.file_manager.update(cx, |file_manager, cx| {
-                            file_manager.focused_input = Some(FileManagerInput::DialogValue);
-                            file_manager.focused_dialog_footer_action = None;
-                            cx.notify();
-                        });
+                        this.file_manager.focused_input = Some(FileManagerInput::DialogValue);
+                        this.file_manager.focused_dialog_footer_action = None;
                         this.ime_marked_text = None;
                         this.begin_ime_selection_from_mouse_down(target, event, window, cx);
                         cx.stop_propagation();
@@ -927,13 +904,6 @@ impl WorkspaceApp {
     ) -> AnyElement {
         let target = WorkspaceImeTarget::FileManager(FileManagerInput::DialogValue);
         let workspace = cx.entity();
-        let (dialog_value, focused) = {
-            let file_manager = self.file_manager.read(cx);
-            (
-                file_manager.dialog_value.clone(),
-                file_manager.focused_input == Some(FileManagerInput::DialogValue),
-            )
-        };
         div()
             .p(px(16.0))
             .flex()
@@ -957,14 +927,15 @@ impl WorkspaceApp {
                 text_input(
                     &self.tokens,
                     TextInputView {
-                        value: &dialog_value,
+                        value: &self.file_manager.dialog_value,
                         placeholder: self.i18n.t("fileManager.bookmarkName"),
-                        focused,
-                        caret_visible: self.input_caret.visible(),
+                        focused: self.file_manager.focused_input
+                            == Some(FileManagerInput::DialogValue),
+                        caret_visible: self.new_connection_caret_visible,
                         secret: false,
                         selected_all: false,
-                        selected_range: self.ime_selected_range_for_target(target, cx),
-                        marked_text: self.marked_text_for_target(target, cx),
+                        selected_range: self.ime_selected_range_for_target(target),
+                        marked_text: self.marked_text_for_target(target),
                     },
                 )
                 .bg(file_manager_bg(self.tokens.ui.bg_sunken, has_background))
@@ -972,10 +943,7 @@ impl WorkspaceApp {
                     MouseButton::Left,
                     cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                         window.focus(&this.focus_handle, cx);
-                        this.file_manager.update(cx, |file_manager, cx| {
-                            file_manager.focused_input = Some(FileManagerInput::DialogValue);
-                            cx.notify();
-                        });
+                        this.file_manager.focused_input = Some(FileManagerInput::DialogValue);
                         this.ime_marked_text = None;
                         this.begin_ime_selection_from_mouse_down(target, event, window, cx);
                         cx.stop_propagation();
@@ -1055,8 +1023,7 @@ impl WorkspaceApp {
         danger: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let primary_disabled = self.file_manager_dialog_primary_disabled(cx);
-        let focused_action = self.file_manager.read(cx).focused_dialog_footer_action;
+        let primary_disabled = self.file_manager_dialog_primary_disabled();
         div()
             .flex()
             .justify_end()
@@ -1071,9 +1038,9 @@ impl WorkspaceApp {
                     ButtonVariant::Ghost,
                     ConfirmDialogAction::Cancel,
                     false,
-                    focused_action,
+                    self.file_manager.focused_dialog_footer_action,
                     |this, _event, _window, cx| {
-                        this.close_file_manager_dialog(cx);
+                        this.close_file_manager_dialog();
                         cx.stop_propagation();
                         cx.notify();
                     },
@@ -1093,7 +1060,7 @@ impl WorkspaceApp {
                 },
                 ConfirmDialogAction::Confirm,
                 primary_disabled,
-                focused_action,
+                self.file_manager.focused_dialog_footer_action,
                 |this, _event, _window, cx| {
                     this.accept_file_manager_dialog(cx);
                     cx.stop_propagation();
@@ -1109,8 +1076,7 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut list = div().p(px(12.0)).flex().flex_col().gap(px(8.0));
-        let drives = self.file_manager.read(cx).drives.clone();
-        for drive in &drives {
+        for drive in &self.file_manager.drives {
             list = list.child(
                 div()
                     .p(px(10.0))
@@ -1188,8 +1154,8 @@ impl WorkspaceApp {
                         cx.listener({
                             let path = drive.path.clone();
                             move |this, _event, _window, cx| {
-                                this.set_file_manager_path(path.clone(), cx);
-                                this.close_file_manager_dialog(cx);
+                                this.set_file_manager_path(path.clone());
+                                this.close_file_manager_dialog();
                                 cx.stop_propagation();
                                 cx.notify();
                             }
@@ -1328,7 +1294,7 @@ impl WorkspaceApp {
             }
         } else {
             body = body.child(self.render_file_manager_property_separator(has_background));
-            if let Some(checksum) = self.file_manager.read(cx).properties_checksum.clone() {
+            if let Some(checksum) = self.file_manager.properties_checksum.clone() {
                 body = body
                     .child(self.render_file_manager_property_row_text(
                         "MD5",
@@ -1497,7 +1463,7 @@ impl WorkspaceApp {
     }
 
     fn render_file_manager_checksum_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let loading = self.file_manager.read(cx).properties_checksum_loading;
+        let loading = self.file_manager.properties_checksum_loading;
         let theme = self.tokens.ui;
         self.render_file_manager_property_row_value(
             self.i18n.t("fileManager.propChecksum"),

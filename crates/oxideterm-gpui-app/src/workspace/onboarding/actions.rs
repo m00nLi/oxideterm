@@ -68,10 +68,8 @@ impl WorkspaceApp {
         self.onboarding.step = step;
         self.onboarding.scroll_handle = ScrollHandle::new();
         if OnboardingStep::from_index(step) == OnboardingStep::CliCompanion
-            && self
-                .settings_workspace
-                .read(cx)
-                .cli_companion_needs_refresh()
+            && self.settings_page.cli_companion_status.is_none()
+            && !self.settings_page.cli_companion_loading
         {
             self.refresh_cli_companion_status(cx);
         }
@@ -198,9 +196,6 @@ impl WorkspaceApp {
             }
         }
         let _ = self.connection_store.save();
-        self.settings_workspace.update(cx, |settings, _cx| {
-            settings.acknowledge_external_store_state()
-        });
         self.onboarding.imported_count = imported;
         self.onboarding.import_state = OnboardingImportState::Done;
         self.onboarding.host_count = Some(imported);
@@ -240,9 +235,7 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) {
         self.complete_onboarding(cx);
-        self.settings_workspace.update(cx, |settings, cx| {
-            settings.set_active_tab(SettingsTab::General, cx)
-        });
+        self.settings_page.set_active_tab(SettingsTab::General);
         self.open_settings(window, cx);
     }
 }

@@ -10,7 +10,6 @@ mod keybindings;
 mod logging;
 mod migration_snapshot;
 mod platform;
-mod portable_bootstrap;
 mod single_instance;
 mod workspace;
 
@@ -21,7 +20,7 @@ use oxideterm_i18n::I18n;
 use oxideterm_settings::SettingsStore;
 
 use crate::assets::NativeAssets;
-use crate::workspace::{WorkspaceApp, WorkspaceWindowShell, locale_from_settings};
+use crate::workspace::{WorkspaceApp, locale_from_settings};
 
 // Tauri's `tauri.conf.json` opens the main window at 1200x800. Keeping the
 // native default the same preserves first-launch sidebar proportions.
@@ -167,14 +166,11 @@ fn main() {
         // macOS keeps the application alive after closing the last window.
         // Reopening from the Dock should create a fresh workspace window
         // instead of leaving the app windowless.
-        if let Err(error) = open_primary_window(
+        if let Err(error) = open_main_workspace_window(
             cx,
             None,
             desktop_presence_menu_from_settings(),
             Some(reopen_single_instance_rx.clone()),
-            SettingsStore::load_default()
-                .map(|store| store.settings().clone())
-                .unwrap_or_default(),
         ) {
             eprintln!(
                 "OxideTerm could not reopen a native GPUI window: {error:#}\n\
@@ -209,53 +205,41 @@ fn main() {
         let desktop_presence_menu = desktop_presence_menu(&I18n::new(locale_from_settings(
             startup_settings.general.language,
         )));
-        let workspace_opened = match open_primary_window(
+        if let Err(err) = open_main_workspace_window(
             cx,
             ssh_launch,
             desktop_presence_menu,
             Some(single_instance_rx),
-            startup_settings.clone(),
         ) {
-            Ok(workspace_opened) => workspace_opened,
-            Err(err) => {
-                eprintln!(
-                    "OxideTerm could not open a native GPUI window: {err:#}\n\
-                     GPUI 0.2.2 does not expose a CPU renderer fallback. \
-                     Try updating GPU drivers, disabling incompatible graphics layers, \
-                     or relaunching with OXIDETERM_RENDER_PROFILE=compatibility."
-                );
-                cx.quit();
-                return;
-            }
-        };
+            eprintln!(
+                "OxideTerm could not open a native GPUI window: {err:#}\n\
+                 GPUI 0.2.2 does not expose a CPU renderer fallback. \
+                 Try updating GPU drivers, disabling incompatible graphics layers, \
+                 or relaunching with OXIDETERM_RENDER_PROFILE=compatibility."
+            );
+            cx.quit();
+            return;
+        }
 
-        if workspace_opened && let Err(error) = confirm_update_after_initial_workspace() {
-            eprintln!("failed to confirm the applied update: {error}");
+        #[cfg(target_os = "windows")]
+        if let Err(error) = confirm_windows_update_after_initial_workspace() {
+            eprintln!("failed to confirm the applied Windows update: {error}");
         }
     });
 }
 
-fn confirm_update_after_initial_workspace() -> std::io::Result<()> {
+#[cfg(target_os = "windows")]
+fn confirm_windows_update_after_initial_workspace() -> std::io::Result<()> {
     // Reaching this point confirms window and workspace construction. The old
     // files are recovery artifacts only and can now be removed without rollback.
-    if let Ok(info) = oxideterm_portable_runtime::portable_info()
-        && info.is_portable
-    {
-        oxideterm_update::confirm_applied_portable_update(&info.host_dir)?;
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let current_exe = std::env::current_exe()?;
-        let install_dir = current_exe.parent().ok_or_else(|| {
-            std::io::Error::other(format!(
-                "current executable has no install directory: {}",
-                current_exe.display()
-            ))
-        })?;
-        oxideterm_update::confirm_applied_windows_update(install_dir)?;
-    }
-    Ok(())
+    let current_exe = std::env::current_exe()?;
+    let install_dir = current_exe.parent().ok_or_else(|| {
+        std::io::Error::other(format!(
+            "current executable has no install directory: {}",
+            current_exe.display()
+        ))
+    })?;
+    oxideterm_update::confirm_applied_windows_update(install_dir)
 }
 
 fn default_window_bounds(cx: &mut App) -> Bounds<gpui::Pixels> {
@@ -289,7 +273,7 @@ fn open_main_workspace_window(
                 }
             };
 
-        let session = cx.new(|cx| {
+        let workspace = cx.new(|cx| {
             WorkspaceApp::new(window, cx, desktop_presence_rx, single_instance_rx).unwrap_or_else(
                 |err| {
                     panic!(
@@ -301,40 +285,20 @@ fn open_main_workspace_window(
                 },
             )
         });
+        let _ = workspace.update(cx, |workspace, cx| {
+            workspace.start_desktop_presence_polling(cx);
+            workspace.start_single_instance_polling(window, cx);
+        });
         if let Some(launch) = ssh_launch
-            && let Err(error) = session.update(cx, |session, cx| {
-                session.open_temporary_ssh_launch(launch, cx)
+            && let Err(error) = workspace.update(cx, |workspace, cx| {
+                workspace.open_temporary_ssh_launch(launch, window, cx)
             })
         {
             eprintln!("failed to open temporary SSH launch: {error}");
         }
-        cx.new(|cx| WorkspaceWindowShell::new(session, window, cx))
+        workspace
     })
     .map(|_| ())
-}
-
-fn open_primary_window(
-    cx: &mut App,
-    ssh_launch: Option<oxideterm_ssh_launch::TemporarySshLaunch>,
-    desktop_presence_menu: oxideterm_desktop_presence::DesktopPresenceMenu,
-    single_instance_rx: Option<single_instance::SingleInstanceReceiver>,
-    settings: oxideterm_settings::PersistedSettings,
-) -> anyhow::Result<bool> {
-    let portable_status = oxideterm_portable_runtime::portable_status_snapshot()?;
-    if portable_bootstrap::portable_startup_requires_bootstrap(portable_status.status) {
-        portable_bootstrap::open_portable_bootstrap_window(
-            cx,
-            portable_status,
-            settings,
-            ssh_launch,
-            desktop_presence_menu,
-            single_instance_rx,
-        )?;
-        return Ok(false);
-    }
-
-    open_main_workspace_window(cx, ssh_launch, desktop_presence_menu, single_instance_rx)?;
-    Ok(true)
 }
 
 fn ssh_launch_path_arg() -> Result<Option<PathBuf>, String> {

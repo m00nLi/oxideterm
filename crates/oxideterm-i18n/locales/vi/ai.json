@@ -1,12 +1,5 @@
 {
   "ai": {
-    "acp": {
-      "auth_required": "Cần xác thực",
-      "authenticate": "Xác thực",
-      "auth_environment_hint": "Đặt các biến môi trường bắt buộc trong cài đặt tác nhân",
-      "auth_terminal_hint": "Hoàn tất xác thực thiết bị đầu cuối tương tác ở bên ngoài rồi thử lại",
-      "auth_unsupported_hint": "Phương thức xác thực này không được hỗ trợ"
-    },
     "chat": {
       "header": "Trò chuyện",
       "get_started": "Bắt đầu với OxideSens",
@@ -27,11 +20,7 @@
       "start_conversation": "Bắt đầu cuộc trò chuyện",
       "start_conversation_hint": "Đặt câu hỏi về lệnh shell, script hoặc các thao tác terminal.",
       "delete_conversation": "Xóa cuộc trò chuyện",
-      "rename_conversation": "Đổi tên cuộc trò chuyện",
-      "save_conversation_title": "Lưu tiêu đề",
       "messages_count": "{{count}} tin nhắn",
-      "today": "Hôm nay",
-      "yesterday": "Hôm qua",
       "double_click_rename": "Nhấp đúp để đổi tên",
       "branch_prev": "Phiên bản trước",
       "branch_next": "Phiên bản sau"
@@ -132,7 +121,6 @@
       "manage_providers": "Quản lý nhà cung cấp",
       "no_provider": "Chưa cấu hình nhà cung cấp",
       "select_model": "Chọn mô hình",
-      "session_mode": "Chế độ phiên",
       "no_model_selected": "Chưa chọn mô hình. Hãy chọn một mô hình trong menu mô hình của cuộc trò chuyện.",
       "agent_decides": "Do tác tử quyết định",
       "agent_model_unavailable": "Tự động chọn (tác tử không công bố mô hình)",
@@ -157,18 +145,6 @@
       "show_raw_output": "Hiện toàn bộ đầu ra",
       "hide_raw_output": "Thu gọn đầu ra",
       "recovery_actions": "Hành động khôi phục",
-      "choose_target": "Chọn đích để tiếp tục",
-      "cancel_selection": "Hủy",
-      "recovery": {
-        "stale_target": "Đích đang hoạt động đã thay đổi hoặc không còn khả dụng.",
-        "state_changed_after_approval": "Không có thao tác nào được chạy vì đích đã thay đổi trong khi chờ phê duyệt.",
-        "resource_removed": "Tài nguyên đã lưu không còn tồn tại.",
-        "resource_disconnected": "Tài nguyên đã lưu đang bị ngắt kết nối.",
-        "credential_interaction_required": "Luồng kết nối thông thường cần thông tin xác thực hoặc xác nhận.",
-        "operation_cancelled": "Thao tác đã bị hủy mà không có thay đổi.",
-        "rediscover": "Tìm lại",
-        "connect": "Kết nối"
-      },
       "copy_session_id": "Sao chép session_id",
       "recoverable_error": "Lỗi có thể khôi phục",
       "output_truncated": "Kết quả đã bị cắt ngắn",
@@ -333,7 +309,6 @@
       "status": {
         "pending": "Đang chờ",
         "pending_approval": "Đang chờ phê duyệt",
-        "pending_selection": "Đang chờ chọn đích",
         "approved": "Đã phê duyệt",
         "running": "Đang chạy",
         "completed": "Hoàn tất",

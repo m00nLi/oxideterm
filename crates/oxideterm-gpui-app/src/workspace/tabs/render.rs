@@ -3,11 +3,7 @@ use super::*;
 
 use gpui::StatefulInteractiveElement;
 
-fn tab_kind_icon(
-    workspace: &WorkspaceApp,
-    kind: &TabKind,
-    cx: &Context<WorkspaceApp>,
-) -> LucideIcon {
+fn tab_kind_icon(workspace: &WorkspaceApp, kind: &TabKind) -> LucideIcon {
     match kind {
         TabKind::LocalTerminal => LucideIcon::Square,
         TabKind::SshTerminal => LucideIcon::Terminal,
@@ -23,9 +19,8 @@ fn tab_kind_icon(
         TabKind::SessionManager => LucideIcon::LayoutList,
         TabKind::PluginManager => LucideIcon::Puzzle,
         TabKind::Plugin { plugin_id, tab_id } => workspace
-            .plugin_entity
-            .read(cx)
-            .registry()
+            .native_plugin_runtime
+            .registry
             .contributions()
             .tab_contribution(plugin_id, tab_id)
             .map(|contribution| LucideIcon::from_plugin_name(&contribution.definition.icon))
@@ -75,48 +70,15 @@ impl WorkspaceApp {
                 this.handle_tabbar_scroll(event, window, cx);
             }));
 
-        let returning_placeholder = self.detached_tab_return_placeholder(cx);
-        let returning_tab = returning_placeholder.and_then(|placeholder| {
-            self.tab_by_id(placeholder.tab_id, cx).map(|tab| {
-                (
-                    tab.id,
-                    tab.kind.clone(),
-                    self.tab_display_title(tab),
-                    self.tab_visual_width(tab),
-                )
-            })
-        });
-        let outside_main_tabs = self.tab_host.read(cx).outside_main_tab_ids();
-        let active_tab_id = self.active_tab_id(cx);
+        let returning_placeholder = self.detached_tab_return_placeholder();
+        let returning_tab =
+            returning_placeholder.and_then(|placeholder| self.tab_by_id(placeholder.tab_id));
         let mut live_tabs = self
-            .tabs(cx)
+            .tabs
             .iter()
             .enumerate()
-            .filter(|(_, tab)| !outside_main_tabs.contains(&tab.id))
-            .map(|(tab_index, tab)| {
-                let tab_id = tab.id;
-                let tab_width = self.tab_visual_width(tab);
-                let reconnect_node_id = self.reconnect_node_id_for_tab(tab, cx);
-                let reconnect_job = reconnect_node_id.as_ref().and_then(|node_id| {
-                    self.workspace_runtime
-                        .read(cx)
-                        .reconnect_active_progress(node_id)
-                });
-                let icon = tab_kind_icon(self, &tab.kind, cx);
-                let tab_text = self.tab_display_title(tab);
-                (
-                    tab_index,
-                    tab_id,
-                    tab_width,
-                    reconnect_node_id,
-                    reconnect_job,
-                    icon,
-                    tab_text,
-                )
-            })
-            .collect::<Vec<_>>()
-            .into_iter();
-        let live_tab_count = live_tabs.len();
+            .filter(|(_, tab)| !self.detached_tabs.contains(&tab.id));
+        let live_tab_count = live_tabs.clone().count();
         let visual_tab_count = live_tab_count
             + self.main_window_tabs.exiting_tabs.len()
             + usize::from(returning_tab.is_some());
@@ -129,37 +91,28 @@ impl WorkspaceApp {
                 .iter()
                 .find(|exiting| exiting.visual_index == visual_index)
             {
-                scroll_viewport =
-                    scroll_viewport.child(self.render_exiting_tab_visual(exiting, cx));
+                scroll_viewport = scroll_viewport.child(self.render_exiting_tab_visual(exiting));
                 continue;
             }
             if !placeholder_rendered
                 && returning_placeholder
                     .is_some_and(|placeholder| placeholder.visible_index == visible_tab_index)
-                && let Some((tab_id, tab_kind, tab_title, tab_width)) = returning_tab.as_ref()
+                && let Some(tab) = returning_tab
             {
-                scroll_viewport =
-                    scroll_viewport.child(self.render_detached_return_tab_placeholder(
-                        *tab_id, tab_kind, tab_title, *tab_width, cx,
-                    ));
+                scroll_viewport = scroll_viewport.child(
+                    self.render_detached_return_tab_placeholder(tab, self.tab_visual_width(tab)),
+                );
                 placeholder_rendered = true;
                 continue;
             }
-            let Some((
-                tab_index,
-                tab_id,
-                tab_width,
-                reconnect_node_id,
-                reconnect_job,
-                icon,
-                tab_text,
-            )) = live_tabs.next()
-            else {
+            let Some((tab_index, tab)) = live_tabs.next() else {
                 continue;
             };
             let current_visible_index = visible_tab_index;
             visible_tab_index += 1;
-            let active = Some(tab_id) == active_tab_id;
+            let tab_id = tab.id;
+            let tab_width = self.tab_visual_width(tab);
+            let active = Some(tab_id) == self.main_window_tabs.active_tab_id;
             let drag_state = self.main_window_tabs.drag.as_ref();
             let drag_active = drag_state.is_some_and(|drag| drag.active);
             let is_being_dragged = drag_state.is_some_and(|drag| drag.tab_id == tab_id);
@@ -172,7 +125,14 @@ impl WorkspaceApp {
                         drag.drop_target_index,
                     ) != drag.from_index
             });
+            let reconnect_node_id = self.reconnect_node_id_for_tab(tab);
+            let reconnect_job = reconnect_node_id
+                .as_ref()
+                .and_then(|node_id| self.reconnect_orchestrator.job(&node_id.0))
+                .filter(|job| job.ended_at.is_none());
             let show_reconnect_progress = reconnect_job.is_some();
+            let icon = tab_kind_icon(self, &tab.kind);
+            let tab_text = self.tab_display_title(tab);
             let tab_tooltip_label = tab_text.clone();
             let tab_tooltip_id = format!("workspace-tab-title-{}", tab_id.0);
             let middle_click_tooltip_id = tab_tooltip_id.clone();
@@ -219,6 +179,13 @@ impl WorkspaceApp {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        // Double-click enters inline rename; a single click
+                        // still starts the drag/select candidate below.
+                        if event.click_count >= 2 {
+                            this.begin_tab_rename(tab_id, cx);
+                            cx.stop_propagation();
+                            return;
+                        }
                         this.start_tab_drag_candidate(tab_id, tab_index, event, window, cx);
                         cx.stop_propagation();
                     }),
@@ -286,13 +253,18 @@ impl WorkspaceApp {
                     self.tokens.metrics.tab_icon_size,
                     tab_text_color,
                 ))
-                .child(
+                .child(if self.is_renaming_tab(tab_id) {
+                    // Inline rename replaces the static title with the shared
+                    // text-input primitive so the edit matches every form.
+                    self.render_tab_rename_input()
+                } else {
                     div()
                         .flex_1()
                         .truncate()
                         .text_size(px(self.tokens.metrics.tab_font_size))
-                        .child(tab_text),
-                )
+                        .child(tab_text)
+                        .into_any_element()
+                })
                 .when_some(
                     reconnect_job.zip(reconnect_node_id),
                     |tab, (job, node_id)| {
@@ -367,14 +339,7 @@ impl WorkspaceApp {
             .into_any_element()
     }
 
-    fn render_detached_return_tab_placeholder(
-        &self,
-        tab_id: TabId,
-        tab_kind: &TabKind,
-        tab_title: &str,
-        tab_width: f32,
-        cx: &Context<Self>,
-    ) -> AnyElement {
+    fn render_detached_return_tab_placeholder(&self, tab: &Tab, tab_width: f32) -> AnyElement {
         let theme = self.tokens.ui;
         let accent = theme.accent;
         let placeholder = div()
@@ -390,7 +355,7 @@ impl WorkspaceApp {
             .bg(rgba((accent << 8) | 0x18))
             .text_color(rgba((theme.text << 8) | 0xcc))
             .child(Self::render_lucide_icon(
-                tab_kind_icon(self, tab_kind, cx),
+                tab_kind_icon(self, &tab.kind),
                 self.tokens.metrics.tab_icon_size,
                 rgba((accent << 8) | 0xcc),
             ))
@@ -399,7 +364,7 @@ impl WorkspaceApp {
                     .flex_1()
                     .truncate()
                     .text_size(px(self.tokens.metrics.tab_font_size))
-                    .child(tab_title.to_string()),
+                    .child(self.tab_display_title(tab)),
             )
             .child(Self::render_lucide_icon(
                 LucideIcon::PanelLeft,
@@ -410,7 +375,7 @@ impl WorkspaceApp {
         // The placeholder participates in tab layout, so later tabs move out
         // of the future slot before the detached window is actually closed.
         div()
-            .id(("detached-tab-return-placeholder", tab_id.0))
+            .id(("detached-tab-return-placeholder", tab.id.0))
             .w(px(tab_width))
             .h_full()
             .flex_none()
@@ -421,7 +386,7 @@ impl WorkspaceApp {
     }
 
     fn render_tabbar_scrollbar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let Some(geometry) = self.tabbar_scrollbar_geometry(window, cx) else {
+        let Some(geometry) = self.tabbar_scrollbar_geometry(window) else {
             return div().into_any_element();
         };
         let scrollbar_dragging = self.main_window_tabs.scrollbar_drag.is_some();
@@ -471,17 +436,13 @@ impl WorkspaceApp {
             .into_any_element()
     }
 
-    fn tabbar_scrollbar_geometry(
-        &self,
-        window: &Window,
-        cx: &App,
-    ) -> Option<TabbarScrollbarGeometry> {
+    fn tabbar_scrollbar_geometry(&self, window: &Window) -> Option<TabbarScrollbarGeometry> {
         let viewport_bounds = self.main_window_tabs.scroll_handle.bounds();
         let measured_width = f32::from(viewport_bounds.size.width);
         let viewport_width = if measured_width > 1.0 {
             measured_width
         } else {
-            self.tabbar_scroll_viewport_width(window, cx)
+            self.tabbar_scroll_viewport_width(window)
         };
         let viewport_left = if measured_width > 1.0 {
             f32::from(viewport_bounds.origin.x)
@@ -491,8 +452,8 @@ impl WorkspaceApp {
         calculate_tabbar_scrollbar_geometry(
             viewport_left,
             viewport_width,
-            self.tabbar_max_scroll(window, cx),
-            self.tabbar_effective_scroll_x(window, cx),
+            self.tabbar_max_scroll(window),
+            self.tabbar_effective_scroll_x(window),
         )
     }
 
@@ -502,7 +463,7 @@ impl WorkspaceApp {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(geometry) = self.tabbar_scrollbar_geometry(window, cx) else {
+        let Some(geometry) = self.tabbar_scrollbar_geometry(window) else {
             return;
         };
         let pointer_x = f32::from(event.position.x) - geometry.viewport_left;
@@ -517,11 +478,7 @@ impl WorkspaceApp {
         self.main_window_tabs.scrollbar_drag = Some(TabbarScrollbarDragState { grab_offset_x });
         let thumb_left =
             (pointer_x - grab_offset_x).clamp(track_left, track_right - geometry.thumb_width);
-        self.set_tabbar_scroll_x(
-            tabbar_scroll_x_for_thumb_left(thumb_left, geometry),
-            window,
-            cx,
-        );
+        self.set_tabbar_scroll_x(tabbar_scroll_x_for_thumb_left(thumb_left, geometry), window);
         cx.notify();
         cx.stop_propagation();
     }
@@ -539,7 +496,7 @@ impl WorkspaceApp {
             self.finish_tabbar_scrollbar_drag(cx);
             return;
         }
-        let Some(geometry) = self.tabbar_scrollbar_geometry(window, cx) else {
+        let Some(geometry) = self.tabbar_scrollbar_geometry(window) else {
             self.finish_tabbar_scrollbar_drag(cx);
             return;
         };
@@ -547,11 +504,7 @@ impl WorkspaceApp {
         let track_left = TABBAR_SCROLLBAR_HORIZONTAL_INSET;
         let max_thumb_left = track_left + geometry.track_width - geometry.thumb_width;
         let thumb_left = (pointer_x - drag.grab_offset_x).clamp(track_left, max_thumb_left);
-        self.set_tabbar_scroll_x(
-            tabbar_scroll_x_for_thumb_left(thumb_left, geometry),
-            window,
-            cx,
-        );
+        self.set_tabbar_scroll_x(tabbar_scroll_x_for_thumb_left(thumb_left, geometry), window);
         cx.notify();
         cx.stop_propagation();
     }
@@ -562,11 +515,7 @@ impl WorkspaceApp {
         }
     }
 
-    fn render_exiting_tab_visual(
-        &self,
-        exiting: &ExitingTabVisual,
-        cx: &Context<Self>,
-    ) -> AnyElement {
+    fn render_exiting_tab_visual(&self, exiting: &ExitingTabVisual) -> AnyElement {
         let theme = self.tokens.ui;
         let tab = div()
             .h_full()
@@ -601,7 +550,7 @@ impl WorkspaceApp {
                 )
             })
             .child(Self::render_lucide_icon(
-                tab_kind_icon(self, &exiting.kind, cx),
+                tab_kind_icon(self, &exiting.kind),
                 self.tokens.metrics.tab_icon_size,
                 rgb(if exiting.was_active {
                     theme.text
@@ -634,21 +583,17 @@ impl WorkspaceApp {
         &self,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(snapshot) = self.overlay.read(cx).confirm_snapshot() else {
-            return div().into_any_element();
-        };
-        let WorkspaceOverlayConfirmKind::NodeDisconnect { display_name, .. } = &snapshot.kind
-        else {
+        let Some(confirm) = self.node_disconnect_confirm.as_ref() else {
             return div().into_any_element();
         };
         let title = self
             .i18n
             .t("common.confirm.disconnect_node")
-            .replace("{{name}}", display_name);
+            .replace("{{name}}", &confirm.display_name);
         oxideterm_gpui_ui::confirm::confirm_dialog_with_focus_motion(
             &self.tokens,
             "node-disconnect-confirm-motion",
-            snapshot.phase,
+            self.node_disconnect_confirm_presence.phase(),
             ConfirmDialogView {
                 variant: ConfirmDialogVariant::Danger,
                 title: div().child(title).into_any_element(),
@@ -660,7 +605,7 @@ impl WorkspaceApp {
                     .child(self.i18n.t("common.actions.confirm"))
                     .into_any_element(),
             },
-            snapshot.focused_action,
+            self.standard_confirm_focus(),
             cx.listener(|this, _event, _window, cx| {
                 this.cancel_node_disconnect_confirm(cx);
                 cx.stop_propagation();
@@ -676,34 +621,29 @@ impl WorkspaceApp {
         &self,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(snapshot) = self.tab_host.read(cx).close_confirm_snapshot() else {
+        let Some(confirm) = self.main_window_tabs.close_confirm.as_ref() else {
             return div().into_any_element();
         };
-        let (title_key, description_key, other_tab_count) = match &snapshot.confirm {
+        let (title_key, description) = match confirm {
             TabCloseConfirm::Single { .. } => (
                 "tabbar.confirm_close_terminal_title",
-                Some("tabbar.confirm_close_terminal_desc"),
-                None,
+                self.i18n.t("tabbar.confirm_close_terminal_desc"),
             ),
             TabCloseConfirm::LocalChildProcess { .. }
             | TabCloseConfirm::LocalChildProcessBatch { .. } => {
-                ("tabbar.child_process_warning", None, None)
+                ("tabbar.child_process_warning", String::new())
             }
             TabCloseConfirm::Other { tab_ids } => (
                 "tabbar.confirm_close_other_title",
-                Some("tabbar.confirm_close_other_desc"),
-                Some(tab_ids.len()),
+                self.i18n
+                    .t("tabbar.confirm_close_other_desc")
+                    .replace("{{count}}", &tab_ids.len().to_string()),
             ),
-        };
-        let description = match (description_key, other_tab_count) {
-            (Some(key), Some(count)) => self.i18n.t(key).replace("{{count}}", &count.to_string()),
-            (Some(key), None) => self.i18n.t(key),
-            (None, _) => String::new(),
         };
         oxideterm_gpui_ui::confirm::confirm_dialog_with_focus_motion(
             &self.tokens,
             "tab-close-confirm-motion",
-            snapshot.phase,
+            self.tab_close_confirm_presence.phase(),
             ConfirmDialogView {
                 variant: ConfirmDialogVariant::Danger,
                 title: div().child(self.i18n.t(title_key)).into_any_element(),
@@ -716,7 +656,7 @@ impl WorkspaceApp {
                     .child(self.i18n.t("common.actions.confirm"))
                     .into_any_element(),
             },
-            snapshot.focused_action,
+            self.standard_confirm_focus(),
             cx.listener(|this, _event, _window, cx| {
                 this.cancel_tab_close_confirm(cx);
                 cx.stop_propagation();
@@ -728,7 +668,7 @@ impl WorkspaceApp {
         )
     }
 
-    fn reconnect_node_id_for_tab(&self, tab: &Tab, cx: &App) -> Option<NodeId> {
+    fn reconnect_node_id_for_tab(&self, tab: &Tab) -> Option<NodeId> {
         match tab.kind {
             TabKind::SshTerminal => {
                 if let Some(active_pane_id) = tab.active_pane_id
@@ -736,12 +676,9 @@ impl WorkspaceApp {
                         .root_pane
                         .as_ref()
                         .and_then(|root| root.session_id_for_pane(active_pane_id))
-                    && let Some(node_id) = self
-                        .workspace_runtime
-                        .read(cx)
-                        .ssh_terminal_node_id(session_id)
+                    && let Some(node_id) = self.terminal_ssh_nodes.get(&session_id)
                 {
-                    return Some(node_id);
+                    return Some(node_id.clone());
                 }
                 let mut session_ids = Vec::new();
                 tab.root_pane
@@ -749,21 +686,17 @@ impl WorkspaceApp {
                     .map(|root| root.collect_session_ids(&mut session_ids));
                 session_ids
                     .into_iter()
-                    .filter_map(|session_id| {
-                        self.workspace_runtime
-                            .read(cx)
-                            .ssh_terminal_node_id(session_id)
-                    })
-                    .find(|node_id| self.has_active_reconnect_job(node_id, cx))
+                    .filter_map(|session_id| self.terminal_ssh_nodes.get(&session_id))
+                    .find(|node_id| self.has_active_reconnect_job(node_id))
+                    .cloned()
                     .or_else(|| {
                         tab.root_pane.as_ref().and_then(|root| {
                             let mut session_ids = Vec::new();
                             root.collect_session_ids(&mut session_ids);
-                            session_ids.first().and_then(|session_id| {
-                                self.workspace_runtime
-                                    .read(cx)
-                                    .ssh_terminal_node_id(*session_id)
-                            })
+                            session_ids
+                                .first()
+                                .and_then(|session_id| self.terminal_ssh_nodes.get(session_id))
+                                .cloned()
                         })
                     })
             }
@@ -771,25 +704,24 @@ impl WorkspaceApp {
                 .sftp_tab_nodes
                 .get(&tab.id)
                 .cloned()
-                .filter(|node_id| self.has_active_reconnect_job(node_id, cx)),
+                .filter(|node_id| self.has_active_reconnect_job(node_id)),
             TabKind::Forwards => self
-                .forwarding
-                .read(cx)
-                .node_for_tab(tab.id)
-                .filter(|node_id| self.has_active_reconnect_job(node_id, cx)),
-            TabKind::Ide => self
-                .ide_workspace
-                .read(cx)
-                .node_for_tab(tab.id)
+                .forward_tab_nodes
+                .get(&tab.id)
                 .cloned()
-                .filter(|node_id| self.has_active_reconnect_job(node_id, cx)),
+                .filter(|node_id| self.has_active_reconnect_job(node_id)),
+            TabKind::Ide => self
+                .ide_tab_nodes
+                .get(&tab.id)
+                .cloned()
+                .filter(|node_id| self.has_active_reconnect_job(node_id)),
             _ => None,
         }
     }
 
     fn render_tab_reconnect_indicator(
         &self,
-        job: &ReconnectProgress,
+        job: &ReconnectJob,
         node_id: NodeId,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -862,7 +794,7 @@ impl WorkspaceApp {
             .into_any_element()
     }
 
-    fn render_reconnect_phase_strip(&self, job: &ReconnectProgress) -> AnyElement {
+    fn render_reconnect_phase_strip(&self, job: &ReconnectJob) -> AnyElement {
         let phases = [
             ReconnectPhase::Snapshot,
             ReconnectPhase::GracePeriod,

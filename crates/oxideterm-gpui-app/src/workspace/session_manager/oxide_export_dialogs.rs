@@ -6,39 +6,12 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.tokens.ui;
-        let Some((
-            connection_count,
-            dialog_visible,
-            has_export_content,
-            embed_keys,
-            include_passwords,
-            description,
-            progress_stage,
-            result_summary,
-            error,
-        )) = ({
-            self.session_manager
-                .read(cx)
-                .oxide_export_dialog
-                .as_ref()
-                .map(|dialog| {
-                    (
-                        dialog.selected_ids.len(),
-                        dialog.presence.phase() == oxideterm_gpui_ui::motion::ExitPhase::Visible,
-                        oxide_export_connection_count(dialog) > 0
-                            || dialog.include_portable_secrets,
-                        dialog.embed_keys,
-                        dialog.include_passwords,
-                        dialog.description.clone(),
-                        dialog.progress_stage.clone(),
-                        dialog.result_summary.clone(),
-                        dialog.error.clone(),
-                    )
-                })
-        })
-        else {
+        let Some(dialog) = self.session_manager.oxide_export_dialog.as_ref() else {
             return div().into_any_element();
         };
+        let connection_count = dialog.selected_ids.len();
+        let dialog_visible =
+            dialog.presence.phase() == oxideterm_gpui_ui::motion::ExitPhase::Visible;
         let connections = self.connection_store.connections();
         dismissible_dialog_backdrop()
             .on_mouse_down(
@@ -109,50 +82,53 @@ impl WorkspaceApp {
                                 connection_count,
                                 cx,
                             ))
-                            .child(self.render_oxide_export_options(cx))
+                            .child(self.render_oxide_export_options(dialog, cx))
                             .child(self.render_oxide_export_preflight(
-                                has_export_content,
-                                embed_keys,
-                                include_passwords,
+                                dialog.preflight.clone(),
+                                oxide_export_connection_count(dialog) > 0
+                                    || dialog.include_portable_secrets,
+                                dialog.embed_keys,
+                                dialog.include_passwords,
                                 cx,
                             ))
                             .child(self.render_oxide_labeled_input(
                                 "描述（可选）".to_string(),
                                 self.render_session_text_input(
                                     SessionManagerInput::OxideExportDescription,
-                                    &description,
+                                    &dialog.description,
                                     "例如：生产服务器".to_string(),
                                     cx,
                                 ),
                                 cx,
                             ))
-                            .child(self.render_oxide_export_credential_options(cx))
-                            .child(self.render_oxide_export_content_summary(cx))
-                            .child(self.render_oxide_export_password_input(cx))
+                            .child(self.render_oxide_export_credential_options(dialog, cx))
+                            .child(self.render_oxide_export_content_summary(dialog, cx))
+                            .child(self.render_oxide_export_password_input(dialog, cx))
                             .child(self.render_oxide_labeled_input(
                                 "确认密码 *".to_string(),
                                 self.render_session_password_input(
                                     SessionManagerInput::OxideExportConfirmPassword,
+                                    &dialog.confirm_password,
                                     "重新输入密码".to_string(),
                                     cx,
                                 ),
                                 cx,
                             ))
-                            .child(self.render_oxide_security_notice(cx))
-                            .when_some(progress_stage, |body, progress| {
+                            .child(self.render_oxide_security_notice(dialog, cx))
+                            .when_some(dialog.progress_stage.clone(), |body, progress| {
                                 body.child(self.render_oxide_progress(
                                     progress,
-                                    Some(embed_keys),
+                                    Some(dialog.embed_keys),
                                     cx,
                                 ))
                             })
-                            .when_some(result_summary, |body, result| {
+                            .when_some(dialog.result_summary.clone(), |body, result| {
                                 body.child(self.render_oxide_status_line(result, false, cx))
                             })
-                            .when_some(error, |body, error| {
+                            .when_some(dialog.error.clone(), |body, error| {
                                 body.child(self.render_oxide_error_banner(error, cx))
                             })
-                            .child(self.render_oxide_export_footer(cx)),
+                            .child(self.render_oxide_export_footer(dialog, cx)),
                     ),
                 dialog_visible,
             ))
@@ -161,44 +137,22 @@ impl WorkspaceApp {
 
     pub(super) fn render_oxide_export_credential_options(
         &self,
+        dialog: &OxideExportDialogState,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (
-            include_passwords,
-            embed_keys,
-            include_key_passphrases,
-            include_managed_keys,
-            include_managed_key_passphrases,
-        ) = self
-            .session_manager
-            .read(cx)
-            .oxide_export_dialog
-            .as_ref()
-            .map(|dialog| {
-                (
-                    dialog.include_passwords,
-                    dialog.embed_keys,
-                    dialog.include_key_passphrases,
-                    dialog.include_managed_keys,
-                    dialog.include_managed_key_passphrases,
-                )
-            })
-            .unwrap_or_default();
         self.render_oxide_card(
             Some((LucideIcon::Key, self.i18n.t("export.credential_material"))),
             vec![
                 self.render_oxide_option_row(
                     self.i18n.t("export.include_passwords"),
                     self.i18n.t("export.include_passwords_description"),
-                    include_passwords,
+                    dialog.include_passwords,
                     cx.listener(|this, _event, _window, cx| {
-                        this.session_manager.update(cx, |manager, cx| {
-                            if let Some(dialog) = manager.oxide_export_dialog.as_mut() {
-                                dialog.include_passwords = !dialog.include_passwords;
-                                cx.notify();
-                            }
-                        });
-                        this.refresh_oxide_export_preflight(cx);
+                        if let Some(dialog) = this.session_manager.oxide_export_dialog.as_mut() {
+                            dialog.include_passwords = !dialog.include_passwords;
+                        }
+                        this.refresh_oxide_export_preflight();
+                        cx.notify();
                         cx.stop_propagation();
                     }),
                     cx,
@@ -206,15 +160,13 @@ impl WorkspaceApp {
                 self.render_oxide_option_row(
                     self.i18n.t("export.embed_keys"),
                     self.i18n.t("export.embed_keys_description"),
-                    embed_keys,
+                    dialog.embed_keys,
                     cx.listener(|this, _event, _window, cx| {
-                        this.session_manager.update(cx, |manager, cx| {
-                            if let Some(dialog) = manager.oxide_export_dialog.as_mut() {
-                                dialog.embed_keys = !dialog.embed_keys;
-                                cx.notify();
-                            }
-                        });
-                        this.refresh_oxide_export_preflight(cx);
+                        if let Some(dialog) = this.session_manager.oxide_export_dialog.as_mut() {
+                            dialog.embed_keys = !dialog.embed_keys;
+                        }
+                        this.refresh_oxide_export_preflight();
+                        cx.notify();
                         cx.stop_propagation();
                     }),
                     cx,
@@ -222,15 +174,13 @@ impl WorkspaceApp {
                 self.render_oxide_option_row(
                     self.i18n.t("export.include_key_passphrases"),
                     self.i18n.t("export.include_key_passphrases_description"),
-                    include_key_passphrases,
+                    dialog.include_key_passphrases,
                     cx.listener(|this, _event, _window, cx| {
-                        this.session_manager.update(cx, |manager, cx| {
-                            if let Some(dialog) = manager.oxide_export_dialog.as_mut() {
-                                dialog.include_key_passphrases = !dialog.include_key_passphrases;
-                                cx.notify();
-                            }
-                        });
-                        this.refresh_oxide_export_preflight(cx);
+                        if let Some(dialog) = this.session_manager.oxide_export_dialog.as_mut() {
+                            dialog.include_key_passphrases = !dialog.include_key_passphrases;
+                        }
+                        this.refresh_oxide_export_preflight();
+                        cx.notify();
                         cx.stop_propagation();
                     }),
                     cx,
@@ -238,41 +188,43 @@ impl WorkspaceApp {
                 self.render_oxide_option_row(
                     self.i18n.t("export.include_managed_keys"),
                     self.i18n.t("export.include_managed_keys_description"),
-                    include_managed_keys,
+                    dialog.include_managed_keys,
                     cx.listener(|this, _event, _window, cx| {
-                        this.session_manager.update(cx, |manager, cx| {
-                            if let Some(dialog) = manager.oxide_export_dialog.as_mut() {
-                                dialog.include_managed_keys = !dialog.include_managed_keys;
-                                if !dialog.include_managed_keys {
-                                    dialog.include_managed_key_passphrases = false;
-                                }
-                                cx.notify();
+                        if let Some(dialog) = this.session_manager.oxide_export_dialog.as_mut() {
+                            dialog.include_managed_keys = !dialog.include_managed_keys;
+                            if !dialog.include_managed_keys {
+                                dialog.include_managed_key_passphrases = false;
                             }
-                        });
-                        this.refresh_oxide_export_preflight(cx);
+                        }
+                        this.refresh_oxide_export_preflight();
+                        cx.notify();
                         cx.stop_propagation();
                     }),
                     cx,
                 ),
                 div()
-                    .opacity(if include_managed_keys { 1.0 } else { 0.45 })
+                    .opacity(if dialog.include_managed_keys {
+                        1.0
+                    } else {
+                        0.45
+                    })
                     .child(
                         self.render_oxide_option_row(
                             self.i18n.t("export.include_managed_key_passphrases"),
                             self.i18n
                                 .t("export.include_managed_key_passphrases_description"),
-                            include_managed_key_passphrases,
+                            dialog.include_managed_key_passphrases,
                             cx.listener(|this, _event, _window, cx| {
-                                this.session_manager.update(cx, |manager, cx| {
-                                    if let Some(dialog) = manager.oxide_export_dialog.as_mut()
-                                        && dialog.include_managed_keys
-                                    {
+                                if let Some(dialog) =
+                                    this.session_manager.oxide_export_dialog.as_mut()
+                                {
+                                    if dialog.include_managed_keys {
                                         dialog.include_managed_key_passphrases =
                                             !dialog.include_managed_key_passphrases;
-                                        cx.notify();
                                     }
-                                });
-                                this.refresh_oxide_export_preflight(cx);
+                                }
+                                this.refresh_oxide_export_preflight();
+                                cx.notify();
                                 cx.stop_propagation();
                             }),
                             cx,

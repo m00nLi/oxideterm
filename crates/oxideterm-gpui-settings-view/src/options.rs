@@ -49,10 +49,6 @@ pub fn set_middle_click_paste(settings: &mut PersistedSettings, value: bool) {
     settings.terminal.middle_click_paste = value;
 }
 
-pub fn set_right_click_paste(settings: &mut PersistedSettings, value: bool) {
-    settings.terminal.right_click_paste = value;
-}
-
 pub fn set_open_links_with_modifier(settings: &mut PersistedSettings, value: bool) {
     settings.terminal.open_links_with_modifier = value;
 }
@@ -455,10 +451,6 @@ pub fn set_command_bar_show_current_directory(settings: &mut PersistedSettings, 
 
 pub fn set_quick_commands_enabled(settings: &mut PersistedSettings, value: bool) {
     settings.terminal.command_bar.quick_commands_enabled = value;
-}
-
-pub fn set_quick_bar_enabled(settings: &mut PersistedSettings, value: bool) {
-    settings.terminal.command_bar.quick_bar_enabled = value;
 }
 
 pub fn set_quick_commands_confirm(settings: &mut PersistedSettings, value: bool) {

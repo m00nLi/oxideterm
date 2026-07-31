@@ -52,18 +52,16 @@ pub use oxideterm_sftp::{
     TransferDirection, TransferProgress, TransferState,
 };
 pub use reconnect::{
-    MAX_RETAINED_RECONNECT_JOBS, PhaseEvent, PhaseResult, ReconnectForwardRestorePlan,
-    ReconnectForwardRule, ReconnectForwardRuleSnapshot, ReconnectIdeSnapshot, ReconnectJob,
+    MAX_RETAINED_RECONNECT_JOBS, PhaseEvent, PhaseResult, ReconnectForwardRule,
+    ReconnectForwardRuleSnapshot, ReconnectIdeSnapshot, ReconnectJob,
     ReconnectNodeConnectionSnapshot, ReconnectNodeTerminalSnapshot, ReconnectNodeTransferSnapshot,
-    ReconnectOrchestratorStore, ReconnectPhase, ReconnectProgress, ReconnectSnapshot,
-    ReconnectTiming,
+    ReconnectOrchestratorStore, ReconnectPhase, ReconnectSnapshot, ReconnectTiming,
 };
 pub use router::{
     FlatNode, NodeEventEmitter, NodeEventReceiver, NodeEventSequencer, NodeEventSubscription,
-    NodeId, NodeMetadataSnapshot, NodeOrigin, NodeReadiness, NodeRouter, NodeRuntimeStore,
-    NodeState, NodeStateEvent, NodeStateSnapshot, NodeTreeExpansion, NodeTreePersistenceNode,
-    NodeTreePersistenceSnapshot, NodeTreeSnapshot, NodeTreeSnapshotNode, ResolvedConnection,
-    RouteError, SessionTreeSummary, TerminalEndpoint,
+    NodeId, NodeOrigin, NodeReadiness, NodeRouter, NodeRuntimeStore, NodeState, NodeStateEvent,
+    NodeStateSnapshot, NodeTreeExpansion, NodeTreeSnapshot, NodeTreeSnapshotNode,
+    ResolvedConnection, RouteError, SessionTreeSummary, TerminalEndpoint,
 };
 pub use session_tree_plan::{
     NativeSessionTreeConnectAction, NativeSessionTreeConnectChallenge,
@@ -76,6 +74,8 @@ pub use transport::{
     SshPtyHandle, SshShellChannel, SshTransportClient, SshTransportCommand, SshTransportError,
     X11ForwardHandler, X11ForwardedChannel,
 };
+pub(crate) use transport::DedicatedSftpConnection;
+pub(crate) use transport::DedicatedMonitorConnection;
 pub use upstream_proxy::{
     UpstreamProxyAuth, UpstreamProxyConfig, UpstreamProxyError, UpstreamProxyProtocol,
     dial_initial_tcp, parse_http_proxy_value, parse_socks5_proxy_value, probe_upstream_proxy_route,

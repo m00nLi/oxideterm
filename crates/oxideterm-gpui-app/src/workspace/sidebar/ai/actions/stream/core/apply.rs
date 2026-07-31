@@ -1,32 +1,3 @@
-fn synchronize_ai_acp_config_selections(
-    config_options: &[oxideterm_ai::AcpSessionConfigOption],
-    model_selection: &mut Option<oxideterm_ai::AcpSessionConfigSelection>,
-    config_selections: &mut Vec<oxideterm_ai::AcpSessionConfigSelection>,
-) {
-    // The protocol response is the authoritative complete catalog. Rebuild
-    // selections from its current values so rejected or agent-adjusted choices
-    // can never remain persisted as if they had succeeded.
-    *config_selections = config_options
-        .iter()
-        .filter(|option| {
-            option
-                .choices
-                .iter()
-                .any(|choice| choice.value_id == option.current_value_id)
-        })
-        .map(|option| oxideterm_ai::AcpSessionConfigSelection {
-            config_id: option.config_id.clone(),
-            value_id: option.current_value_id.clone(),
-        })
-        .collect();
-    *model_selection = oxideterm_ai::acp_model_config_option(config_options).and_then(|option| {
-        config_selections
-            .iter()
-            .find(|selection| selection.config_id == option.config_id)
-            .cloned()
-    });
-}
-
 pub(in crate::workspace) fn apply_ai_acp_session_started_to_conversations(
     conversations: &mut [AiConversation],
     current_generation: u64,
@@ -35,7 +6,6 @@ pub(in crate::workspace) fn apply_ai_acp_session_started_to_conversations(
     session_id: &str,
     session_metadata: Option<serde_json::Value>,
     session_config_options: Vec<oxideterm_ai::AcpSessionConfigOption>,
-    session_modes: Option<oxideterm_ai::AcpSessionModeState>,
     agent_id: &str,
 ) -> bool {
     if current_generation != delivery_generation {
@@ -49,20 +19,18 @@ pub(in crate::workspace) fn apply_ai_acp_session_started_to_conversations(
     };
 
     conversation.session_id = Some(session_id.to_string());
-    let previous_state =
-        ai_acp_session_state(conversation).filter(|state| state.agent_id == agent_id);
-    let mut model_selection = previous_state
-        .as_ref()
-        .and_then(|state| state.model_selection.clone());
-    let mut config_selections = previous_state
-        .as_ref()
-        .map(|state| state.config_selections.clone())
-        .unwrap_or_default();
-    synchronize_ai_acp_config_selections(
-        &session_config_options,
-        &mut model_selection,
-        &mut config_selections,
-    );
+    let model_selection = ai_acp_session_state(conversation)
+        .filter(|state| state.agent_id == agent_id)
+        .and_then(|state| state.model_selection)
+        .filter(|selection| {
+            session_config_options.iter().any(|option| {
+                option.config_id == selection.config_id
+                    && option
+                        .choices
+                        .iter()
+                        .any(|choice| choice.value_id == selection.value_id)
+            })
+        });
     let metadata = conversation
         .session_metadata
         .get_or_insert_with(|| serde_json::json!({ "conversationId": conversation_id }));
@@ -80,316 +48,11 @@ pub(in crate::workspace) fn apply_ai_acp_session_started_to_conversations(
             metadata: session_metadata,
             config_options: session_config_options,
             model_selection,
-            config_selections,
-            current_mode_id: session_modes
-                .as_ref()
-                .map(|modes| modes.current_mode_id.clone()),
-            available_modes: session_modes
-                .as_ref()
-                .map(|modes| modes.available_modes.clone())
-                .unwrap_or_default(),
-            available_commands: previous_state
-                .as_ref()
-                .map(|state| state.available_commands.clone())
-                .unwrap_or_default(),
-            plan: previous_state
-                .as_ref()
-                .and_then(|state| state.plan.clone()),
-            usage: previous_state
-                .as_ref()
-                .and_then(|state| state.usage.clone()),
-            title: previous_state
-                .as_ref()
-                .and_then(|state| state.title.clone()),
-            handoff_cursor: previous_state
-                .as_ref()
-                .filter(|state| state.session_id.is_empty() || state.session_id == session_id)
-                .and_then(|state| state.handoff_cursor.clone()),
         };
         if let Ok(value) = serde_json::to_value(state) {
             object.insert(AI_ACP_SESSION_METADATA_KEY.to_string(), value);
         }
     }
-    true
-}
-
-pub(in crate::workspace) fn sanitize_ai_tool_arguments_for_persistence(
-    arguments: &str,
-) -> String {
-    // Execution payloads are current-turn data. Durable history keeps only
-    // safe descriptors such as resource kind, path, and non-authority options.
-    oxideterm_ai::sanitize_tool_arguments_text_for_persistence(arguments)
-}
-
-pub(in crate::workspace) fn sanitize_ai_tool_arguments_for_approval(arguments: &str) -> String {
-    // Approval is local and immediate, so a redacted command or input summary
-    // may remain visible without entering the persistence projection.
-    oxideterm_ai::sanitize_json_text_for_persistence(arguments)
-}
-
-enum AiStreamApplyOutcome {
-    Applied,
-    Completed,
-    Failed(String),
-    Stale,
-}
-
-impl AiWorkspaceEntity {
-    pub(in crate::workspace) fn mark_acp_handoff_cursor(
-        &mut self,
-        conversation_id: &str,
-        agent_id: &str,
-        message_id: &str,
-    ) -> bool {
-        let Some(conversation) = self
-            .conversation_state_mut()
-            .conversations
-            .iter_mut()
-            .find(|conversation| conversation.id == conversation_id)
-        else {
-            return false;
-        };
-        if !store_ai_acp_handoff_cursor_in_conversation(conversation, agent_id, message_id) {
-            return false;
-        }
-        // Advance only after the ACP prompt completed successfully. Failed or
-        // cancelled turns retain the previous cursor so context is never lost.
-        self.persist_chat_state();
-        true
-    }
-
-    pub(in crate::workspace) fn apply_acp_session_state_update(
-        &mut self,
-        conversation_id: &str,
-        update: oxideterm_ai::AcpSessionStateUpdate,
-    ) -> bool {
-        let Some(conversation) = self
-            .conversation_state_mut()
-            .conversations
-            .iter_mut()
-            .find(|conversation| conversation.id == conversation_id)
-        else {
-            return false;
-        };
-        let Some(mut state) = ai_acp_session_state(conversation) else {
-            return false;
-        };
-        match update {
-            oxideterm_ai::AcpSessionStateUpdate::ConfigOptions(config_options) => {
-                synchronize_ai_acp_config_selections(
-                    &config_options,
-                    &mut state.model_selection,
-                    &mut state.config_selections,
-                );
-                state.config_options = config_options;
-            }
-            oxideterm_ai::AcpSessionStateUpdate::CurrentMode(mode_id) => {
-                state.current_mode_id = Some(mode_id);
-            }
-            oxideterm_ai::AcpSessionStateUpdate::AvailableCommands(commands) => {
-                state.available_commands = commands;
-            }
-            oxideterm_ai::AcpSessionStateUpdate::Plan(plan) => state.plan = Some(plan),
-            oxideterm_ai::AcpSessionStateUpdate::SessionInfo { title, .. } => {
-                if let Some(title) = title
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|title| !title.is_empty())
-                {
-                    conversation.title = title.to_string();
-                    conversation.updated_at_ms = ai_now_ms();
-                }
-                state.title = title;
-            }
-            oxideterm_ai::AcpSessionStateUpdate::Usage(usage) => state.usage = Some(usage),
-        }
-        let metadata = conversation
-            .session_metadata
-            .get_or_insert_with(|| serde_json::json!({}));
-        let Some(metadata) = metadata.as_object_mut() else {
-            return false;
-        };
-        let Ok(value) = serde_json::to_value(state) else {
-            return false;
-        };
-        metadata.insert(AI_ACP_SESSION_METADATA_KEY.to_string(), value);
-        self.persist_chat_state();
-        true
-    }
-
-    fn apply_acp_session_started_state(
-        &mut self,
-        generation: u64,
-        conversation_id: &str,
-        session_id: &str,
-        session_metadata: Option<serde_json::Value>,
-        session_config_options: Vec<oxideterm_ai::AcpSessionConfigOption>,
-        session_modes: Option<oxideterm_ai::AcpSessionModeState>,
-        agent_id: &str,
-    ) -> bool {
-        let current_generation = self.chat_stream_generation();
-        let applied = apply_ai_acp_session_started_to_conversations(
-            &mut self.conversation_state_mut().conversations,
-            current_generation,
-            generation,
-            conversation_id,
-            session_id,
-            session_metadata,
-            session_config_options,
-            session_modes,
-            agent_id,
-        );
-        if applied {
-            self.persist_chat_state();
-        }
-        applied
-    }
-
-    fn apply_stream_event_state(
-        &mut self,
-        generation: u64,
-        conversation_id: &str,
-        message_id: &str,
-        event: AiStreamEvent,
-        safe_error: Option<String>,
-    ) -> AiStreamApplyOutcome {
-        if !self.is_chat_stream_generation(generation) {
-            return AiStreamApplyOutcome::Stale;
-        }
-        match event {
-            AiStreamEvent::Content(chunk) => {
-                self.update_chat_message(conversation_id, message_id, |message| {
-                    message.content.push_str(&chunk);
-                    append_ai_turn_text_part(message, "text", &chunk, false);
-                });
-                AiStreamApplyOutcome::Applied
-            }
-            AiStreamEvent::Thinking(chunk) => {
-                self.update_chat_message(conversation_id, message_id, |message| {
-                    message
-                        .thinking_content
-                        .get_or_insert_with(String::new)
-                        .push_str(&chunk);
-                    append_ai_turn_text_part(message, "thinking", &chunk, true);
-                });
-                AiStreamApplyOutcome::Applied
-            }
-            AiStreamEvent::ProviderResponsePart { .. } => {
-                // The live tool loop consumes provider replay metadata before
-                // UI delivery; other stream surfaces intentionally ignore it.
-                AiStreamApplyOutcome::Applied
-            }
-            AiStreamEvent::ToolCall {
-                id,
-                name,
-                arguments,
-            } => {
-                let persisted_arguments =
-                    sanitize_ai_tool_arguments_for_persistence(&arguments);
-                self.update_chat_message(conversation_id, message_id, |message| {
-                    upsert_ai_tool_call(
-                        message,
-                        &id,
-                        &name,
-                        &persisted_arguments,
-                        "running",
-                    );
-                    upsert_ai_turn_tool_call(
-                        message,
-                        &id,
-                        &name,
-                        &persisted_arguments,
-                        "partial",
-                    );
-                });
-                AiStreamApplyOutcome::Applied
-            }
-            AiStreamEvent::ToolCallComplete {
-                id,
-                name,
-                arguments,
-            } => {
-                let persisted_arguments =
-                    sanitize_ai_tool_arguments_for_persistence(&arguments);
-                self.update_chat_message(conversation_id, message_id, |message| {
-                    upsert_ai_tool_call(
-                        message,
-                        &id,
-                        &name,
-                        &persisted_arguments,
-                        "pending",
-                    );
-                    upsert_ai_turn_tool_call(
-                        message,
-                        &id,
-                        &name,
-                        &persisted_arguments,
-                        "complete",
-                    );
-                });
-                AiStreamApplyOutcome::Applied
-            }
-            AiStreamEvent::Done => {
-                self.update_chat_message(conversation_id, message_id, |message| {
-                    // Older prompts asked models to append a private evidence block.
-                    // Keep the visible answer and remove only that transport artifact.
-                    strip_ai_evidence_claims(message);
-                    finalize_ai_turn_suggestions(message);
-                    message.is_streaming = false;
-                    set_ai_turn_status(message, "complete");
-                });
-                self.complete_chat_stream(generation);
-                self.set_chat_loading(false);
-                self.persist_chat_state();
-                AiStreamApplyOutcome::Completed
-            }
-            AiStreamEvent::Error(_) => {
-                let safe_error = safe_error.unwrap_or_default();
-                self.update_chat_message(conversation_id, message_id, |message| {
-                    message.is_streaming = false;
-                    if message.content.is_empty() {
-                        message.content = safe_error.clone();
-                    } else {
-                        message.content.push_str("\n\n");
-                        message.content.push_str(&safe_error);
-                    }
-                    append_ai_turn_error_part(message, &safe_error);
-                    set_ai_turn_status(message, "error");
-                });
-                self.complete_chat_stream(generation);
-                self.set_chat_loading(false);
-                self.persist_chat_state();
-                AiStreamApplyOutcome::Failed(safe_error)
-            }
-        }
-    }
-}
-
-pub(in crate::workspace) fn store_ai_acp_handoff_cursor_in_conversation(
-    conversation: &mut AiConversation,
-    agent_id: &str,
-    message_id: &str,
-) -> bool {
-    let Some(mut state) =
-        ai_acp_session_state(conversation).filter(|state| state.agent_id == agent_id)
-    else {
-        return false;
-    };
-    let Some(cursor) = oxideterm_ai::acp_conversation_handoff_cursor(conversation, message_id)
-    else {
-        return false;
-    };
-    state.handoff_cursor = Some(cursor);
-    let metadata = conversation
-        .session_metadata
-        .get_or_insert_with(|| serde_json::json!({}));
-    let Some(metadata) = metadata.as_object_mut() else {
-        return false;
-    };
-    let Ok(value) = serde_json::to_value(state) else {
-        return false;
-    };
-    metadata.insert(AI_ACP_SESSION_METADATA_KEY.to_string(), value);
     true
 }
 
@@ -401,24 +64,21 @@ impl WorkspaceApp {
         session_id: &str,
         session_metadata: Option<serde_json::Value>,
         session_config_options: Vec<oxideterm_ai::AcpSessionConfigOption>,
-        session_modes: Option<oxideterm_ai::AcpSessionModeState>,
         agent_id: &str,
-        cx: &mut App,
     ) -> bool {
-        let applied = self.ai_entity.update(cx, |ai, _cx| {
-            ai.apply_acp_session_started_state(
-                generation,
-                conversation_id,
-                session_id,
-                session_metadata,
-                session_config_options,
-                session_modes,
-                agent_id,
-            )
-        });
-        if !applied {
+        if !apply_ai_acp_session_started_to_conversations(
+            &mut self.ai.chat.conversation_state.conversations,
+            self.ai.chat.stream_generation,
+            generation,
+            conversation_id,
+            session_id,
+            session_metadata,
+            session_config_options,
+            agent_id,
+        ) {
             return false;
         }
+        self.persist_ai_chat_state();
         true
     }
 
@@ -430,45 +90,97 @@ impl WorkspaceApp {
         event: AiStreamEvent,
         cx: &mut Context<Self>,
     ) {
-        let safe_error = matches!(&event, AiStreamEvent::Error(_))
-            .then(|| self.i18n.t("settings_view.ai.acp_agent_error_unknown"));
-        let outcome = self.ai_entity.update(cx, |ai, _cx| {
-            ai.apply_stream_event_state(
-                generation,
-                conversation_id,
-                message_id,
-                event,
-                safe_error,
-            )
-        });
-        match outcome {
-            AiStreamApplyOutcome::Applied => {}
-            AiStreamApplyOutcome::Completed => {
-                self.ai_runtime_context.update(cx, |runtime, _cx| {
-                    runtime.finish_tool_session(
-                        generation,
-                        oxideterm_ai::RuntimeRevocationReason::ToolSessionFinished,
-                    );
-                });
-                self.persist_ai_assistant_turn_end(
+        if self.ai.chat.stream_generation != generation {
+            return;
+        }
+        match event {
+            AiStreamEvent::Content(chunk) => {
+                self.ai.chat.conversation_state.update_message(
                     conversation_id,
                     message_id,
-                    "complete",
-                    cx,
+                    |message| {
+                        message.content.push_str(&chunk);
+                        append_ai_turn_text_part(message, "text", &chunk, false);
+                    },
                 );
+            }
+            AiStreamEvent::Thinking(chunk) => {
+                self.ai.chat.conversation_state.update_message(
+                    conversation_id,
+                    message_id,
+                    |message| {
+                        message
+                            .thinking_content
+                            .get_or_insert_with(String::new)
+                            .push_str(&chunk);
+                        append_ai_turn_text_part(message, "thinking", &chunk, true);
+                    },
+                );
+            }
+            AiStreamEvent::ToolCall {
+                id,
+                name,
+                arguments,
+            } => {
+                self.ai.chat.conversation_state.update_message(
+                    conversation_id,
+                    message_id,
+                    |message| {
+                        upsert_ai_tool_call(message, &id, &name, &arguments, "running");
+                        upsert_ai_turn_tool_call(message, &id, &name, &arguments, "partial");
+                    },
+                );
+            }
+            AiStreamEvent::ToolCallComplete {
+                id,
+                name,
+                arguments,
+            } => {
+                self.ai.chat.conversation_state.update_message(
+                    conversation_id,
+                    message_id,
+                    |message| {
+                        upsert_ai_tool_call(message, &id, &name, &arguments, "pending");
+                        upsert_ai_turn_tool_call(message, &id, &name, &arguments, "complete");
+                    },
+                );
+            }
+            AiStreamEvent::Done => {
+                self.ai.chat.conversation_state.update_message(
+                    conversation_id,
+                    message_id,
+                    |message| {
+                        // Older prompts asked models to append a private evidence block.
+                        // Keep the visible answer and remove only that transport artifact.
+                        strip_ai_evidence_claims(message);
+                        finalize_ai_turn_suggestions(message);
+                        message.is_streaming = false;
+                        set_ai_turn_status(message, "complete");
+                    },
+                );
+                self.persist_ai_assistant_turn_end(conversation_id, message_id, "complete");
+                self.ai.chat.stream_task = None;
+                self.ai.chat.loading = false;
+                self.persist_ai_chat_state();
                 self.maybe_start_ai_auto_compaction(conversation_id, cx);
             }
-            AiStreamApplyOutcome::Failed(safe_error) => {
-                self.ai_runtime_context.update(cx, |runtime, _cx| {
-                    runtime.finish_tool_session(
-                        generation,
-                        oxideterm_ai::RuntimeRevocationReason::ToolSessionFinished,
-                    );
-                });
-                // Provider errors may contain response bodies or request
-                // metadata. Only a localized stable category reaches the
-                // conversation, diagnostics, notifications, and persistence.
-                self.persist_ai_assistant_turn_end(conversation_id, message_id, "error", cx);
+            AiStreamEvent::Error(error) => {
+                self.ai.chat.conversation_state.update_message(
+                    conversation_id,
+                    message_id,
+                    |message| {
+                        message.is_streaming = false;
+                        if message.content.is_empty() {
+                            message.content = error.clone();
+                        } else {
+                            message.content.push_str("\n\n");
+                            message.content.push_str(&error);
+                        }
+                        append_ai_turn_error_part(message, &error);
+                        set_ai_turn_status(message, "error");
+                    },
+                );
+                self.persist_ai_assistant_turn_end(conversation_id, message_id, "error");
                 self.persist_ai_diagnostic_events(
                     conversation_id.to_string(),
                     vec![ai_diagnostic_event(
@@ -480,14 +192,15 @@ impl WorkspaceApp {
                         ai_now_ms(),
                         self.ai_diagnostic_base(serde_json::json!({
                             "requestKind": "chat",
-                            "message": safe_error.as_str(),
+                            "message": error,
                         })),
                     )],
-                    cx,
                 );
-                self.push_ai_settings_toast(safe_error, TerminalNoticeVariant::Error, cx);
+                self.ai.chat.stream_task = None;
+                self.ai.chat.loading = false;
+                self.persist_ai_chat_state();
+                self.push_ai_settings_toast(error, TerminalNoticeVariant::Error);
             }
-            AiStreamApplyOutcome::Stale => return,
         }
         cx.notify();
     }
@@ -502,11 +215,7 @@ impl WorkspaceApp {
         metadata: serde_json::Value,
         cx: &mut Context<Self>,
     ) {
-        if !self
-            .ai_entity
-            .read(cx)
-            .is_chat_stream_generation(generation)
-        {
+        if self.ai.chat.stream_generation != generation {
             return;
         }
         let text = text.trim();
@@ -514,11 +223,12 @@ impl WorkspaceApp {
             return;
         }
 
-        self.ai_entity.update(cx, |ai, _cx| {
-            ai.update_chat_message(conversation_id, message_id, |message| {
+        self.ai
+            .chat
+            .conversation_state
+            .update_message(conversation_id, message_id, |message| {
                 upsert_ai_round_summary(message, round_id, text, metadata.clone());
             });
-        });
 
         let now = ai_now_ms();
         let mut payload = serde_json::json!({
@@ -557,9 +267,8 @@ impl WorkspaceApp {
                 Some(round_id.to_string()),
                 now,
             )],
-            cx,
         );
-        self.ai_entity.read(cx).persist_chat_state();
+        self.persist_ai_chat_state();
         cx.notify();
     }
 
@@ -572,19 +281,16 @@ impl WorkspaceApp {
         marker: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        if !self
-            .ai_entity
-            .read(cx)
-            .is_chat_stream_generation(generation)
-        {
+        if self.ai.chat.stream_generation != generation {
             return;
         }
-        self.ai_entity.update(cx, |ai, _cx| {
-            ai.update_chat_message(conversation_id, message_id, |message| {
+        self.ai
+            .chat
+            .conversation_state
+            .update_message(conversation_id, message_id, |message| {
                 set_ai_turn_round_stateful_marker(message, round_id, marker.as_deref());
             });
-        });
-        self.ai_entity.read(cx).persist_chat_state();
+        self.persist_ai_chat_state();
         cx.notify();
     }
 
@@ -596,13 +302,8 @@ impl WorkspaceApp {
         event_type: &str,
         round_id: Option<String>,
         data: serde_json::Value,
-        cx: &App,
     ) {
-        if !self
-            .ai_entity
-            .read(cx)
-            .is_chat_stream_generation(generation)
-        {
+        if self.ai.chat.stream_generation != generation {
             return;
         }
         let now = ai_now_ms();
@@ -617,7 +318,6 @@ impl WorkspaceApp {
                 now,
                 self.ai_diagnostic_base(data),
             )],
-            cx,
         );
     }
 
@@ -634,25 +334,14 @@ impl WorkspaceApp {
         risk: Option<String>,
         summary: Option<String>,
         synthetic_denied: bool,
-        _raw_text: Option<String>,
+        raw_text: Option<String>,
         round_id_override: Option<String>,
         round_number_override: Option<i64>,
         cx: &mut Context<Self>,
     ) {
-        if !self
-            .ai_entity
-            .read(cx)
-            .is_chat_stream_generation(generation)
-        {
+        if self.ai.chat.stream_generation != generation {
             return;
         }
-        let persisted_arguments = sanitize_ai_tool_arguments_for_persistence(arguments);
-        let persisted_result = result
-            .as_ref()
-            .map(|result| oxideterm_ai::sanitize_tool_result_json_for_persistence(name, result));
-        let persisted_summary = summary
-            .as_deref()
-            .map(oxideterm_ai::sanitize_for_persistence);
         let should_persist = result.is_some()
             || matches!(
                 status,
@@ -660,17 +349,19 @@ impl WorkspaceApp {
             );
         let mut round_id = None;
         let mut round_number = None;
-        self.ai_entity.update(cx, |ai, _cx| {
-            ai.update_chat_message(conversation_id, message_id, |message| {
+        self.ai
+            .chat
+            .conversation_state
+            .update_message(conversation_id, message_id, |message| {
                 update_ai_tool_call_status(
                     message,
                     tool_call_id,
                     name,
-                    &persisted_arguments,
+                    arguments,
                     status,
-                    persisted_result.clone(),
+                    result.clone(),
                     risk.clone(),
-                    persisted_summary,
+                    summary,
                     round_id_override.as_deref(),
                     round_number_override,
                 );
@@ -683,24 +374,21 @@ impl WorkspaceApp {
                 round_id = Some(id);
                 round_number = Some(number);
             });
-        });
         if should_persist {
             let now = ai_now_ms();
             let round_id_value = round_id.clone();
             let round_number_value = round_number.unwrap_or(1);
-            let tool_execution_record = self.ai_entity.update(cx, |ai, _cx| {
-                ai.record_ai_tool_execution_status(
-                    conversation_id,
-                    message_id,
-                    tool_call_id,
-                    name,
-                    &persisted_arguments,
-                    status,
-                    persisted_result.as_ref(),
-                    risk.as_deref(),
-                    now,
-                )
-            });
+            let tool_execution_record = self.record_ai_tool_execution_status(
+                conversation_id,
+                message_id,
+                tool_call_id,
+                name,
+                arguments,
+                status,
+                result.as_ref(),
+                risk.as_deref(),
+                now,
+            );
             let mut transcript_entries = Vec::new();
             let mut diagnostic_events = Vec::new();
             if synthetic_denied || matches!(status, "pending" | "running" | "pending_user_approval")
@@ -708,7 +396,7 @@ impl WorkspaceApp {
                 let mut call_payload = serde_json::json!({
                     "id": tool_call_id,
                     "name": name,
-                    "argumentsText": persisted_arguments.as_str(),
+                    "argumentsText": arguments,
                     "roundId": round_id_value,
                 });
                 if let Some(object) = call_payload.as_object_mut()
@@ -736,20 +424,20 @@ impl WorkspaceApp {
                         "logicalRound": round_number_value,
                         "toolCallId": tool_call_id,
                         "toolName": name,
-                        "arguments": persisted_arguments.as_str(),
+                        "arguments": arguments,
                         "syntheticDenied": synthetic_denied,
                     })),
                 ));
             }
             if matches!(status, "rejected" | "completed" | "error") {
                 let success = status == "completed";
-                let output = persisted_result
+                let output = result
                     .as_ref()
                     .and_then(|value| value.get("output"))
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                let error = persisted_result
+                let error = result
                     .as_ref()
                     .and_then(|value| value.get("error"))
                     .cloned();
@@ -764,6 +452,9 @@ impl WorkspaceApp {
                 if let Some(object) = result_payload.as_object_mut() {
                     if synthetic_denied {
                         object.insert("syntheticDenied".to_string(), serde_json::json!(true));
+                    }
+                    if let Some(raw_text) = raw_text.as_deref() {
+                        object.insert("rawText".to_string(), serde_json::json!(raw_text));
                     }
                 }
                 transcript_entries.push(ai_transcript_entry(
@@ -792,9 +483,7 @@ impl WorkspaceApp {
                     })),
                 ));
                 if let Some(record) = tool_execution_record.as_ref() {
-                    let facts = self.ai_entity.update(cx, |ai, _cx| {
-                        ai.record_ai_tool_result_facts(record, persisted_result.as_ref(), now)
-                    });
+                    let facts = self.record_ai_tool_result_facts(record, result.as_ref(), now);
                     diagnostic_events.push(ai_diagnostic_event(
                         format!("diagnostic-tool-execution-{tool_call_id}"),
                         conversation_id,
@@ -818,26 +507,23 @@ impl WorkspaceApp {
                         ));
                     }
                 }
+                self.record_ai_command_from_tool_status(
+                    name,
+                    arguments,
+                    status,
+                    result.as_ref(),
+                    risk.as_deref(),
+                );
             }
-            self.persist_ai_transcript_entries(
-                conversation_id.to_string(),
-                transcript_entries,
-                cx,
-            );
-            self.persist_ai_diagnostic_events(
-                conversation_id.to_string(),
-                diagnostic_events,
-                cx,
-            );
-            self.ai_entity.read(cx).persist_chat_state();
+            self.persist_ai_transcript_entries(conversation_id.to_string(), transcript_entries);
+            self.persist_ai_diagnostic_events(conversation_id.to_string(), diagnostic_events);
+            self.persist_ai_chat_state();
         }
         cx.notify();
     }
-}
 
-impl crate::workspace::ai_state::AiWorkspaceEntity {
     #[allow(clippy::too_many_arguments)]
-    fn record_ai_tool_execution_status(
+    pub(in crate::workspace) fn record_ai_tool_execution_status(
         &mut self,
         conversation_id: &str,
         message_id: &str,
@@ -851,11 +537,13 @@ impl crate::workspace::ai_state::AiWorkspaceEntity {
     ) -> Option<AiToolExecutionRecord> {
         let args = serde_json::from_str::<serde_json::Value>(arguments).ok();
         let existing = self
+            .ai
+            .runtime
             .tool_execution_records
             .iter()
             .position(|record| record.tool_call_id == tool_call_id);
         let mut record = existing
-            .and_then(|index| self.tool_execution_records.remove(index))
+            .and_then(|index| self.ai.runtime.tool_execution_records.remove(index))
             .unwrap_or_else(|| AiToolExecutionRecord {
                 record_id: format!("tool-exec-{tool_call_id}"),
                 conversation_id: conversation_id.to_string(),
@@ -863,7 +551,7 @@ impl crate::workspace::ai_state::AiWorkspaceEntity {
                 tool_call_id: tool_call_id.to_string(),
                 tool_name: tool_name.to_string(),
                 argument_summary: ai_tool_argument_summary(tool_name, args.as_ref()),
-                resource_kind: ai_tool_argument_resource_kind(args.as_ref()),
+                target_id: ai_tool_argument_target_id(args.as_ref()),
                 target_kind: None,
                 risk: risk.unwrap_or("read").to_string(),
                 approval_source: None,
@@ -872,35 +560,52 @@ impl crate::workspace::ai_state::AiWorkspaceEntity {
                 status: status.to_string(),
                 success: None,
                 error_code: None,
+                result_summary: None,
                 duration_ms: None,
                 started_at: now,
                 finished_at: None,
+                runtime_epoch: self.ai.runtime.epoch.clone(),
             });
 
         record.status = status.to_string();
         record.risk = risk.unwrap_or(&record.risk).to_string();
         record.argument_summary = ai_tool_argument_summary(tool_name, args.as_ref());
-        record.resource_kind = ai_tool_result_resource_kind(result)
-            .or_else(|| ai_tool_argument_resource_kind(args.as_ref()));
+        record.target_id =
+            ai_tool_result_target_id(result).or_else(|| ai_tool_argument_target_id(args.as_ref()));
         record.target_kind = ai_tool_result_target_kind(result);
         record.execution_surface = ai_tool_execution_surface(tool_name, args.as_ref(), result);
         record.visible_in_terminal = ai_tool_visible_in_terminal(result);
         record.approval_source = ai_tool_approval_source(status, result);
+        record.runtime_epoch =
+            ai_tool_runtime_epoch(result).unwrap_or_else(|| self.ai.runtime.epoch.clone());
+
         if matches!(status, "rejected" | "completed" | "error") {
             record.finished_at = Some(now);
             record.success = Some(status == "completed");
             record.error_code = ai_tool_error_code(result);
+            record.result_summary = result
+                .and_then(|value| value.get("summary"))
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    result
+                        .and_then(|value| value.get("output"))
+                        .and_then(serde_json::Value::as_str)
+                })
+                .map(|value| truncate_ai_tool_record_text(value, 240));
             record.duration_ms = ai_tool_duration_ms(result);
         }
 
-        self.tool_execution_records.push_back(record.clone());
-        while self.tool_execution_records.len() > 500 {
-            self.tool_execution_records.pop_front();
+        self.ai
+            .runtime
+            .tool_execution_records
+            .push_back(record.clone());
+        while self.ai.runtime.tool_execution_records.len() > 500 {
+            self.ai.runtime.tool_execution_records.pop_front();
         }
         Some(record)
     }
 
-    fn record_ai_tool_result_facts(
+    pub(in crate::workspace) fn record_ai_tool_result_facts(
         &mut self,
         record: &AiToolExecutionRecord,
         result: Option<&serde_json::Value>,
@@ -911,17 +616,206 @@ impl crate::workspace::ai_state::AiWorkspaceEntity {
         }
         let facts = extract_ai_tool_result_facts(record, result, now);
         for fact in &facts {
-            self.tool_result_facts.push_back(fact.clone());
+            self.ai.runtime.tool_result_facts.push_back(fact.clone());
         }
-        while self.tool_result_facts.len() > 1000 {
-            self.tool_result_facts.pop_front();
+        while self.ai.runtime.tool_result_facts.len() > 1000 {
+            self.ai.runtime.tool_result_facts.pop_front();
         }
         facts
     }
 
-}
+    pub(in crate::workspace) fn record_ai_command_from_tool_status(
+        &mut self,
+        tool_name: &str,
+        arguments: &str,
+        status: &str,
+        result: Option<&serde_json::Value>,
+        risk: Option<&str>,
+    ) {
+        if !matches!(tool_name, "run_command" | "send_terminal_input")
+            || !matches!(status, "completed" | "error")
+        {
+            return;
+        }
+        let args = serde_json::from_str::<serde_json::Value>(arguments)
+            .unwrap_or_else(|_| serde_json::json!({ "rawArguments": arguments }));
+        let command = match tool_name {
+            "run_command" => args
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            "send_terminal_input" => args
+                .get("text")
+                .or_else(|| args.get("keys"))
+                .or_else(|| args.get("sequence"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            _ => String::new(),
+        };
+        let command = command.trim().to_string();
+        if command.is_empty() {
+            return;
+        }
 
-impl WorkspaceApp {
+        let meta = result.and_then(|value| value.get("meta"));
+        let data = result.and_then(|value| value.get("data"));
+        let target = result
+            .and_then(|value| value.get("targets"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|targets| targets.first());
+        let target_refs = target.and_then(|value| value.get("refs")).or_else(|| {
+            // Tauri tool result targets keep refs under metadata; retain
+            // the old native fallback while reading the canonical shape.
+            target
+                .and_then(|value| value.get("metadata"))
+                .and_then(|metadata| metadata.get("refs"))
+        });
+        let target_id = meta
+            .and_then(|value| value.get("targetId"))
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string)
+            .or_else(|| {
+                target
+                    .and_then(|value| value.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToString::to_string)
+            });
+        let session_id = target_refs
+            .and_then(|refs| refs.get("sessionId"))
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string)
+            .or_else(|| {
+                data.and_then(|value| value.get("sessionId"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToString::to_string)
+            });
+        let node_id = target_refs
+            .and_then(|refs| refs.get("nodeId"))
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string);
+        let exit_code = data
+            .and_then(|value| value.get("exitCode"))
+            .and_then(serde_json::Value::as_i64);
+        let waiting_for_input = data
+            .and_then(|value| value.get("waitingForInput"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let runtime_epoch = meta
+            .and_then(|value| value.get("runtimeEpoch"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&self.ai.runtime.epoch)
+            .to_string();
+        let approval_mode = meta
+            .and_then(|value| value.get("approvalMode"))
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string);
+        self.ai.runtime.command_record_sequence =
+            self.ai.runtime.command_record_sequence.saturating_add(1);
+        let now = ai_now_ms();
+        let record = AiRuntimeCommandRecord {
+            command_id: format!("cmd-{}-{}", now, self.ai.runtime.command_record_sequence),
+            target_id,
+            session_id,
+            node_id,
+            command,
+            cwd: args
+                .get("cwd")
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string),
+            source: if tool_name == "run_command" {
+                "ai.run_command".to_string()
+            } else {
+                "ai.terminal_input".to_string()
+            },
+            status: if waiting_for_input {
+                "waiting_for_input".to_string()
+            } else if status == "completed" {
+                "completed".to_string()
+            } else {
+                "error".to_string()
+            },
+            exit_code,
+            started_at: now,
+            finished_at: Some(now),
+            runtime_epoch,
+            approval_mode,
+            risk: risk.unwrap_or("read").to_string(),
+        };
+        self.record_ai_cli_agent_command(&record);
+        self.ai.runtime.command_records.push_back(record);
+        while self.ai.runtime.command_records.len() > 200 {
+            self.ai.runtime.command_records.pop_front();
+        }
+        self.trim_ai_command_records_per_session();
+    }
+
+    pub(in crate::workspace) fn trim_ai_command_records_per_session(&mut self) {
+        let mut per_session: HashMap<String, usize> = HashMap::new();
+        let mut keep = VecDeque::new();
+        for record in self.ai.runtime.command_records.iter().rev() {
+            let key = record
+                .session_id
+                .as_ref()
+                .or(record.node_id.as_ref())
+                .or(record.target_id.as_ref())
+                .cloned()
+                .unwrap_or_else(|| "global".to_string());
+            let count = per_session.entry(key).or_insert(0);
+            if *count < 50 {
+                keep.push_front(record.clone());
+                *count += 1;
+            }
+        }
+        self.ai.runtime.command_records = keep;
+    }
+
+    pub(in crate::workspace) fn record_ai_cli_agent_command(
+        &mut self,
+        record: &AiRuntimeCommandRecord,
+    ) {
+        let Some(kind) = detect_ai_cli_agent_kind(&record.command) else {
+            return;
+        };
+        let target_key = record
+            .session_id
+            .as_ref()
+            .or(record.node_id.as_ref())
+            .or(record.target_id.as_ref())
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string());
+        let id = format!("cli-agent:{kind}:{target_key}");
+        let existing_started_at = self
+            .ai
+            .runtime
+            .cli_agent_sessions
+            .get(&id)
+            .map(|session| session.started_at)
+            .unwrap_or(record.started_at);
+        let status = match record.status.as_str() {
+            "waiting_for_input" => "waiting_for_input",
+            "error" => "failed",
+            _ => "running",
+        };
+        self.ai.runtime.cli_agent_sessions.insert(
+            id.clone(),
+            AiCliAgentSession {
+                id,
+                kind: kind.clone(),
+                label: format!("{kind} agent"),
+                status: status.to_string(),
+                target_id: record.target_id.clone(),
+                session_id: record.session_id.clone(),
+                node_id: record.node_id.clone(),
+                command: record.command.clone(),
+                started_at: existing_started_at,
+                updated_at: record.finished_at.unwrap_or(record.started_at),
+                runtime_epoch: record.runtime_epoch.clone(),
+            },
+        );
+    }
+
     pub(in crate::workspace) fn apply_ai_guardrail(
         &mut self,
         generation: u64,
@@ -932,26 +826,16 @@ impl WorkspaceApp {
         raw_text: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        if !self
-            .ai_entity
-            .read(cx)
-            .is_chat_stream_generation(generation)
-        {
+        if self.ai.chat.stream_generation != generation {
             return;
         }
-        let persisted_raw_text = raw_text
-            .as_deref()
-            .map(oxideterm_ai::sanitize_for_ai);
-        self.ai_entity.update(cx, |ai, _cx| {
-            ai.update_chat_message(conversation_id, message_id, |message_value| {
-                append_ai_turn_guardrail_part(
-                    message_value,
-                    code,
-                    message,
-                    persisted_raw_text.as_deref(),
-                );
-            });
-        });
+        self.ai.chat.conversation_state.update_message(
+            conversation_id,
+            message_id,
+            |message_value| {
+                append_ai_turn_guardrail_part(message_value, code, message, raw_text.as_deref());
+            },
+        );
         let now = ai_now_ms();
         self.persist_ai_transcript_entries(
             conversation_id.to_string(),
@@ -962,12 +846,12 @@ impl WorkspaceApp {
                 serde_json::json!({
                     "code": code,
                     "message": message,
+                    "rawText": raw_text,
                 }),
                 Some(message_id.to_string()),
                 Some(message_id.to_string()),
                 now,
             )],
-            cx,
         );
         self.persist_ai_diagnostic_events(
             conversation_id.to_string(),
@@ -985,9 +869,8 @@ impl WorkspaceApp {
                     "rawTextLength": raw_text.as_ref().map(|text| text.len()).unwrap_or(0),
                 })),
             )],
-            cx,
         );
-        self.ai_entity.read(cx).persist_chat_state();
+        self.persist_ai_chat_state();
         cx.notify();
     }
 }
@@ -1088,17 +971,22 @@ pub(in crate::workspace) fn ai_tool_argument_summary(
     };
     match tool_name {
         "run_command" => {
-            let command_chars = args
+            let command = args
                 .get("command")
                 .and_then(serde_json::Value::as_str)
-                .map(str::chars)
-                .map(Iterator::count)
-                .unwrap_or(0);
-            let has_cwd = args
+                .map(|value| truncate_ai_tool_record_text(value, 200))
+                .unwrap_or_else(|| "<missing command>".to_string());
+            let target = args
+                .get("target_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<missing target>");
+            let cwd = args
                 .get("cwd")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|value| !value.trim().is_empty());
-            format!("runtime_target=current command_chars={command_chars} has_cwd={has_cwd}")
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| format!(" cwd={}", truncate_ai_tool_record_text(value, 120)))
+                .unwrap_or_default();
+            format!("target={target}{cwd} command={command}")
         }
         "send_terminal_input" => {
             let text_len = args
@@ -1118,10 +1006,35 @@ pub(in crate::workspace) fn ai_tool_argument_summary(
                 .get("resource")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("<missing resource>");
-            format!("resource={resource}")
+            let path = args
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .map(|value| truncate_ai_tool_record_text(value, 160))
+                .unwrap_or_default();
+            let target = args
+                .get("target_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<missing target>");
+            if path.is_empty() {
+                format!("target={target} resource={resource}")
+            } else {
+                format!("target={target} resource={resource} path={path}")
+            }
         }
-        "connect_target" => "resource=saved_connection".to_string(),
-        "open_app_surface" => "resource=app_surface".to_string(),
+        "connect_target" => {
+            let target = args
+                .get("target_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<missing target>");
+            format!("target={target}")
+        }
+        "open_app_surface" => {
+            let surface = args
+                .get("surface")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<missing surface>");
+            format!("surface={surface}")
+        }
         _ => {
             let mut keys = args.keys().cloned().collect::<Vec<_>>();
             keys.sort();
@@ -1130,30 +1043,36 @@ pub(in crate::workspace) fn ai_tool_argument_summary(
     }
 }
 
-pub(in crate::workspace) fn ai_tool_argument_resource_kind(
+pub(in crate::workspace) fn ai_tool_argument_target_id(
     args: Option<&serde_json::Value>,
-) -> Option<oxideterm_ai::StableResourceKind> {
-    args.and_then(|value| value.get("resource_ref"))
-        .cloned()
-        .and_then(|value| {
-            serde_json::from_value::<oxideterm_ai::StableResourceRef>(value).ok()
-        })
-        .map(|resource_ref| resource_ref.kind())
+) -> Option<String> {
+    args.and_then(|value| value.get("target_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
 }
 
-pub(in crate::workspace) fn ai_tool_result_resource_kind(
+pub(in crate::workspace) fn ai_tool_result_target_id(
     result: Option<&serde_json::Value>,
-) -> Option<oxideterm_ai::StableResourceKind> {
+) -> Option<String> {
     result
-        .and_then(|value| value.get("targets"))
-        .and_then(serde_json::Value::as_array)
-        .and_then(|targets| targets.first())
-        .and_then(|target| target.pointer("/authority/resource_ref"))
-        .cloned()
-        .and_then(|value| {
-            serde_json::from_value::<oxideterm_ai::StableResourceRef>(value).ok()
+        .and_then(|value| value.pointer("/meta/targetId"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| {
+            result
+                .and_then(|value| value.pointer("/execution/target/id"))
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string)
         })
-        .map(|resource_ref| resource_ref.kind())
+        .or_else(|| {
+            result
+                .and_then(|value| value.get("targets"))
+                .and_then(serde_json::Value::as_array)
+                .and_then(|targets| targets.first())
+                .and_then(|target| target.get("id"))
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string)
+        })
 }
 
 pub(in crate::workspace) fn ai_tool_result_target_kind(
@@ -1192,7 +1111,13 @@ pub(in crate::workspace) fn ai_tool_execution_surface(
         return "visible_terminal".to_string();
     }
     match tool_name {
-        "run_command" => "background_capture".to_string(),
+        "run_command" => {
+            if ai_tool_argument_target_id(args).as_deref() == Some("local-shell:default") {
+                "local_process".to_string()
+            } else {
+                "background_capture".to_string()
+            }
+        }
         "send_terminal_input" => "visible_terminal".to_string(),
         "connect_target" | "open_app_surface" | "remember_preference" => "ui_action".to_string(),
         "read_resource" | "write_resource" | "transfer_resource" => {
@@ -1243,6 +1168,15 @@ pub(in crate::workspace) fn ai_tool_duration_ms(result: Option<&serde_json::Valu
         .and_then(serde_json::Value::as_u64)
 }
 
+pub(in crate::workspace) fn ai_tool_runtime_epoch(
+    result: Option<&serde_json::Value>,
+) -> Option<String> {
+    result
+        .and_then(|value| value.pointer("/meta/runtimeEpoch"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
+}
+
 pub(in crate::workspace) fn ai_tool_execution_record_json(
     record: &AiToolExecutionRecord,
 ) -> serde_json::Value {
@@ -1253,8 +1187,7 @@ pub(in crate::workspace) fn ai_tool_execution_record_json(
         "toolCallId": record.tool_call_id,
         "toolName": record.tool_name,
         "argumentSummary": record.argument_summary,
-        // Diagnostics retain the resource class but never a stable identifier.
-        "resourceKind": record.resource_kind,
+        "targetId": record.target_id,
         "targetKind": record.target_kind,
         "risk": record.risk,
         "approvalSource": record.approval_source,
@@ -1263,11 +1196,11 @@ pub(in crate::workspace) fn ai_tool_execution_record_json(
         "status": record.status,
         "success": record.success,
         "errorCode": record.error_code,
+        "resultSummary": record.result_summary,
         "durationMs": record.duration_ms,
         "startedAt": record.started_at,
         "finishedAt": record.finished_at,
-        "historical": true,
-        "actionable": false,
+        "runtimeEpoch": record.runtime_epoch,
     })
 }
 
@@ -1277,8 +1210,20 @@ pub(in crate::workspace) fn extract_ai_tool_result_facts(
     now: i64,
 ) -> Vec<AiToolResultFact> {
     let mut facts = Vec::new();
-    // Default diagnostics retain only structured execution state. Human-readable
-    // summaries and output remain in the redacted conversation projection.
+    if let Some(summary) = result
+        .and_then(|value| value.get("summary"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        facts.push(ai_tool_result_fact(record, "summary", summary, now));
+    }
+    if let Some(output) = result
+        .and_then(|value| value.get("output"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        facts.push(ai_tool_result_fact(record, "output", output, now));
+    }
     if let Some(exit_code) = result
         .and_then(|value| value.pointer("/execution/exitCode"))
         .or_else(|| result.and_then(|value| value.pointer("/data/exitCode")))
@@ -1324,8 +1269,7 @@ pub(in crate::workspace) fn ai_tool_result_fact(
     text: &str,
     now: i64,
 ) -> AiToolResultFact {
-    // Only bounded structured state reaches this helper.
-    let safe_text = oxideterm_ai::sanitize_for_ai(text);
+    let output_preview = truncate_ai_tool_record_text(text, 4000);
     AiToolResultFact {
         fact_id: format!("{}.{}", record.tool_call_id, source_kind),
         conversation_id: record.conversation_id.clone(),
@@ -1333,8 +1277,11 @@ pub(in crate::workspace) fn ai_tool_result_fact(
         tool_call_id: record.tool_call_id.clone(),
         tool_name: record.tool_name.clone(),
         source_kind: source_kind.to_string(),
-        summary: truncate_ai_tool_record_text(&safe_text, 240),
+        text_hash: ai_tool_fact_hash(text),
+        summary: truncate_ai_tool_record_text(text.lines().next().unwrap_or_default(), 240),
+        output_preview,
         created_at: now,
+        runtime_epoch: record.runtime_epoch.clone(),
     }
 }
 
@@ -1346,11 +1293,17 @@ pub(in crate::workspace) fn ai_tool_result_fact_json(fact: &AiToolResultFact) ->
         "toolCallId": fact.tool_call_id,
         "toolName": fact.tool_name,
         "sourceKind": fact.source_kind,
+        "textHash": fact.text_hash,
         "summary": fact.summary,
+        "outputPreview": fact.output_preview,
         "createdAt": fact.created_at,
-        "historical": true,
-        "actionable": false,
+        "runtimeEpoch": fact.runtime_epoch,
     })
+}
+
+pub(in crate::workspace) fn ai_tool_fact_hash(text: &str) -> String {
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(text.as_bytes());
+    format!("sha256:{digest:x}")
 }
 
 pub(in crate::workspace) fn ai_fact_value_text(value: &serde_json::Value) -> String {

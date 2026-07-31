@@ -3,6 +3,21 @@ pub struct NodeRouter {
     registry: SshConnectionRegistry,
     runtime: NodeRuntimeStore,
     emitter: NodeEventEmitter,
+    /// Dedicated SFTP connections for skip_remote_env_detection nodes.
+    /// Each entry holds an independent SSH connection with a single SFTP channel.
+    dedicated_sftp: DashMap<NodeId, DedicatedSftpEntry>,
+}
+
+#[derive(Clone)]
+struct DedicatedSftpEntry {
+    connection: DedicatedSftpConnection,
+    session: Arc<tokio::sync::Mutex<SftpSession>>,
+}
+
+impl std::fmt::Debug for DedicatedSftpEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DedicatedSftpEntry").finish_non_exhaustive()
+    }
 }
 
 impl NodeRouter {
@@ -24,6 +39,7 @@ impl NodeRouter {
             registry,
             runtime,
             emitter,
+            dedicated_sftp: DashMap::new(),
         }
     }
 
@@ -46,54 +62,6 @@ impl NodeRouter {
 
     pub fn export_tree_snapshot(&self) -> NodeTreeSnapshot {
         self.runtime.export_snapshot()
-    }
-
-    pub fn export_persistence_snapshot(&self) -> NodeTreePersistenceSnapshot {
-        self.runtime.export_persistence_snapshot()
-    }
-
-    pub fn root_node_ids(&self) -> Vec<NodeId> {
-        self.runtime.root_node_ids()
-    }
-
-    pub fn node_metadata(&self, node_id: &NodeId) -> Option<NodeMetadataSnapshot> {
-        self.runtime.metadata_snapshot(node_id)
-    }
-
-    /// Returns the secret-bearing runtime snapshot only to explicit connection actions.
-    pub fn node_runtime_snapshot(&self, node_id: &NodeId) -> Option<NodeRuntimeSnapshot> {
-        self.runtime.snapshot(node_id)
-    }
-
-    pub fn node_metadata_snapshots(&self) -> Vec<NodeMetadataSnapshot> {
-        self.runtime.metadata_snapshots()
-    }
-
-    pub fn path_to_node(&self, node_id: &NodeId) -> Result<Vec<NodeId>, RouteError> {
-        self.runtime.path_to_node(node_id)
-    }
-
-    pub fn contains_node(&self, node_id: &NodeId) -> bool {
-        self.runtime.contains_node(node_id)
-    }
-
-    pub fn update_node_origin(
-        &self,
-        node_id: &NodeId,
-        origin: NodeOrigin,
-    ) -> Result<(), RouteError> {
-        self.runtime.update_origin(node_id, origin)
-    }
-
-    pub fn subtree_postorder(&self, node_id: &NodeId) -> Vec<NodeId> {
-        self.runtime.subtree_postorder(node_id)
-    }
-
-    pub fn minimal_subtree_roots(
-        &self,
-        candidate_node_ids: impl IntoIterator<Item = NodeId>,
-    ) -> Vec<NodeId> {
-        self.runtime.minimal_subtree_roots(candidate_node_ids)
     }
 
     pub fn apply_tree_snapshot(&self, snapshot: NodeTreeSnapshot) -> Result<(), RouteError> {
@@ -142,15 +110,7 @@ impl NodeRouter {
             .registry
             .list()
             .into_iter()
-            .map(|info| {
-                let connection_id = info.connection_id.clone();
-                let state = self
-                    .registry
-                    .get(&connection_id)
-                    .map(|handle| connection_info_for_runtime(&handle).state)
-                    .unwrap_or(info.state);
-                (connection_id, state)
-            })
+            .map(|info| (info.connection_id, info.state))
             .collect::<HashMap<_, _>>();
         self.runtime.reconcile_with_connections(&connections);
     }
@@ -248,7 +208,7 @@ impl NodeRouter {
             .registry
             .get(&connection_id)
             .ok_or_else(|| RouteError::NotConnected(node_id.0.clone()))?;
-        let connection = connection_info_for_runtime(&handle);
+        let connection = handle.info();
         let event = self
             .runtime
             .bind_connection(node_id, connection_id.clone(), &connection)?;
@@ -277,23 +237,12 @@ impl NodeRouter {
         if let Ok(event) = self.runtime.set_sftp_ready(node_id, false, None) {
             self.emitter.dispatch(&event);
         }
+        // Release any dedicated SFTP connection for this node to avoid
+        // leaking the underlying SSH transport and TCP socket.
+        self.release_dedicated_sftp(node_id);
         let event = self.runtime.disconnect_node(node_id, reason)?;
         self.emitter.dispatch(&event);
         Ok(event)
-    }
-
-    pub fn prepare_node_connection_attempt(&self, node_id: &NodeId) -> Result<(), RouteError> {
-        let previous_connection_id = self.runtime.connection_id_for_node(node_id);
-        // Connection-chain preparation is an internal ownership transfer, not
-        // a user-visible disconnect. Publishing it could overtake the new
-        // Connecting event and incorrectly fail the in-flight attempt.
-        let _ = self
-            .runtime
-            .disconnect_node(node_id, "connection attempt preparation")?;
-        if let Some(connection_id) = previous_connection_id {
-            self.emitter.unregister(&connection_id);
-        }
-        Ok(())
     }
 
     pub fn remove_runtime_subtree(&self, node_id: &NodeId) -> Vec<NodeId> {
@@ -330,14 +279,13 @@ impl NodeRouter {
     }
 
     pub fn terminal_url(&self, node_id: &NodeId) -> Result<TerminalEndpoint, RouteError> {
-        self.runtime
-            .primary_terminal_endpoint(node_id)?
-            .ok_or_else(|| {
-                RouteError::NotConnected(format!(
-                    "No active terminal session for node {}",
-                    node_id.0
-                ))
-            })
+        let runtime = self
+            .runtime
+            .snapshot(node_id)
+            .ok_or_else(|| RouteError::NodeNotFound(node_id.0.clone()))?;
+        runtime.state.ws_endpoint.ok_or_else(|| {
+            RouteError::NotConnected(format!("No active terminal session for node {}", node_id.0))
+        })
     }
 
     pub fn node_id_for_connection(&self, connection_id: &str) -> Option<NodeId> {
@@ -362,6 +310,14 @@ impl NodeRouter {
         &self,
         node_id: &NodeId,
     ) -> Result<Arc<Mutex<SftpSession>>, RouteError> {
+        // Check if this node uses skip_remote_env_detection — if so, SFTP
+        // needs a dedicated SSH connection instead of the registry's shared one.
+        if let Some(snapshot) = self.runtime.snapshot(node_id) {
+            if snapshot.config.skip_remote_env_detection {
+                return self.acquire_sftp_dedicated(node_id, &snapshot.config).await;
+            }
+        }
+
         let resolved = self
             .resolve_connection_wait(node_id, Duration::from_secs(15))
             .await?;
@@ -369,7 +325,6 @@ impl NodeRouter {
             session,
             was_new,
             cwd,
-            generation,
         } = resolved
             .handle
             .acquire_sftp_with_meta()
@@ -384,42 +339,106 @@ impl NodeRouter {
         let event = self.runtime.set_sftp_ready(node_id, true, cwd)?;
         if was_new {
             self.emitter.dispatch(&event);
-            // The shared channel is a separate owner from short-lived listing
-            // channels, so capability consumers receive its own lifecycle event.
-            let owner_event = self.runtime.shared_sftp_session_changed(
-                node_id,
-                resolved.connection_id,
-                Some(generation),
-                true,
-            )?;
-            self.emitter.dispatch(&owner_event);
         }
         Ok(session)
     }
 
-    /// Resolves the exact shared SFTP owner validated by an upper-layer
-    /// capability. A changed connection or generation fails without rebuilding.
-    pub async fn acquire_existing_sftp_generation(
+    /// Acquire SFTP via a dedicated SSH connection for skip_remote_env_detection nodes.
+    ///
+    /// Creates an independent SSH connection with a single SFTP channel, cached
+    /// for reuse. The connection is recreated if it has been closed.
+    async fn acquire_sftp_dedicated(
         &self,
         node_id: &NodeId,
-        expected_connection_id: &str,
-        expected_generation: u64,
+        config: &SshConfig,
     ) -> Result<Arc<Mutex<SftpSession>>, RouteError> {
-        let resolved = self
-            .resolve_connection_wait(node_id, Duration::from_secs(15))
-            .await?;
-        if resolved.connection_id != expected_connection_id {
-            return Err(RouteError::CapabilityUnavailable(
-                "Shared SFTP owner changed".to_string(),
-            ));
+        // 1. Check cache for a live dedicated connection.
+        if let Some(entry) = self.dedicated_sftp.get(node_id) {
+            if !entry.connection.is_closed().await {
+                return Ok(Arc::clone(&entry.session));
+            }
+            // Connection is dead — drop the cache entry and recreate.
+            drop(entry);
+            self.dedicated_sftp.remove(node_id);
         }
-        resolved
-            .handle
-            .acquire_existing_sftp_generation(expected_generation)
+
+        // 2. Create a new independent SSH connection.
+        let transport = SshTransportClient::new(config.clone());
+        let connection = transport
+            .connect_for_sftp()
             .await
-            .ok_or_else(|| {
-                RouteError::CapabilityUnavailable("Shared SFTP owner changed".to_string())
-            })
+            .map_err(|error| RouteError::ConnectionError(error.to_string()))?;
+
+        // 3. Create SFTP session on the dedicated connection.
+        let session_id = format!("dedicated-sftp-{}", node_id.0);
+        let sftp = SftpSession::new(connection.clone(), session_id)
+            .await
+            .map_err(|error| RouteError::ConnectionError(error.to_string()))?;
+        let session = Arc::new(Mutex::new(sftp));
+
+        // 4. Cache the connection and session.
+        self.dedicated_sftp.insert(
+            node_id.clone(),
+            DedicatedSftpEntry {
+                connection,
+                session: Arc::clone(&session),
+            },
+        );
+
+        // 5. Notify the node that SFTP is ready.
+        let cwd = {
+            let sftp = session.lock().await;
+            sftp.cwd().to_string()
+        };
+        let event = self.runtime.set_sftp_ready(node_id, true, Some(cwd))?;
+        self.emitter.dispatch(&event);
+
+        Ok(session)
+    }
+
+    /// Release the dedicated SFTP connection for a node.
+    ///
+    /// Called when the SFTP tab is closed or the node is removed.
+    /// The underlying SSH connection is dropped when all references are gone.
+    pub fn release_dedicated_sftp(&self, node_id: &NodeId) {
+        if let Some((_, _entry)) = self.dedicated_sftp.remove(node_id) {
+            tracing::debug!(node_id = %node_id.0, "Released dedicated SFTP connection");
+        }
+    }
+
+    /// Acquire a transfer SFTP session on the dedicated connection.
+    ///
+    /// Creates a **separate** dedicated SSH connection for this transfer.
+    /// Single-channel servers only allow one channel per SSH connection,
+    /// so we cannot reuse the cached SFTP connection — opening a second
+    /// channel on it would kill the transport. Each transfer gets its own
+    /// SSH connection with exactly one SFTP channel.
+    async fn acquire_transfer_sftp_dedicated(
+        &self,
+        node_id: &NodeId,
+    ) -> Result<AcquiredTransferSftp, RouteError> {
+        // Get the node's SSH config to create a new independent connection.
+        let snapshot = self
+            .runtime
+            .snapshot(node_id)
+            .ok_or_else(|| RouteError::NodeNotFound(node_id.0.clone()))?;
+
+        // Create a separate SSH connection for this transfer.
+        // Each connection has exactly one SFTP channel — safe for single-channel servers.
+        let transport = SshTransportClient::new(snapshot.config.clone());
+        let connection = transport
+            .connect_for_sftp()
+            .await
+            .map_err(|error| RouteError::ConnectionError(error.to_string()))?;
+
+        let session = SftpSession::new(connection, format!("dedicated-transfer-{}", node_id.0))
+            .await
+            .map_err(|error| RouteError::ConnectionError(error.to_string()))?;
+
+        Ok(AcquiredTransferSftp {
+            connection_id: format!("dedicated-sftp-{}", node_id.0),
+            session,
+        })
     }
 
     pub async fn acquire_transfer_sftp(
@@ -433,6 +452,14 @@ impl NodeRouter {
         &self,
         node_id: &NodeId,
     ) -> Result<AcquiredTransferSftp, RouteError> {
+        // Check if this node uses skip_remote_env_detection — if so, use
+        // the dedicated SFTP connection instead of the registry's shared one.
+        if let Some(snapshot) = self.runtime.snapshot(node_id) {
+            if snapshot.config.skip_remote_env_detection {
+                return self.acquire_transfer_sftp_dedicated(node_id).await;
+            }
+        }
+
         let resolved = self
             .resolve_connection_wait(node_id, Duration::from_secs(15))
             .await?;
@@ -478,23 +505,9 @@ impl NodeRouter {
                 .mark_sftp_session(&resolved.connection_id, false, None);
             let event = self.runtime.set_sftp_ready(node_id, false, None)?;
             self.emitter.dispatch(&event);
-            // Revocation is published before a replacement channel can become
-            // visible, preventing the old generation from authorizing later calls.
-            let owner_event = self.runtime.shared_sftp_session_changed(
-                node_id,
-                resolved.connection_id.clone(),
-                None,
-                false,
-            )?;
-            self.emitter.dispatch(&owner_event);
         }
 
-        let AcquiredSftpMeta {
-            session,
-            cwd,
-            generation,
-            ..
-        } = resolved
+        let AcquiredSftpMeta { session, cwd, .. } = resolved
             .handle
             .acquire_sftp_with_meta()
             .await
@@ -504,14 +517,19 @@ impl NodeRouter {
             .mark_sftp_session(&resolved.connection_id, true, cwd.clone());
         let event = self.runtime.set_sftp_ready(node_id, true, cwd)?;
         self.emitter.dispatch(&event);
-        let owner_event = self.runtime.shared_sftp_session_changed(
-            node_id,
-            resolved.connection_id,
-            Some(generation),
-            true,
-        )?;
-        self.emitter.dispatch(&owner_event);
         Ok(session)
+    }
+
+    /// Returns true if the node has skip_remote_env_detection enabled.
+    pub fn node_skips_remote_env_detection(&self, node_id: &NodeId) -> bool {
+        self.runtime
+            .snapshot(node_id)
+            .is_some_and(|s| s.config.skip_remote_env_detection)
+    }
+
+    /// Returns the node's SshConfig if it exists.
+    pub fn node_config(&self, node_id: &NodeId) -> Option<SshConfig> {
+        self.runtime.snapshot(node_id).map(|s| s.config)
     }
 
     pub fn node_state(&self, node_id: &NodeId) -> Result<NodeStateSnapshot, RouteError> {
@@ -521,7 +539,7 @@ impl NodeRouter {
             .ok_or_else(|| RouteError::NodeNotFound(node_id.0.clone()))?;
         if let Some(connection_id) = runtime.connection_id.clone() {
             if let Some(handle) = self.registry.get(&connection_id) {
-                let info = connection_info_for_runtime(&handle);
+                let info = handle.info();
                 runtime.state.readiness = readiness_for_connection(&info);
                 runtime.state.error = match &info.state {
                     ConnectionState::Error(error) => Some(error.clone()),
@@ -538,10 +556,6 @@ impl NodeRouter {
                 runtime.state.sftp_ready = false;
                 runtime.state.sftp_cwd = None;
             }
-        } else if matches!(runtime.state.readiness, NodeReadiness::Ready) {
-            // A stale runtime projection cannot remain Ready after losing its registry binding.
-            runtime.state.readiness = NodeReadiness::Disconnected;
-            runtime.state.error = None;
         }
         Ok(NodeStateSnapshot {
             state: runtime.state,
@@ -560,14 +574,9 @@ impl NodeRouter {
         reason: impl Into<String>,
     ) -> Result<NodeStateEvent, RouteError> {
         let reason = reason.into();
-        let connection = self
-            .registry
-            .get(&connection.connection_id)
-            .map(|handle| connection_info_for_runtime(&handle))
-            .unwrap_or_else(|| connection.clone());
         let event = self
             .runtime
-            .update_connection_state(node_id, &connection, reason.clone())?;
+            .update_connection_state(node_id, connection, reason.clone())?;
         Ok(self
             .emitter
             .emit_state_from_connection(&connection.connection_id, &connection.state, reason)
@@ -650,6 +659,23 @@ impl NodeRouter {
                             }
                             ConnectionTransportStatus::Closed
                             | ConnectionTransportStatus::Missing => {
+                                // For skip_remote_env_detection nodes, the registry
+                                // connection's transport may be stale because the
+                                // server closed the idle connection. This is expected
+                                // — terminals use independent connections and SFTP
+                                // uses dedicated connections. Skip the transport
+                                // check and return the resolved connection so callers
+                                // that only need the connection_id (e.g. progress
+                                // store) can proceed without error.
+                                let skip_transport_check = self.runtime.snapshot(node_id).is_some_and(|s| s.config.skip_remote_env_detection);
+                                if skip_transport_check {
+                                    return Ok(ResolvedConnection {
+                                        connection_id,
+                                        handle,
+                                        terminal_session_id: runtime.terminal_session_id,
+                                        sftp_session_id: runtime.sftp_session_id,
+                                    });
+                                }
                                 let detail = match transport_status {
                                     ConnectionTransportStatus::Closed => "transport is closed",
                                     ConnectionTransportStatus::Missing => "transport is missing",

@@ -11,20 +11,6 @@ const PLUGIN_MANAGER_INPUT_ANCHOR_BASE: u64 = 28_000;
 const PLUGIN_SETTING_INPUT_ANCHOR_BASE: u64 = 29_000;
 const DEFAULT_SETTINGS_TEXTAREA_LINE_HEIGHT: f32 = 20.0;
 
-/// Describes the installed CLI companion relative to the bundled executable.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct CliCompanionStatus {
-    pub bundled: bool,
-    pub installed: bool,
-    pub install_path: Option<String>,
-    pub legacy_installed: bool,
-    pub legacy_install_path: Option<String>,
-    pub bundle_path: Option<String>,
-    pub app_version: String,
-    pub matches_bundled: Option<bool>,
-    pub needs_reinstall: bool,
-}
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SettingsTab {
     General,
@@ -51,6 +37,7 @@ pub enum TerminalSettingsPage {
     Awareness,
     Transfer,
     Highlight,
+    Keepalive,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,6 +141,8 @@ pub enum SettingsInput {
     InBandTransferMaxTotalBytes,
     TerminalCommandBarFocusHandoff,
     TerminalCommandSpecsJson,
+    TerminalKeepaliveInterval,
+    TerminalKeepaliveString,
     KeybindingSearch,
     CustomThemeName,
     CustomThemeTerminalColor(usize),
@@ -170,6 +159,7 @@ pub enum SettingsInput {
     AiAcpAgentCwd(usize),
     AiAcpAgentArgs(usize),
     AiAcpAgentEnv(usize),
+    AiAcpAgentAuthToken(usize),
     AiSystemPrompt,
     AiMemoryContent,
     AiToolUseMaxRounds,
@@ -248,6 +238,7 @@ impl TerminalSettingsPage {
             Self::Awareness,
             Self::Transfer,
             Self::Highlight,
+            Self::Keepalive,
         ]
     }
 
@@ -260,6 +251,7 @@ impl TerminalSettingsPage {
             Self::Awareness => "settings_view.terminal.page_awareness",
             Self::Transfer => "settings_view.terminal.page_transfer",
             Self::Highlight => "settings_view.terminal.page_highlight",
+            Self::Keepalive => "settings_view.terminal.page_keepalive",
         }
     }
 }
@@ -505,6 +497,8 @@ impl SettingsInput {
             Self::InBandTransferMaxTotalBytes => 15,
             Self::TerminalCommandBarFocusHandoff => 16,
             Self::TerminalCommandSpecsJson => 17,
+            Self::TerminalKeepaliveInterval => 34_000,
+            Self::TerminalKeepaliveString => 34_001,
             Self::KeybindingSearch => 18,
             Self::CustomThemeName => 10_000,
             Self::CustomThemeTerminalColor(index) => 10_100 + index as u64,
@@ -521,6 +515,7 @@ impl SettingsInput {
             Self::AiAcpAgentCwd(index) => 21_502 + index as u64 * 6,
             Self::AiAcpAgentArgs(index) => 21_503 + index as u64 * 6,
             Self::AiAcpAgentEnv(index) => 21_504 + index as u64 * 6,
+            Self::AiAcpAgentAuthToken(index) => 21_505 + index as u64 * 6,
             Self::AiSystemPrompt => 22_000,
             Self::AiMemoryContent => 22_001,
             Self::AiToolUseMaxRounds => 22_002,
@@ -584,6 +579,7 @@ impl SettingsInput {
         matches!(
             self,
             Self::AiProviderApiKey(_)
+                | Self::AiAcpAgentAuthToken(_)
                 | Self::AiMcpAuthToken
                 | Self::CloudSyncToken
                 | Self::CloudSyncGitToken
@@ -673,6 +669,7 @@ mod tests {
     #[test]
     fn secret_inputs_are_categorized_in_the_model_layer() {
         assert!(SettingsInput::AiProviderApiKey(0).is_secret());
+        assert!(SettingsInput::AiAcpAgentAuthToken(0).is_secret());
         assert!(SettingsInput::CloudSyncSecretAccessKey.is_secret());
         assert!(SettingsInput::PortableCurrentPassword.is_secret());
         assert!(SettingsInput::PortableNewPassword.is_secret());

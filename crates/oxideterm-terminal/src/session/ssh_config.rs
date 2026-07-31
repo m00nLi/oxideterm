@@ -1,13 +1,5 @@
-pub(super) enum SshSessionConnection {
-    New(SshConfig),
-    Existing { connection_id: String },
-}
-
 pub struct SshSessionConfig {
-    connection: Option<SshSessionConnection>,
-    host: String,
-    port: u16,
-    username: String,
+    config: SshConfig,
     registry: Option<SshConnectionRegistry>,
     consumer: Option<ConnectionConsumer>,
     prompt_handler: Option<Arc<dyn SshPromptHandler>>,
@@ -16,28 +8,16 @@ pub struct SshSessionConfig {
     runtime_handle: Option<tokio::runtime::Handle>,
     defer_pty_until_resize: bool,
     post_connect_command: Option<String>,
+    keepalive_interval_secs: u32,
+    keepalive_data: Vec<u8>,
 }
 
 const POST_CONNECT_COMMAND_MAX_BYTES: usize = 8192;
 
 impl SshSessionConfig {
     pub fn new(host: impl Into<String>, port: u16, username: impl Into<String>) -> Self {
-        Self::from(SshConfig::password(host, port, username, ""))
-    }
-
-    pub fn for_existing_connection(
-        connection_id: impl Into<String>,
-        host: impl Into<String>,
-        port: u16,
-        username: impl Into<String>,
-    ) -> Self {
         Self {
-            connection: Some(SshSessionConnection::Existing {
-                connection_id: connection_id.into(),
-            }),
-            host: host.into(),
-            port,
-            username: username.into(),
+            config: SshConfig::password(host, port, username, ""),
             registry: None,
             consumer: None,
             prompt_handler: None,
@@ -46,19 +26,21 @@ impl SshSessionConfig {
             runtime_handle: None,
             defer_pty_until_resize: false,
             post_connect_command: None,
+            keepalive_interval_secs: 0,
+            keepalive_data: Vec::new(),
         }
     }
 
     pub fn host(&self) -> &str {
-        &self.host
+        &self.config.host
     }
 
     pub fn port(&self) -> u16 {
-        self.port
+        self.config.port
     }
 
     pub fn username(&self) -> &str {
-        &self.username
+        &self.config.username
     }
 
     pub fn with_registry(
@@ -104,6 +86,20 @@ impl SshSessionConfig {
         self
     }
 
+    pub fn with_keepalive(mut self, interval_secs: u32, data: Vec<u8>) -> Self {
+        self.keepalive_interval_secs = interval_secs;
+        self.keepalive_data = data;
+        self
+    }
+
+    pub fn keepalive_interval_secs(&self) -> u32 {
+        self.keepalive_interval_secs
+    }
+
+    pub fn keepalive_data(&self) -> &[u8] {
+        &self.keepalive_data
+    }
+
     pub fn defer_pty_until_resize(&self) -> bool {
         self.defer_pty_until_resize
     }
@@ -122,13 +118,10 @@ impl SshSessionConfig {
 }
 
 impl From<oxideterm_ssh::SshConfig> for SshSessionConfig {
-    fn from(mut config: oxideterm_ssh::SshConfig) -> Self {
-        let post_connect_command = config.post_connect_command.take();
+    fn from(config: oxideterm_ssh::SshConfig) -> Self {
         Self {
-            host: config.host.clone(),
-            port: config.port,
-            username: config.username.clone(),
-            connection: Some(SshSessionConnection::New(config)),
+            post_connect_command: config.post_connect_command.clone(),
+            config,
             registry: None,
             consumer: None,
             prompt_handler: None,
@@ -136,7 +129,8 @@ impl From<oxideterm_ssh::SshConfig> for SshSessionConfig {
             trzsz_policy: None,
             runtime_handle: None,
             defer_pty_until_resize: false,
-            post_connect_command,
+            keepalive_interval_secs: 0,
+            keepalive_data: Vec::new(),
         }
     }
 }
@@ -216,35 +210,12 @@ mod ssh_config_tests {
                 .is_some()
         );
     }
-
-    #[test]
-    fn existing_connection_config_retains_only_safe_terminal_metadata() {
-        let config =
-            SshSessionConfig::for_existing_connection("connection-1", "host", 22, "alice");
-
-        assert!(matches!(
-            config.connection.as_ref(),
-            Some(super::SshSessionConnection::Existing { .. })
-        ));
-        assert_eq!(config.host(), "host");
-        assert_eq!(config.port(), 22);
-        assert_eq!(config.username(), "alice");
-        assert!(!format!("{config:?}").contains("connection-1"));
-    }
 }
 
 impl std::fmt::Debug for SshSessionConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let connection_kind = match self.connection.as_ref() {
-            Some(SshSessionConnection::New(_)) => "new",
-            Some(SshSessionConnection::Existing { .. }) => "existing",
-            None => "moved",
-        };
         f.debug_struct("SshSessionConfig")
-            .field("connection", &connection_kind)
-            .field("host", &self.host)
-            .field("port", &self.port)
-            .field("username", &self.username)
+            .field("config", &self.config)
             .field("registry", &self.registry)
             .field("consumer", &self.consumer)
             .field("prompt_handler", &self.prompt_handler.is_some())

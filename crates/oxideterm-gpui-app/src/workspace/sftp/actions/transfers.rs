@@ -1,43 +1,28 @@
 use super::*;
 
-pub(in crate::workspace::sftp) struct SftpTransferLaunch {
-    id: u64,
-    transfer_id: String,
-    node_id: NodeId,
-    direction: SftpTransferDirection,
-    is_directory: bool,
-    local_path: String,
-    remote_path: String,
-    resume_progress: Option<StoredTransferProgress>,
-    protocol_override: Option<RemoteTransferProtocol>,
-}
-
-enum SftpTransferControl {
-    Pause(String),
-    Resume(String),
-    Cancel(String),
-}
-
-impl SftpWorkspaceEntity {
-    fn prepare_quick_scp_download(
-        &mut self,
-        conflict_action: oxideterm_settings::ConflictAction,
-        missing_path_error: String,
-        cx: &mut Context<Self>,
-    ) -> Option<(
-        Vec<SftpPendingTransfer>,
-        HashMap<String, SftpConflictResolution>,
-    )> {
-        let remote_path = self.remote_path_input.trim();
+impl WorkspaceApp {
+    pub(in crate::workspace::sftp) fn queue_quick_scp_download(&mut self) {
+        if !self.sftp_view.editing_remote_path {
+            // SCP cannot browse, so first place keyboard focus in the existing
+            // remote path field and let the user provide one exact file path.
+            self.start_sftp_path_edit(SftpPane::Remote);
+            return;
+        }
+        let Some(tab_id) = self.main_window_tabs.active_tab_id else {
+            return;
+        };
+        let Some(node_id) = self.sftp_tab_nodes.get(&tab_id).cloned() else {
+            return;
+        };
+        let remote_path = self.sftp_view.remote_path_input.trim();
         let Some(name) = remote_path
             .trim_end_matches(['/', '\\'])
             .rsplit(['/', '\\'])
             .next()
             .filter(|name| !name.is_empty() && *name != "." && *name != "..")
         else {
-            self.init_error = Some(missing_path_error);
-            cx.notify();
-            return None;
+            self.sftp_view.init_error = Some(self.i18n.t("sftp.scp.enter_remote_file_path_error"));
+            return;
         };
         let pending_transfers = vec![SftpPendingTransfer {
             name: name.to_string(),
@@ -56,20 +41,19 @@ impl SftpWorkspaceEntity {
             },
             protocol_override: Some(RemoteTransferProtocol::Scp),
         }];
-        // Conflict detection borrows the entity-owned file list instead of
-        // copying every local row into a temporary render-layer snapshot.
-        let conflicts = sftp_transfer_conflicts(&pending_transfers, &self.local_files);
+        let target_files = self.sftp_view.local_files.clone();
+        let conflict_action = self.settings_store.settings().sftp.conflict_action;
+        let conflicts = sftp_transfer_conflicts(&pending_transfers, &target_files);
         if !conflicts.is_empty() && conflict_action == oxideterm_settings::ConflictAction::Ask {
-            self.conflict_state = Some(SftpConflictState {
+            self.sftp_view.conflict_state = Some(SftpConflictState {
                 conflicts,
                 current_index: 0,
                 pending_transfers,
                 resolved_actions: HashMap::new(),
                 apply_to_all: false,
             });
-            self.set_dialog(SftpDialog::Conflict);
-            cx.notify();
-            return None;
+            self.sftp_view.set_dialog(SftpDialog::Conflict);
+            return;
         }
         let resolved_actions = conflicts
             .into_iter()
@@ -80,65 +64,80 @@ impl SftpWorkspaceEntity {
                 )
             })
             .collect();
-        Some((pending_transfers, resolved_actions))
+        self.execute_sftp_pending_transfers(node_id, pending_transfers, resolved_actions);
     }
 
-    pub(in crate::workspace::sftp) fn begin_incomplete_transfer_load(
-        &mut self,
-        node_id: NodeId,
-    ) -> bool {
-        if self.incomplete_load_inflight {
-            if self.incomplete_load_node.as_ref() != Some(&node_id) {
-                self.incomplete_load_pending_node = Some(node_id);
-            }
-            return false;
+    pub(in crate::workspace::sftp) fn spawn_sftp_incomplete_load(&mut self, node_id: NodeId) {
+        if self.sftp_view.incomplete_load_inflight {
+            return;
         }
-        self.incomplete_load_inflight = true;
-        self.incomplete_load_node = Some(node_id);
-        true
+        self.sftp_view.incomplete_load_inflight = true;
+        let router = self.node_router.clone();
+        let progress_store = self.sftp_progress_store.clone();
+        let tx = self.sftp_worker_tx.clone();
+        let runtime = self.forwarding_runtime.clone();
+        runtime.spawn(async move {
+            let result = async {
+                let resolved = router
+                    .resolve_connection(&node_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                progress_store
+                    .list_incomplete(&resolved.connection_id)
+                    .await
+                    .map_err(|error| error.to_string())
+            }
+            .await;
+            let _ = tx.send(SftpWorkerResult::IncompleteTransfersLoaded { node_id, result });
+        });
     }
 
-    fn take_incomplete_transfer_for_resume(
+    pub(in crate::workspace::sftp) fn spawn_sftp_background_transfer_load(
         &mut self,
         node_id: NodeId,
-        transfer_id: &str,
-        cx: &mut Context<Self>,
-    ) -> Option<SftpTransferLaunch> {
-        let index = self
+    ) {
+        let manager = self.sftp_transfer_manager.clone();
+        let tx = self.sftp_worker_tx.clone();
+        let runtime = self.forwarding_runtime.clone();
+        runtime.spawn(async move {
+            let snapshots = manager.list_background_transfers(Some(&node_id.0));
+            let _ = tx.send(SftpWorkerResult::BackgroundTransfersLoaded {
+                node_id,
+                result: Ok(snapshots),
+            });
+        });
+    }
+
+    pub(in crate::workspace::sftp) fn resume_sftp_incomplete_transfer(
+        &mut self,
+        transfer_id: String,
+    ) {
+        let Some(tab_id) = self.main_window_tabs.active_tab_id else {
+            return;
+        };
+        let Some(node_id) = self.sftp_tab_nodes.get(&tab_id).cloned() else {
+            return;
+        };
+        let Some(progress) = self
+            .sftp_view
             .incomplete_transfers
             .iter()
-            .position(|progress| progress.transfer_id == transfer_id)?;
-        if !self.incomplete_transfers[index].is_incomplete() {
-            return None;
+            .find(|progress| progress.transfer_id == transfer_id)
+            .cloned()
+        else {
+            return;
+        };
+        if !progress.is_incomplete() {
+            return;
         }
-        let progress = self.incomplete_transfers.remove(index);
-        if self.incomplete_transfers.is_empty() {
-            self.show_incomplete = false;
-        }
-        let launch = self.prepare_resumed_transfer(node_id, progress, true);
-        cx.notify();
-        Some(launch)
-    }
 
-    pub(in crate::workspace::sftp) fn prepare_reconnect_resume(
-        &mut self,
-        node_id: NodeId,
-        progress: StoredTransferProgress,
-        show_in_current_view: bool,
-    ) -> Option<SftpTransferLaunch> {
-        if !progress.is_incomplete() || !progress.protocol.supports_restart_resume() {
-            return None;
+        self.sftp_view
+            .incomplete_transfers
+            .retain(|progress| progress.transfer_id != transfer_id);
+        if self.sftp_view.incomplete_transfers.is_empty() {
+            self.sftp_view.show_incomplete = false;
         }
-        let launch = self.prepare_resumed_transfer(node_id, progress, show_in_current_view);
-        Some(launch)
-    }
 
-    fn prepare_resumed_transfer(
-        &mut self,
-        node_id: NodeId,
-        progress: StoredTransferProgress,
-        show_in_current_view: bool,
-    ) -> SftpTransferLaunch {
         let direction = match progress.transfer_type {
             RemoteTransferType::Upload => SftpTransferDirection::Upload,
             RemoteTransferType::Download => SftpTransferDirection::Download,
@@ -160,39 +159,29 @@ impl SftpWorkspaceEntity {
             .unwrap_or_else(|| progress.source_path.to_str().unwrap_or(""))
             .to_string();
         let is_directory = progress.is_directory();
-        let id = self.next_transfer_id;
-        self.next_transfer_id += 1;
-        let transfer_id = progress.transfer_id.clone();
-
-        if show_in_current_view {
-            self.incomplete_transfers
-                .retain(|item| item.transfer_id != transfer_id);
-            if self.incomplete_transfers.is_empty() {
-                self.show_incomplete = false;
-            }
-            self.transfers.push(SftpTransferItem {
-                id,
-                transfer_id: transfer_id.clone(),
-                batch_id: None,
-                node_id: node_id.clone(),
-                name: if is_directory {
-                    format!("{name}/")
-                } else {
-                    name
-                },
-                local_path: local_path.clone(),
-                remote_path: remote_path.clone(),
-                direction,
-                protocol: progress.protocol,
-                size: progress.total_bytes.max(1),
-                transferred: progress.transferred_bytes,
-                speed: 0,
-                state: SftpTransferState::Pending,
-                error: None,
-            });
-        }
-
-        SftpTransferLaunch {
+        let id = self.sftp_view.next_transfer_id;
+        self.sftp_view.next_transfer_id += 1;
+        self.sftp_view.transfers.push(SftpTransferItem {
+            id,
+            transfer_id: transfer_id.clone(),
+            batch_id: None,
+            node_id: node_id.clone(),
+            name: if is_directory {
+                format!("{name}/")
+            } else {
+                name
+            },
+            local_path: local_path.clone(),
+            remote_path: remote_path.clone(),
+            direction,
+            protocol: progress.protocol,
+            size: progress.total_bytes.max(1),
+            transferred: progress.transferred_bytes,
+            speed: 0,
+            state: SftpTransferState::Pending,
+            error: None,
+        });
+        self.spawn_sftp_transfer_task(
             id,
             transfer_id,
             node_id,
@@ -200,226 +189,19 @@ impl SftpWorkspaceEntity {
             is_directory,
             local_path,
             remote_path,
-            resume_progress: Some(progress),
-            protocol_override: None,
-        }
-    }
-
-    fn set_transfer_state(
-        &mut self,
-        id: u64,
-        state: SftpTransferState,
-        cx: &mut Context<Self>,
-    ) -> Option<SftpTransferControl> {
-        let item = self.transfers.iter_mut().find(|item| item.id == id)?;
-        let transfer_id = item.transfer_id.clone();
-        item.state = state;
-        cx.notify();
-        match state {
-            SftpTransferState::Paused => Some(SftpTransferControl::Pause(transfer_id)),
-            SftpTransferState::Pending | SftpTransferState::Active => {
-                Some(SftpTransferControl::Resume(transfer_id))
-            }
-            SftpTransferState::Cancelled => Some(SftpTransferControl::Cancel(transfer_id)),
-            SftpTransferState::Completed | SftpTransferState::Error => None,
-        }
-    }
-
-    fn cancel_or_remove_transfer(
-        &mut self,
-        id: u64,
-        cx: &mut Context<Self>,
-    ) -> Option<SftpTransferControl> {
-        let index = self.transfers.iter().position(|item| item.id == id)?;
-        let active = matches!(
-            self.transfers[index].state,
-            SftpTransferState::Active | SftpTransferState::Pending | SftpTransferState::Paused
+            Some(progress),
+            None,
         );
-        let control = if active {
-            let transfer_id = self.transfers[index].transfer_id.clone();
-            self.transfers[index].state = SftpTransferState::Cancelled;
-            Some(SftpTransferControl::Cancel(transfer_id))
-        } else {
-            self.transfers.remove(index);
-            None
-        };
-        cx.notify();
-        control
-    }
-
-    pub(in crate::workspace::sftp) fn upsert_background_transfer_snapshot(
-        &mut self,
-        snapshot: BackgroundTransferSnapshot,
-    ) {
-        let node_id = NodeId::new(snapshot.node_id);
-        let direction = match snapshot.direction {
-            BackgroundTransferDirection::Upload => SftpTransferDirection::Upload,
-            BackgroundTransferDirection::Download => SftpTransferDirection::Download,
-        };
-        let state = sftp_transfer_state_from_background(snapshot.state);
-        let size = snapshot.size.max(1);
-        if let Some(item) = self
-            .transfers
-            .iter_mut()
-            .find(|item| item.transfer_id == snapshot.id)
-        {
-            item.node_id = node_id;
-            item.name = snapshot.name;
-            item.local_path = snapshot.local_path;
-            item.remote_path = snapshot.remote_path;
-            item.direction = direction;
-            if snapshot.size > 0 {
-                item.size = snapshot.size;
-            } else if item.size == 0 {
-                item.size = size;
-            }
-            item.transferred = snapshot.transferred;
-            item.speed = snapshot.backend_speed.unwrap_or(item.speed);
-            item.state = state;
-            item.error = snapshot.error;
-            return;
-        }
-
-        let id = self.next_transfer_id;
-        self.next_transfer_id += 1;
-        self.transfers.push(SftpTransferItem {
-            id,
-            transfer_id: snapshot.id,
-            batch_id: None,
-            node_id,
-            name: snapshot.name,
-            local_path: snapshot.local_path,
-            remote_path: snapshot.remote_path,
-            direction,
-            protocol: snapshot.protocol,
-            size,
-            transferred: snapshot.transferred,
-            speed: snapshot.backend_speed.unwrap_or_default(),
-            state,
-            error: snapshot.error,
-        });
-    }
-
-    fn interrupt_transfers_by_node(
-        &mut self,
-        node_id: &NodeId,
-        error: &str,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let mut changed = false;
-        for transfer in &mut self.transfers {
-            if &transfer.node_id == node_id
-                && matches!(
-                    transfer.state,
-                    SftpTransferState::Active
-                        | SftpTransferState::Pending
-                        | SftpTransferState::Paused
-                )
-            {
-                transfer.state = SftpTransferState::Error;
-                transfer.error = Some(error.to_string());
-                changed = true;
-            }
-        }
-        if changed {
-            cx.notify();
-        }
-        changed
-    }
-}
-
-impl WorkspaceApp {
-    pub(in crate::workspace::sftp) fn queue_quick_scp_download(&mut self, cx: &mut Context<Self>) {
-        if !self.sftp_view.read(cx).editing_remote_path {
-            // SCP cannot browse, so first place keyboard focus in the existing
-            // remote path field and let the user provide one exact file path.
-            self.start_sftp_path_edit(SftpPane::Remote, cx);
-            return;
-        }
-        let Some(tab_id) = self.active_tab_id(cx) else {
-            return;
-        };
-        let Some(node_id) = self.sftp_tab_nodes.get(&tab_id).cloned() else {
-            return;
-        };
-        let conflict_action = self.settings_store.settings().sftp.conflict_action;
-        let missing_path_error = self.i18n.t("sftp.scp.enter_remote_file_path_error");
-        let Some((pending_transfers, resolved_actions)) = self.sftp_view.update(cx, |sftp, cx| {
-            sftp.prepare_quick_scp_download(conflict_action, missing_path_error, cx)
-        }) else {
-            return;
-        };
-        self.execute_sftp_pending_transfers(node_id, pending_transfers, resolved_actions, cx);
-    }
-
-    pub(in crate::workspace::sftp) fn spawn_sftp_incomplete_load_with_sender(
-        &self,
-        node_id: NodeId,
-        tx: delivery::ActiveDeliverySender<SftpWorkerResult>,
-    ) {
-        let router = self.node_router.clone();
-        let progress_store = self.sftp_progress_store.clone();
-        let runtime = self.forwarding_runtime.clone();
-        runtime.spawn(async move {
-            let result = async {
-                let resolved = router
-                    .resolve_connection(&node_id)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                progress_store
-                    .list_incomplete(&resolved.connection_id)
-                    .await
-                    .map_err(|error| error.to_string())
-            }
-            .await;
-            let _ = tx.send(SftpWorkerResult::IncompleteTransfersLoaded { node_id, result });
-        });
-    }
-
-    pub(in crate::workspace::sftp) fn spawn_sftp_background_transfer_load_with_sender(
-        &self,
-        node_id: NodeId,
-        tx: delivery::ActiveDeliverySender<SftpWorkerResult>,
-    ) {
-        let manager = self.sftp_transfer_manager.clone();
-        let runtime = self.forwarding_runtime.clone();
-        runtime.spawn(async move {
-            let snapshots = manager.list_background_transfers(Some(&node_id.0));
-            let _ = tx.send(SftpWorkerResult::BackgroundTransfersLoaded {
-                node_id,
-                result: Ok(snapshots),
-            });
-        });
-    }
-
-    pub(in crate::workspace) fn resume_sftp_incomplete_transfer(
-        &mut self,
-        transfer_id: String,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(tab_id) = self.active_tab_id(cx) else {
-            return;
-        };
-        let Some(node_id) = self.sftp_tab_nodes.get(&tab_id).cloned() else {
-            return;
-        };
-        let Some(launch) = self.sftp_view.update(cx, |sftp, cx| {
-            sftp.take_incomplete_transfer_for_resume(node_id, &transfer_id, cx)
-        }) else {
-            return;
-        };
-        self.spawn_sftp_transfer_launch(launch, cx);
     }
 
     pub(in crate::workspace) fn request_sftp_transfer_resume_for_node(
         &self,
         node_id: NodeId,
         transfer_id: String,
-        cx: &App,
     ) {
         let router = self.node_router.clone();
         let progress_store = self.sftp_progress_store.clone();
-        let tx = self.sftp_view.read(cx).worker_sender();
+        let tx = self.sftp_worker_tx.clone();
         let runtime = self.forwarding_runtime.clone();
         runtime.spawn(async move {
             // Tauri's reconnect resume phase first best-effort opens SFTP for
@@ -442,32 +224,88 @@ impl WorkspaceApp {
         });
     }
 
-    pub(in crate::workspace::sftp) fn spawn_sftp_transfer_launch(
-        &self,
-        launch: SftpTransferLaunch,
-        cx: &App,
-    ) {
-        let tx = self.sftp_view.read(cx).worker_sender();
-        self.spawn_sftp_transfer_launch_with_sender(launch, tx);
-    }
+    pub(in crate::workspace::sftp) fn queue_sftp_resume_transfer_for_node(
+        &mut self,
+        node_id: NodeId,
+        progress: StoredTransferProgress,
+    ) -> bool {
+        if !progress.is_incomplete() || !progress.protocol.supports_restart_resume() {
+            return false;
+        }
+        let direction = match progress.transfer_type {
+            RemoteTransferType::Upload => SftpTransferDirection::Upload,
+            RemoteTransferType::Download => SftpTransferDirection::Download,
+        };
+        let (local_path, remote_path) = match direction {
+            SftpTransferDirection::Upload => (
+                progress.source_path.to_string_lossy().to_string(),
+                progress.destination_path.to_string_lossy().to_string(),
+            ),
+            SftpTransferDirection::Download => (
+                progress.destination_path.to_string_lossy().to_string(),
+                progress.source_path.to_string_lossy().to_string(),
+            ),
+        };
+        let name = progress
+            .source_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_else(|| progress.source_path.to_str().unwrap_or(""))
+            .to_string();
+        let is_directory = progress.is_directory();
+        let id = self.sftp_view.next_transfer_id;
+        self.sftp_view.next_transfer_id += 1;
 
-    pub(in crate::workspace::sftp) fn spawn_sftp_transfer_launch_with_sender(
-        &self,
-        launch: SftpTransferLaunch,
-        tx: delivery::ActiveDeliverySender<SftpWorkerResult>,
-    ) {
-        self.spawn_sftp_transfer_task_with_sender(
-            launch.id,
-            launch.transfer_id,
-            launch.node_id,
-            launch.direction,
-            launch.is_directory,
-            launch.local_path,
-            launch.remote_path,
-            launch.resume_progress,
-            launch.protocol_override,
-            tx,
+        if self
+            .main_window_tabs
+            .active_tab_id
+            .and_then(|tab_id| self.sftp_tab_nodes.get(&tab_id))
+            == Some(&node_id)
+        {
+            self.sftp_view
+                .incomplete_transfers
+                .retain(|item| item.transfer_id != progress.transfer_id);
+            if self.sftp_view.incomplete_transfers.is_empty() {
+                self.sftp_view.show_incomplete = false;
+            }
+            self.sftp_view.transfers.push(SftpTransferItem {
+                id,
+                transfer_id: progress.transfer_id.clone(),
+                batch_id: None,
+                node_id: node_id.clone(),
+                name: if is_directory {
+                    format!("{name}/")
+                } else {
+                    name
+                },
+                local_path: local_path.clone(),
+                remote_path: remote_path.clone(),
+                direction,
+                protocol: progress.protocol,
+                size: progress.total_bytes.max(1),
+                transferred: progress.transferred_bytes,
+                speed: 0,
+                state: SftpTransferState::Pending,
+                error: None,
+            });
+        }
+
+        // This is the native equivalent of Tauri's node_sftp_resume_transfer:
+        // the transfer owner is the node/router-backed manager, not the SFTP
+        // tab. The UI row is optional; reconnect must still resume in the
+        // background when no SFTP tab is focused.
+        self.spawn_sftp_transfer_task(
+            id,
+            progress.transfer_id.clone(),
+            node_id,
+            direction,
+            is_directory,
+            local_path,
+            remote_path,
+            Some(progress),
+            None,
         );
+        true
     }
 
     pub(in crate::workspace::sftp) fn spawn_sftp_transfer_task(
@@ -481,35 +319,6 @@ impl WorkspaceApp {
         remote_path: String,
         resume_progress: Option<StoredTransferProgress>,
         protocol_override: Option<RemoteTransferProtocol>,
-        cx: &App,
-    ) {
-        let tx = self.sftp_view.read(cx).worker_sender();
-        self.spawn_sftp_transfer_task_with_sender(
-            id,
-            transfer_id,
-            node_id,
-            direction,
-            is_directory,
-            local_path,
-            remote_path,
-            resume_progress,
-            protocol_override,
-            tx,
-        );
-    }
-
-    fn spawn_sftp_transfer_task_with_sender(
-        &self,
-        id: u64,
-        transfer_id: String,
-        node_id: NodeId,
-        direction: SftpTransferDirection,
-        is_directory: bool,
-        local_path: String,
-        remote_path: String,
-        resume_progress: Option<StoredTransferProgress>,
-        protocol_override: Option<RemoteTransferProtocol>,
-        tx: delivery::ActiveDeliverySender<SftpWorkerResult>,
     ) {
         let protocol_preference = self.settings_store.settings().sftp.transfer_protocol;
         let scp_unavailable_error = self.i18n.t("sftp.errors.scp_unavailable");
@@ -518,6 +327,7 @@ impl WorkspaceApp {
         let router = self.node_router.clone();
         let manager = self.sftp_transfer_manager.clone();
         let progress_store = self.sftp_progress_store.clone();
+        let tx = self.sftp_worker_tx.clone();
         let runtime = self.forwarding_runtime.clone();
         // The runtime owns cancellation from enqueue through completion, even
         // while no SFTP tab is visible or a jump-chain reconnect is in flight.
@@ -719,6 +529,8 @@ impl WorkspaceApp {
                 transferred: 0,
                 total: 0,
                 speed: 0,
+                state: SftpTransferState::Active,
+                error: None,
             });
             let (progress_tx, mut progress_rx) =
                 tokio::sync::mpsc::channel::<TransferProgress>(100);
@@ -762,6 +574,8 @@ impl WorkspaceApp {
                         transferred: progress.transferred_bytes,
                         total: progress.total_bytes,
                         speed: progress.speed,
+                        state: sftp_transfer_state_from_remote(progress.state),
+                        error: progress.error,
                     });
                 }
             });
@@ -1146,22 +960,23 @@ impl WorkspaceApp {
         });
     }
 
-    pub(in crate::workspace) fn set_sftp_transfer_state(
+    pub(in crate::workspace::sftp) fn set_sftp_transfer_state(
         &mut self,
         id: u64,
         state: SftpTransferState,
-        cx: &mut Context<Self>,
     ) {
-        let Some(control) = self
+        let transfer_id = self
             .sftp_view
-            .update(cx, |sftp, cx| sftp.set_transfer_state(id, state, cx))
-        else {
-            return;
-        };
-        match control {
-            SftpTransferControl::Pause(transfer_id) => {
+            .transfers
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| item.transfer_id.clone())
+            .unwrap_or_else(|| id.to_string());
+        match state {
+            SftpTransferState::Paused => {
                 self.sftp_transfer_manager.pause(&transfer_id);
                 let progress_store = self.sftp_progress_store.clone();
+                let transfer_id = transfer_id;
                 self.forwarding_runtime.spawn(async move {
                     if let Ok(Some(mut progress)) = progress_store.load(&transfer_id).await {
                         progress.mark_paused();
@@ -1169,9 +984,10 @@ impl WorkspaceApp {
                     }
                 });
             }
-            SftpTransferControl::Resume(transfer_id) => {
+            SftpTransferState::Pending | SftpTransferState::Active => {
                 self.sftp_transfer_manager.resume(&transfer_id);
                 let progress_store = self.sftp_progress_store.clone();
+                let transfer_id = transfer_id;
                 self.forwarding_runtime.spawn(async move {
                     if let Ok(Some(mut progress)) = progress_store.load(&transfer_id).await {
                         progress.mark_active();
@@ -1179,30 +995,100 @@ impl WorkspaceApp {
                     }
                 });
             }
-            SftpTransferControl::Cancel(transfer_id) => {
+            SftpTransferState::Cancelled => {
                 self.sftp_transfer_manager.cancel(&transfer_id);
+            }
+            SftpTransferState::Completed | SftpTransferState::Error => {}
+        }
+        if let Some(item) = self
+            .sftp_view
+            .transfers
+            .iter_mut()
+            .find(|item| item.id == id)
+        {
+            item.state = state;
+        }
+    }
+
+    pub(in crate::workspace::sftp) fn cancel_or_remove_sftp_transfer(&mut self, id: u64) {
+        if let Some(index) = self
+            .sftp_view
+            .transfers
+            .iter()
+            .position(|item| item.id == id)
+        {
+            let active = matches!(
+                self.sftp_view.transfers[index].state,
+                SftpTransferState::Active | SftpTransferState::Pending | SftpTransferState::Paused
+            );
+            if active {
+                let transfer_id = self.sftp_view.transfers[index].transfer_id.clone();
+                self.sftp_transfer_manager.cancel(&transfer_id);
+                self.sftp_view.transfers[index].state = SftpTransferState::Cancelled;
+            } else {
+                self.sftp_view.transfers.remove(index);
             }
         }
     }
 
-    pub(in crate::workspace) fn cancel_or_remove_sftp_transfer(
+    pub(in crate::workspace::sftp) fn upsert_sftp_background_transfer_snapshot(
         &mut self,
-        id: u64,
-        cx: &mut Context<Self>,
+        snapshot: BackgroundTransferSnapshot,
     ) {
-        if let Some(SftpTransferControl::Cancel(transfer_id)) = self
+        let node_id = NodeId::new(snapshot.node_id.clone());
+        let direction = match snapshot.direction {
+            BackgroundTransferDirection::Upload => SftpTransferDirection::Upload,
+            BackgroundTransferDirection::Download => SftpTransferDirection::Download,
+        };
+        let state = sftp_transfer_state_from_background(snapshot.state);
+        let size = snapshot.size.max(1);
+        if let Some(item) = self
             .sftp_view
-            .update(cx, |sftp, cx| sftp.cancel_or_remove_transfer(id, cx))
+            .transfers
+            .iter_mut()
+            .find(|item| item.transfer_id == snapshot.id)
         {
-            self.sftp_transfer_manager.cancel(&transfer_id);
+            item.node_id = node_id;
+            item.name = snapshot.name;
+            item.local_path = snapshot.local_path;
+            item.remote_path = snapshot.remote_path;
+            item.direction = direction;
+            if snapshot.size > 0 {
+                item.size = snapshot.size;
+            } else if item.size == 0 {
+                item.size = size;
+            }
+            item.transferred = snapshot.transferred;
+            item.speed = snapshot.backend_speed.unwrap_or(item.speed);
+            item.state = state;
+            item.error = snapshot.error;
+            return;
         }
+
+        let id = self.sftp_view.next_transfer_id;
+        self.sftp_view.next_transfer_id += 1;
+        self.sftp_view.transfers.push(SftpTransferItem {
+            id,
+            transfer_id: snapshot.id,
+            batch_id: None,
+            node_id,
+            name: snapshot.name,
+            local_path: snapshot.local_path,
+            remote_path: snapshot.remote_path,
+            direction,
+            protocol: snapshot.protocol,
+            size,
+            transferred: snapshot.transferred,
+            speed: snapshot.backend_speed.unwrap_or_default(),
+            state,
+            error: snapshot.error,
+        });
     }
 
     pub(in crate::workspace) fn interrupt_sftp_transfers_by_node(
         &mut self,
         node_id: &NodeId,
         error: String,
-        cx: &mut Context<Self>,
     ) -> bool {
         // Runtime ownership is authoritative because reconnect can resume a
         // transfer without materializing a row in the currently visible view.
@@ -1210,11 +1096,23 @@ impl WorkspaceApp {
             .sftp_transfer_manager
             .interrupt_node(&node_id.0, error.clone());
         let mut changed = !transfer_ids_to_interrupt.is_empty();
-        changed |= self.sftp_view.update(cx, |sftp, cx| {
-            sftp.interrupt_transfers_by_node(node_id, &error, cx)
-        });
+        for transfer in &mut self.sftp_view.transfers {
+            if &transfer.node_id == node_id
+                && matches!(
+                    transfer.state,
+                    SftpTransferState::Active
+                        | SftpTransferState::Pending
+                        | SftpTransferState::Paused
+                )
+            {
+                transfer.state = SftpTransferState::Error;
+                transfer.error = Some(error.clone());
+                changed = true;
+            }
+        }
         for transfer_id in transfer_ids_to_interrupt {
             let progress_store = self.sftp_progress_store.clone();
+            let transfer_id = transfer_id.clone();
             let error = error.clone();
             self.forwarding_runtime.spawn(async move {
                 if let Ok(Some(mut progress)) = progress_store.load(&transfer_id).await {

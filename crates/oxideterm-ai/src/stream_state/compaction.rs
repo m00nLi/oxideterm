@@ -1,6 +1,6 @@
 //! Pure conversation compaction planning and summary payload construction.
 
-use crate::{AiChatMessage, AiChatRole, sanitize_for_persistence};
+use crate::{AiChatMessage, AiChatRole};
 
 use super::history::ai_message_estimated_tokens;
 
@@ -60,10 +60,7 @@ pub fn ai_compaction_summary_messages(messages: &[AiChatMessage]) -> Vec<AiChatM
         {
             let summary = message.content.as_str();
             if !summary.is_empty() {
-                history_parts.push(format!(
-                    "[Previous Summary]: {}",
-                    sanitize_for_persistence(summary)
-                ));
+                history_parts.push(format!("[Previous Summary]: {summary}"));
             }
         } else if matches!(message.role, AiChatRole::User | AiChatRole::Assistant) {
             let role = match message.role {
@@ -71,10 +68,7 @@ pub fn ai_compaction_summary_messages(messages: &[AiChatMessage]) -> Vec<AiChatM
                 AiChatRole::Assistant => "Assistant",
                 _ => unreachable!(),
             };
-            history_parts.push(format!(
-                "{role}: {}",
-                sanitize_for_persistence(&message.content)
-            ));
+            history_parts.push(format!("{role}: {}", message.content));
         }
     }
     vec![
@@ -127,7 +121,7 @@ pub fn ai_conversation_summary_messages(messages: &[AiChatMessage]) -> Vec<AiCha
             } else {
                 "Assistant"
             };
-            format!("{role}: {}", sanitize_for_persistence(&message.content))
+            format!("{role}: {}", message.content)
         })
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -219,7 +213,6 @@ pub fn ai_compaction_anchor_snapshot(messages: &[AiChatMessage]) -> Vec<AiChatMe
             snapshot.summary_ref = None;
             snapshot.branches = None;
             snapshot.suggestions.clear();
-            snapshot.content = sanitize_for_persistence(&snapshot.content);
             snapshot
         })
         .collect::<Vec<_>>()

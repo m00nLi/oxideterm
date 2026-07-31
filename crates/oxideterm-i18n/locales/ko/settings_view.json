@@ -255,8 +255,6 @@
       "copy_on_select_hint": "마우스 선택이 안정되면 자동으로 터미널 텍스트를 시스템 클립보드에 복사합니다",
       "middle_click_paste": "가운데 클릭 붙여넣기",
       "middle_click_paste_hint": "터미널이 마우스 추적 모드가 아닐 때 가운데 클릭으로 현재 클립보드 내용을 붙여넣습니다",
-      "right_click_paste": "오른쪽 클릭 붙여넣기",
-      "right_click_paste_hint": "마우스 추적 모드가 아닐 때 보조 키 없이 오른쪽 클릭으로 붙여넣습니다. Shift+오른쪽 클릭은 컨텍스트 메뉴를 엽니다",
       "open_links_with_modifier": "수정 키로 링크 열기",
       "open_links_with_modifier_hint": "터미널 링크를 Ctrl + 클릭으로만 엽니다. macOS에서는 Command + 클릭을 사용합니다. 끄면 직접 클릭으로 엽니다",
       "smart_copy": "스마트 Ctrl+C 복사",
@@ -267,9 +265,9 @@
       "selection_requires_shift_hint": "활성화하면 일반 드래그는 터미널 상호작용을 유지하고, Shift + 드래그로만 텍스트 선택이 시작됩니다",
       "free_type_mode": "자유 입력 모드",
       "backspace_sequence": "Backspace 키",
-      "backspace_sequence_hint": "Backspace 시퀀스의 앱 기본값입니다. 저장된 호스트별로 재정의할 수 있습니다.",
+      "backspace_sequence_hint": "기존 터미널 앱에 Backspace 키가 보낼 시퀀스를 선택합니다. 기본값은 DEL (0x7F)입니다",
       "delete_sequence": "Delete 키",
-      "delete_sequence_hint": "Delete 시퀀스의 앱 기본값입니다. 저장된 호스트별로 재정의할 수 있습니다.",
+      "delete_sequence_hint": "기존 터미널 앱에 Delete 키가 보낼 시퀀스를 선택합니다. 기본값은 CSI 3~입니다",
       "free_type_mode_hint": "활성 셸 명령을 마우스로 편집합니다. 클릭하여 커서를 이동하고, 짝이 맞는 괄호 안을 두 번 클릭하여 내용을 선택할 수 있습니다. 선택한 명령 텍스트는 끌어서 이동하고, Ctrl을 누른 채 끌어서 복사하거나 Alt를 누른 채 끌어서 현재 명령을 바꿀 수 있습니다. 전체 화면 Vim, Neovim, Emacs는 OxideTerm 어댑터를 명시적으로 불러와야 하며, 다른 전체 화면 및 마우스 추적 앱은 계속 입력을 직접 처리합니다",
       "in_band_transfer": {
         "title": "인밴드 파일 전송",
@@ -419,7 +417,7 @@
         }
       },
       "encoding": "Terminal Encoding",
-      "encoding_hint": "로컬 터미널과 별도 설정이 없는 호스트의 앱 기본값입니다. 저장된 호스트마다 인코딩을 선택할 수 있습니다.",
+      "encoding_hint": "Text encoding for terminal input/output. Keep UTF-8 unless the remote host uses a legacy locale.",
       "autosuggest_local_history": "Command Bar: 로컬 Shell 기록",
       "autosuggest_local_history_hint": "로컬 zsh/bash/fish 기록을 Command Bar 기록 패널의 소스로 사용합니다. 터미널 내부 ghost text를 켜지는 않습니다.",
       "command_bar": "Command Bar",
@@ -448,8 +446,6 @@
       "gpu_canvas_experiments_hint": "Experimental GPU-backed visualizations. Does not replace the terminal renderer.",
       "quick_commands": "Quick Commands",
       "quick_commands_hint": "Show a built-in quick command library in the Command Bar.",
-      "quick_bar": "빠른 명령 모음",
-      "quick_bar_hint": "저장된 빠른 명령을 명령 모음 위의 선택적 가로 모음에 표시합니다.",
       "quick_commands_confirm": "Confirm Quick Command Run",
       "quick_commands_confirm_hint": "Ask before running a quick command from the Run button.",
       "quick_commands_toast": "Quick Command Toast",
@@ -470,6 +466,7 @@
       "page_awareness": "인식 및 통합",
       "page_transfer": "전송",
       "page_highlight": "강조",
+      "page_keepalive": "킵얼라이브",
       "page_local": "로컬"
     },
     "appearance": {
@@ -967,7 +964,10 @@
       "acp_agent_error_command_not_found": "명령을 찾을 수 없음",
       "acp_agent_error_config": "잘못된 구성",
       "acp_agent_error_initialize": "초기화 실패",
-      "acp_agent_error_unknown": "알 수 없는 오류"
+      "acp_agent_error_unknown": "알 수 없는 오류",
+      "acp_agent_auth_token": "인증 토큰",
+      "acp_agent_auth_token_placeholder": "키체인에 토큰 저장",
+      "acp_agent_auth_token_saved": "토큰이 키체인에 저장됨"
     },
     "sftp": {
       "title": "파일 전송",
@@ -1151,8 +1151,8 @@
       "clear_skip": "해제",
       "portable_mode": "포터블 모드",
       "portable_mode_hint": "현재 세션은 포터블 부트스트랩 흐름을 사용하며 데이터를 실행 파일 옆에 보관합니다.",
-      "portable_updates": "포터블 버전 자동 업데이트",
-      "portable_updates_hint": "자동 확인과 앱 내 업데이트는 프로그램 파일만 교체합니다. 포터블 데이터, 플러그인, 키 저장소, portable.json 및 사용자 지정 데이터 디렉터리는 유지됩니다.",
+      "updates_manual_only": "수동 업데이트만 지원",
+      "updates_manual_only_hint": "포터블 모드에서는 자동 업데이트 확인과 앱 내 설치가 비활성화됩니다. 업데이트하려면 포터블 폴더 전체를 더 최신 OxideTerm 빌드로 교체하세요.",
       "update_channel": "업데이트 채널",
       "update_channel_hint": "Stable, Beta, GPUI Preview는 서로 다른 업데이트 채널을 사용합니다",
       "channel_stable": "안정 버전",

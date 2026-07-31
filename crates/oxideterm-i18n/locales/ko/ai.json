@@ -1,12 +1,5 @@
 {
   "ai": {
-    "acp": {
-      "auth_required": "인증이 필요합니다",
-      "authenticate": "인증",
-      "auth_environment_hint": "에이전트 설정에서 필요한 환경 변수를 설정하세요",
-      "auth_terminal_hint": "외부에서 대화형 터미널 인증을 완료한 후 다시 시도하세요",
-      "auth_unsupported_hint": "이 인증 방식은 지원되지 않습니다"
-    },
     "chat": {
       "header": "채팅",
       "get_started": "OxideSens 시작하기",
@@ -27,11 +20,7 @@
       "start_conversation": "대화 시작하기",
       "start_conversation_hint": "셸 명령, 스크립트 또는 터미널 작업에 대해 질문하세요.",
       "delete_conversation": "대화 삭제",
-      "rename_conversation": "대화 이름 바꾸기",
-      "save_conversation_title": "제목 저장",
       "messages_count": "메시지 {{count}}개",
-      "today": "오늘",
-      "yesterday": "어제",
       "double_click_rename": "더블 클릭하여 이름 변경",
       "branch_prev": "이전 버전",
       "branch_next": "다음 버전"
@@ -132,7 +121,6 @@
       "manage_providers": "공급자 관리",
       "no_provider": "공급자 미설정",
       "select_model": "모델 선택",
-      "session_mode": "세션 모드",
       "no_model_selected": "모델이 선택되지 않았습니다. 채팅 모델 메뉴에서 선택하세요.",
       "agent_decides": "Agent가 결정",
       "agent_model_unavailable": "자동 선택(에이전트가 모델을 공개하지 않음)",
@@ -157,18 +145,6 @@
       "show_raw_output": "전체 출력 표시",
       "hide_raw_output": "출력 접기",
       "recovery_actions": "복구 작업",
-      "choose_target": "계속할 대상을 선택하세요",
-      "cancel_selection": "취소",
-      "recovery": {
-        "stale_target": "실시간 대상이 변경되었거나 더 이상 사용할 수 없습니다.",
-        "state_changed_after_approval": "승인을 기다리는 동안 대상이 변경되어 아무 작업도 실행되지 않았습니다.",
-        "resource_removed": "저장된 리소스가 더 이상 존재하지 않습니다.",
-        "resource_disconnected": "저장된 리소스의 연결이 끊겼습니다.",
-        "credential_interaction_required": "일반 연결 흐름에 자격 증명 또는 확인이 필요합니다.",
-        "operation_cancelled": "변경 없이 작업이 취소되었습니다.",
-        "rediscover": "다시 찾기",
-        "connect": "연결"
-      },
       "copy_session_id": "session_id 복사",
       "recoverable_error": "복구 가능한 오류",
       "output_truncated": "출력이 잘렸습니다",
@@ -333,7 +309,6 @@
       "status": {
         "pending": "대기 중",
         "pending_approval": "승인 대기 중",
-        "pending_selection": "대상 선택 대기 중",
         "approved": "승인됨",
         "running": "실행 중",
         "completed": "완료됨",

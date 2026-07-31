@@ -1,12 +1,5 @@
 {
   "ai": {
-    "acp": {
-      "auth_required": "Autenticação necessária",
-      "authenticate": "Autenticar",
-      "auth_environment_hint": "Defina as variáveis de ambiente necessárias nas configurações do agente",
-      "auth_terminal_hint": "Conclua externamente a autenticação interativa no terminal e tente novamente",
-      "auth_unsupported_hint": "Este método de autenticação não é compatível"
-    },
     "chat": {
       "header": "Chat",
       "get_started": "Começar com OxideSens",
@@ -27,11 +20,7 @@
       "start_conversation": "Iniciar uma conversa",
       "start_conversation_hint": "Faça perguntas sobre comandos shell, scripts ou operações de terminal.",
       "delete_conversation": "Excluir conversa",
-      "rename_conversation": "Renomear conversa",
-      "save_conversation_title": "Salvar título",
       "messages_count": "{{count}} mensagens",
-      "today": "Hoje",
-      "yesterday": "Ontem",
       "double_click_rename": "Clique duplo para renomear",
       "branch_prev": "Versão anterior",
       "branch_next": "Próxima versão"
@@ -132,7 +121,6 @@
       "manage_providers": "Gerenciar provedores",
       "no_provider": "Nenhum provedor configurado",
       "select_model": "Selecionar modelo",
-      "session_mode": "Modo da sessão",
       "no_model_selected": "Nenhum modelo selecionado. Selecione um no menu de modelos do chat.",
       "agent_decides": "Definido pelo agente",
       "agent_model_unavailable": "Seleção automática (modelo não informado pelo agente)",
@@ -157,18 +145,6 @@
       "show_raw_output": "Mostrar saída completa",
       "hide_raw_output": "Recolher saída",
       "recovery_actions": "Ações de recuperação",
-      "choose_target": "Escolha o destino para continuar",
-      "cancel_selection": "Cancelar",
-      "recovery": {
-        "stale_target": "O destino ativo mudou ou não está mais disponível.",
-        "state_changed_after_approval": "Nada foi executado porque o destino mudou enquanto aguardava aprovação.",
-        "resource_removed": "O recurso salvo não existe mais.",
-        "resource_disconnected": "O recurso salvo está desconectado.",
-        "credential_interaction_required": "O fluxo normal de conexão precisa de credenciais ou confirmação.",
-        "operation_cancelled": "A operação foi cancelada sem alterações.",
-        "rediscover": "Redescobrir",
-        "connect": "Conectar"
-      },
       "copy_session_id": "Copiar session_id",
       "recoverable_error": "Erro recuperável",
       "output_truncated": "A saída foi truncada",
@@ -333,7 +309,6 @@
       "status": {
         "pending": "Pendente",
         "pending_approval": "Aguardando aprovação",
-        "pending_selection": "Aguardando seleção do destino",
         "approved": "Aprovado",
         "running": "Em execução",
         "completed": "Concluído",

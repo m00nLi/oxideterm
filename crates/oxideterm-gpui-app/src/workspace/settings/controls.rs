@@ -14,9 +14,8 @@ impl WorkspaceApp {
         let width =
             f32::from(anchor.bounds.size.width).max(self.tokens.metrics.ui_select_min_width);
         let settings = self.settings_store.settings();
-        let active_tab = self.settings_workspace.read(cx).route_snapshot().active_tab;
 
-        let popup = match (active_tab, open_select) {
+        let popup = match (self.settings_page.active_tab, open_select) {
             (SettingsTab::General, SettingsSelect::Language) => {
                 let mut popup = select_overlay_popup(&self.tokens, width);
                 for language in language_options() {
@@ -268,9 +267,9 @@ impl WorkspaceApp {
                 for theme in themes {
                     let theme_id = theme.id.to_string();
                     let selected = self
-                        .settings_workspace
-                        .read(cx)
-                        .theme_editor()
+                        .settings_page
+                        .theme_editor
+                        .as_ref()
                         .is_some_and(|editor| editor.duplicate_theme == theme_id);
                     popup = popup.child(select_option_action(
                         select_option(&self.tokens, theme_display_name(theme.id), selected),
@@ -278,10 +277,17 @@ impl WorkspaceApp {
                         false,
                         cx.listener(move |this, _event, _window, cx| {
                             this.close_settings_select();
-                            this.settings_workspace.update(cx, |settings, cx| {
-                                settings.duplicate_theme_editor_from(&theme_id, cx);
-                            });
+                            if let Some(editor) = this.settings_page.theme_editor.as_mut() {
+                                let theme = theme_by_id(&theme_id);
+                                editor.duplicate_theme = theme_id.clone();
+                                editor.duplicate_theme_touched = true;
+                                editor.terminal_colors = terminal_theme_to_colors(theme.terminal);
+                                editor.ui_colors = app_ui_colors_to_colors(
+                                    derive_ui_colors_from_terminal(theme.terminal),
+                                );
+                            }
                             cx.stop_propagation();
+                            cx.notify();
                         }),
                     ));
                 }
@@ -685,7 +691,6 @@ impl WorkspaceApp {
             }
             (SettingsTab::Privilege, SettingsSelect::LocalPrivilegeKind) => {
                 let mut popup = select_overlay_popup(&self.tokens, width);
-                let current_kind = self.settings_workspace.read(cx).privilege_kind();
                 for kind in [
                     PrivilegeCredentialKind::SudoPassword,
                     PrivilegeCredentialKind::SuPassword,
@@ -695,16 +700,16 @@ impl WorkspaceApp {
                         select_option(
                             &self.tokens,
                             self.settings_privilege_kind_label(kind),
-                            current_kind == kind,
+                            self.settings_local_privilege_draft.kind == kind,
                         ),
                         false,
                         false,
                         cx.listener(move |this, _event, _window, cx| {
                             this.close_settings_select();
-                            this.settings_workspace.update(cx, |settings, cx| {
-                                settings.set_privilege_kind(kind, cx);
-                            });
+                            this.settings_local_privilege_draft.kind = kind;
+                            this.settings_local_privilege_error = None;
                             cx.stop_propagation();
+                            cx.notify();
                         }),
                     ));
                 }
@@ -734,14 +739,13 @@ impl WorkspaceApp {
                 Some(popup)
             }
             (SettingsTab::Connections, SettingsSelect::ConnectionImportSource) => {
-                let selected_source = self.settings_workspace.read(cx).connection_import_source();
                 let mut popup = select_overlay_popup(&self.tokens, width);
                 for source in connection_import_source_options().iter().copied() {
                     popup = popup.child(select_option_action(
                         select_option(
                             &self.tokens,
                             connection_import_source_label(source, &self.i18n),
-                            source == selected_source,
+                            source == self.settings_connection_import_source,
                         ),
                         false,
                         false,
@@ -755,10 +759,6 @@ impl WorkspaceApp {
                 Some(popup)
             }
             (SettingsTab::Connections, SettingsSelect::ConnectionImportDuplicateStrategy) => {
-                let selected_strategy = self
-                    .settings_workspace
-                    .read(cx)
-                    .connection_import_duplicate_strategy();
                 let mut popup = select_overlay_popup(&self.tokens, width);
                 for strategy in [
                     ConnectionImportDuplicateStrategy::Skip,
@@ -768,15 +768,14 @@ impl WorkspaceApp {
                         select_option(
                             &self.tokens,
                             connection_import_duplicate_strategy_label(strategy, &self.i18n),
-                            strategy == selected_strategy,
+                            strategy == self.settings_connection_import_duplicate_strategy,
                         ),
                         false,
                         false,
                         cx.listener(move |this, _event, _window, cx| {
                             this.close_settings_select();
-                            this.settings_workspace.update(cx, |settings, cx| {
-                                settings.set_connection_import_duplicate_strategy(strategy, cx);
-                            });
+                            this.settings_connection_import_duplicate_strategy = strategy;
+                            cx.notify();
                             cx.stop_propagation();
                         }),
                     ));
@@ -926,21 +925,17 @@ impl WorkspaceApp {
                         false,
                         cx.listener(move |this, _event, _window, cx| {
                             this.close_settings_select();
-                            this.settings_workspace.update(cx, |settings, cx| {
-                                settings.finish_network_proxy_password_action(None, cx);
-                            });
+                            this.settings_network_proxy_password_status = None;
+                            this.clear_settings_input_draft(SettingsInput::NetworkProxyPassword);
                             if mode == NetworkProxyAuthMode::None
                                 && has_saved_password
                                 && let Err(error) = this
                                     .connection_store
                                     .delete_global_upstream_proxy_password()
                             {
-                                this.settings_workspace.update(cx, |settings, cx| {
-                                    settings.set_network_proxy_password_status(
-                                        Some(error.to_string()),
-                                        cx,
-                                    );
-                                });
+                                this.settings_network_proxy_password_status =
+                                    Some(error.to_string());
+                                cx.notify();
                                 cx.stop_propagation();
                                 return;
                             }
@@ -971,20 +966,20 @@ impl WorkspaceApp {
             (SettingsTab::Ai, SettingsSelect::AiProviderTemplate) => {
                 let mut popup = select_overlay_popup(&self.tokens, width.max(AI_PROVIDER_SELECT_W));
                 for template in AI_PROVIDER_TEMPLATES {
-                    let provider_type = template.provider_type;
-                    let is_selected =
-                        self.ai_entity.read(cx).settings_new_provider_type() == provider_type;
+                    let provider_type = template.provider_type.to_string();
                     popup = popup.child(select_option_action(
-                        select_option(&self.tokens, self.i18n.t(template.label_key), is_selected),
+                        select_option(
+                            &self.tokens,
+                            self.i18n.t(template.label_key),
+                            self.settings_page.ai_new_provider_type == template.provider_type,
+                        ),
                         false,
                         false,
                         cx.listener(move |this, _event, _window, cx| {
                             this.close_settings_select();
-                            this.ai_entity.update(cx, |ai, cx| {
-                                ai.select_settings_provider_type(provider_type, cx);
-                            });
+                            this.settings_page
+                                .select_ai_provider_type(provider_type.clone());
                             cx.stop_propagation();
-                            // WorkspaceApp owns the surrounding settings render.
                             cx.notify();
                         }),
                     ));
@@ -1136,18 +1131,15 @@ impl WorkspaceApp {
             (SettingsTab::Knowledge, SettingsSelect::KnowledgeDocumentFormat) => {
                 let mut popup = select_overlay_popup(&self.tokens, width.max(220.0));
                 for (format, label) in [("markdown", "Markdown"), ("plaintext", "Plain Text")] {
-                    let selected =
-                        self.ai_entity.read(cx).knowledge_new_document_format() == format;
+                    let selected = self.settings_page.knowledge_new_document_format == format;
                     popup = popup.child(select_option_action(
                         select_option(&self.tokens, label, selected),
                         false,
                         false,
                         cx.listener(move |this, _event, _window, cx| {
                             this.close_settings_select();
-                            this.ai_entity.update(cx, |entity, cx| {
-                                entity.set_knowledge_document_format(format.to_string());
-                                cx.notify();
-                            });
+                            this.settings_page
+                                .set_knowledge_document_format(format.to_string());
                             cx.stop_propagation();
                             cx.notify();
                         }),
@@ -1157,9 +1149,11 @@ impl WorkspaceApp {
             }
             (SettingsTab::Ai, SettingsSelect::AiMcpTransport) => {
                 let current = self
-                    .ai_entity
-                    .read(cx)
-                    .mcp_transport()
+                    .ai
+                    .models
+                    .mcp_add_dialog
+                    .as_ref()
+                    .map(|draft| draft.transport)
                     .unwrap_or(oxideterm_ai::McpTransport::Stdio);
                 let mut popup = select_overlay_popup(&self.tokens, width.max(220.0));
                 for (transport, label) in [
@@ -1176,10 +1170,11 @@ impl WorkspaceApp {
                         false,
                         cx.listener(move |this, _event, _window, cx| {
                             this.close_settings_select();
-                            this.ai_entity.update(cx, |ai, cx| {
-                                ai.set_mcp_transport(transport, cx);
-                            });
+                            if let Some(draft) = this.ai.models.mcp_add_dialog.as_mut() {
+                                draft.transport = transport;
+                            }
                             cx.stop_propagation();
+                            cx.notify();
                         }),
                     ));
                 }
@@ -1187,9 +1182,11 @@ impl WorkspaceApp {
             }
             (SettingsTab::Ai, SettingsSelect::AiMcpAuthMode) => {
                 let current = self
-                    .ai_entity
-                    .read(cx)
-                    .mcp_auth_mode()
+                    .ai
+                    .models
+                    .mcp_add_dialog
+                    .as_ref()
+                    .map(|draft| draft.auth_header_mode)
                     .unwrap_or(oxideterm_ai::McpAuthHeaderMode::Bearer);
                 let mut popup = select_overlay_popup(&self.tokens, width.max(220.0));
                 for (mode, label) in [
@@ -1212,10 +1209,11 @@ impl WorkspaceApp {
                         false,
                         cx.listener(move |this, _event, _window, cx| {
                             this.close_settings_select();
-                            this.ai_entity.update(cx, |ai, cx| {
-                                ai.set_mcp_auth_mode(mode, cx);
-                            });
+                            if let Some(draft) = this.ai.models.mcp_add_dialog.as_mut() {
+                                draft.auth_header_mode = mode;
+                            }
                             cx.stop_propagation();
+                            cx.notify();
                         }),
                     ));
                 }

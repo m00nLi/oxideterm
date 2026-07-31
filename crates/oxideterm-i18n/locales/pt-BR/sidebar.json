@@ -133,7 +133,6 @@
         "invalid_nice": "Informe um valor nice entre -20 e 19.",
         "connection_missing": "A conexão selecionada não está mais disponível.",
         "action_failed": "A ação do processo falhou.",
-        "action_succeeded": "A ação do processo para o PID {{pid}} foi concluída.",
         "partial_support": "O gerenciamento de processos é parcial em {{os}}."
       }
     },
@@ -192,8 +191,7 @@
         "exec_opened": "Shell aberto para {{name}}.",
         "follow_opened": "Acompanhando logs de {{name}}.",
         "connection_missing": "A conexão selecionada não está mais disponível.",
-        "action_failed": "A ação Docker falhou.",
-        "action_succeeded": "A ação Docker para {{name}} foi concluída."
+        "action_failed": "A ação Docker falhou."
       }
     },
     "host_services": {
@@ -269,7 +267,6 @@
         "follow_opened": "Seguindo logs de {{name}}.",
         "connection_missing": "A conexão selecionada não está mais disponível.",
         "action_failed": "Ação de serviço falhou.",
-        "action_succeeded": "A ação do serviço para {{name}} foi concluída.",
         "partial_support": "O gerenciamento de serviços é parcial em {{os}}."
       }
     },
@@ -382,7 +379,6 @@
         "new_session_opened": "Abrindo {{name}}.",
         "action_already_running": "Uma ação tmux já está em execução.",
         "action_failed": "Ação tmux falhou.",
-        "action_succeeded": "A ação tmux para {{target}} foi concluída.",
         "unknown_error": "Erro desconhecido",
         "input_required": "Insira um valor antes de continuar."
       },
@@ -735,7 +731,8 @@
       "add_by_drilling": "Você pode navegar para adicionar nós filhos",
       "click_to_add": "Clique em + para adicionar uma nova conexão",
       "terminal": "Terminal #{{number}}",
-      "close_terminal": "Fechar terminal"
+      "close_terminal": "Fechar terminal",
+      "rename_terminal": "Renomear terminal"
     },
     "actions": {
       "connect": "Conectar",

@@ -94,30 +94,6 @@ impl AppLockState {
         self.retry_at
             .is_some_and(|retry_at| Instant::now() < retry_at)
     }
-
-    fn take_input_secret(&mut self, input: SettingsInput) -> Option<String> {
-        let target = match input {
-            SettingsInput::AppLockCurrentPassword => &mut self.current_password,
-            SettingsInput::AppLockNewPassword => &mut self.new_password,
-            SettingsInput::AppLockConfirmPassword => &mut self.confirm_password,
-            _ => return None,
-        };
-        Some(std::mem::take(target))
-    }
-
-    fn replace_input_secret(&mut self, input: SettingsInput, value: String) -> bool {
-        let target = match input {
-            SettingsInput::AppLockCurrentPassword => &mut self.current_password,
-            SettingsInput::AppLockNewPassword => &mut self.new_password,
-            SettingsInput::AppLockConfirmPassword => &mut self.confirm_password,
-            _ => return false,
-        };
-        // Replace the previous allocation only after scrubbing its contents.
-        target.zeroize();
-        *target = value;
-        self.error = None;
-        true
-    }
 }
 
 impl Drop for AppLockState {
@@ -139,15 +115,11 @@ impl WorkspaceApp {
 
         // Locking releases forwarded input before sensitive surfaces stop rendering,
         // preventing a held key or mouse button from remaining active remotely.
-        self.release_active_remote_desktop_inputs(cx);
+        self.release_active_remote_desktop_inputs();
         self.finish_sidebar_resize(cx);
         self.finish_ai_sidebar_resize(cx);
         self.finish_sftp_pane_resize(cx);
         self.finish_sftp_queue_resize(cx);
-        self.finish_terminal_command_sender_resize(cx);
-        // A locked workspace must not keep sending unattended terminal input.
-        self.terminal_command_sender
-            .update(cx, |sender, cx| sender.stop_all(cx));
         self.finish_split_drag(cx);
         self.close_terminal_command_overlays(cx);
         self.clear_workspace_tooltip("activity-app-lock", cx);
@@ -198,22 +170,38 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.focus_settings_input(input, String::new(), cx);
+        let current = self.app_lock_input_value(input).to_string();
+        self.focus_settings_input(input, current, cx);
         window.focus(&self.focus_handle, cx);
     }
 
-    pub(in crate::workspace) fn take_app_lock_input_value(
+    pub(in crate::workspace) fn app_lock_input_value(&self, input: SettingsInput) -> &str {
+        match input {
+            SettingsInput::AppLockCurrentPassword => &self.app_lock.current_password,
+            SettingsInput::AppLockNewPassword => &self.app_lock.new_password,
+            SettingsInput::AppLockConfirmPassword => &self.app_lock.confirm_password,
+            _ => "",
+        }
+    }
+
+    pub(in crate::workspace) fn set_app_lock_input_value(
         &mut self,
         input: SettingsInput,
-    ) -> Option<String> {
-        self.app_lock.take_input_secret(input)
+        value: &str,
+    ) -> bool {
+        let target = match input {
+            SettingsInput::AppLockCurrentPassword => &mut self.app_lock.current_password,
+            SettingsInput::AppLockNewPassword => &mut self.app_lock.new_password,
+            SettingsInput::AppLockConfirmPassword => &mut self.app_lock.confirm_password,
+            _ => return false,
+        };
+        target.zeroize();
+        target.push_str(value);
+        self.app_lock.error = None;
+        true
     }
 
-    fn replace_app_lock_input_value(&mut self, input: SettingsInput, value: String) -> bool {
-        self.app_lock.replace_input_secret(input, value)
-    }
-
-    pub(in crate::workspace) fn commit_focused_app_lock_input(&mut self) {
+    fn commit_focused_app_lock_input(&mut self) {
         let Some(input) = self.focused_settings_input.filter(|input| {
             matches!(
                 input,
@@ -224,8 +212,9 @@ impl WorkspaceApp {
         }) else {
             return;
         };
-        let draft = std::mem::take(&mut self.settings_input_draft);
-        let _ = self.replace_app_lock_input_value(input, draft);
+        let mut draft = std::mem::take(&mut self.settings_input_draft);
+        let _ = self.set_app_lock_input_value(input, &draft);
+        draft.zeroize();
         self.focused_settings_input = None;
         self.clear_ime_selection();
     }
@@ -1054,36 +1043,5 @@ mod tests {
         assert_eq!(app_lock_failure_cooldown(4), APP_LOCK_FAILURE_COOLDOWN);
         assert_eq!(app_lock_failure_cooldown(5), APP_LOCK_EXTENDED_COOLDOWN);
         assert_eq!(app_lock_failure_cooldown(20), APP_LOCK_EXTENDED_COOLDOWN);
-    }
-
-    #[test]
-    fn focused_password_handoff_moves_one_allocation_between_owners() {
-        let mut state = AppLockState {
-            store: AppLockStore::new(),
-            configured: true,
-            locked: false,
-            dialog: Some(AppLockDialog::Change),
-            lock_after_configure: false,
-            pending: false,
-            biometric_available: false,
-            biometric_check_pending: false,
-            current_password: "current-secret".into(),
-            new_password: String::new(),
-            confirm_password: String::new(),
-            error: Some("stale-error".into()),
-            failed_attempts: 0,
-            retry_at: None,
-        };
-        let allocation = state.current_password.as_ptr();
-
-        let draft = state
-            .take_input_secret(SettingsInput::AppLockCurrentPassword)
-            .expect("app lock password input");
-
-        assert_eq!(draft.as_ptr(), allocation);
-        assert!(state.current_password.is_empty());
-        assert!(state.replace_input_secret(SettingsInput::AppLockCurrentPassword, draft));
-        assert_eq!(state.current_password.as_ptr(), allocation);
-        assert!(state.error.is_none());
     }
 }

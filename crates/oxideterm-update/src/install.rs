@@ -14,7 +14,6 @@ use crate::{InstallFlavor, NativeUpdateError, PlatformTarget, current_platform_t
 use crate::{
     WindowsUpdateHelperOptions, windows_update_helper_arguments, windows_update_helper_path,
 };
-use crate::{execute_portable_update, portable_update_root};
 
 #[cfg(windows)]
 const WINDOWS_BACKGROUND_PROCESS_CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -36,7 +35,7 @@ pub enum InstallPackageKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InstallStrategy {
-    PortableReplaceArchive,
+    PortableManualReplacement,
     MacOpenDmg,
     MacReplaceAppBundle,
     MacReplaceAppArchive,
@@ -54,7 +53,6 @@ pub enum InstallActionKind {
     OpenPackage,
     LaunchInstaller,
     LaunchReplacementScript,
-    LaunchUpdateHelper,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,20 +61,17 @@ pub struct NativeInstallContext {
     pub current_exe: PathBuf,
     pub process_id: u32,
     pub install_flavor: InstallFlavor,
-    pub portable_root: Option<PathBuf>,
 }
 
 impl NativeInstallContext {
     pub fn current(portable: bool) -> Result<Self, NativeUpdateError> {
         let target = current_platform_target();
         let current_exe = current_install_executable()?;
-        let portable_root = portable.then(portable_update_root).transpose()?;
         Ok(Self {
             install_flavor: InstallFlavor::infer(&target, &current_exe, portable),
             target,
             current_exe,
             process_id: std::process::id(),
-            portable_root,
         })
     }
 }
@@ -102,7 +97,6 @@ pub struct NativeInstallPlan {
     pub package_path: PathBuf,
     pub current_exe: PathBuf,
     pub process_id: u32,
-    pub portable_root: Option<PathBuf>,
     pub requires_app_exit: bool,
     pub summary: String,
 }
@@ -130,17 +124,15 @@ pub fn plan_native_install(
 
     if context.install_flavor == InstallFlavor::Portable {
         return NativeInstallPlan {
-            strategy: InstallStrategy::PortableReplaceArchive,
-            action: InstallActionKind::LaunchUpdateHelper,
+            strategy: InstallStrategy::PortableManualReplacement,
+            action: InstallActionKind::Manual,
             package_kind,
             package_path,
             current_exe: context.current_exe.clone(),
             process_id: context.process_id,
-            portable_root: context.portable_root.clone(),
             requires_app_exit: true,
-            summary:
-                "Portable update staged. OxideTerm will restart after replacing application files."
-                    .to_string(),
+            summary: "Portable mode updates require replacing the whole portable folder."
+                .to_string(),
         };
     }
 
@@ -225,7 +217,6 @@ pub fn plan_native_install(
         package_path,
         current_exe: context.current_exe.clone(),
         process_id: context.process_id,
-        portable_root: context.portable_root.clone(),
         requires_app_exit,
         summary: summary.to_string(),
     }
@@ -235,7 +226,11 @@ pub fn execute_install_plan(
     plan: &NativeInstallPlan,
 ) -> Result<NativeInstallOutcome, NativeUpdateError> {
     match plan.strategy {
-        InstallStrategy::PortableReplaceArchive => execute_portable_update(plan),
+        InstallStrategy::PortableManualReplacement => Ok(NativeInstallOutcome {
+            status: NativeInstallStatus::ManualActionRequired,
+            message: plan.summary.clone(),
+            should_quit_app: false,
+        }),
         InstallStrategy::MacReplaceAppBundle | InstallStrategy::MacReplaceAppArchive => {
             execute_macos_app_replacement(plan)
         }
@@ -557,7 +552,6 @@ fn execute_windows_archive_installer(
         package_path: installer,
         current_exe: plan.current_exe.clone(),
         process_id: plan.process_id,
-        portable_root: plan.portable_root.clone(),
         requires_app_exit: matches!(package_kind, InstallPackageKind::WindowsExe),
         summary: plan.summary.clone(),
     };
@@ -827,21 +821,18 @@ mod tests {
             current_exe: PathBuf::from(exe),
             process_id: 42,
             install_flavor,
-            portable_root: (install_flavor == InstallFlavor::Portable)
-                .then(|| PathBuf::from(exe).parent().unwrap().to_path_buf()),
         }
     }
 
     #[test]
-    fn portable_updates_use_the_exit_helper() {
+    fn portable_updates_require_manual_folder_replacement() {
         let plan = plan_native_install(
             "/tmp/OxideTerm_linux_x64_portable.tar.gz",
             &context("linux", InstallFlavor::Portable, "/apps/oxideterm-native"),
         );
-        assert_eq!(plan.strategy, InstallStrategy::PortableReplaceArchive);
-        assert_eq!(plan.action, InstallActionKind::LaunchUpdateHelper);
+        assert_eq!(plan.strategy, InstallStrategy::PortableManualReplacement);
+        assert_eq!(plan.action, InstallActionKind::Manual);
         assert_eq!(plan.package_kind, InstallPackageKind::PortableArchive);
-        assert!(plan.requires_app_exit);
     }
 
     #[test]
@@ -1047,9 +1038,9 @@ mod tests {
     }
 
     #[test]
-    fn every_platform_portable_package_uses_the_update_helper() {
-        // Portable archives differ by platform, but all use the same guarded
-        // replacement protocol instead of an installed-package flow.
+    fn every_platform_portable_package_uses_manual_folder_replacement() {
+        // Portable archives differ by platform, but all require replacing the
+        // self-contained folder instead of invoking an installed-package flow.
         let cases = [
             ("macos", "/tmp/OxideTerm_macos_x64_portable.tar.gz"),
             ("windows", "C:/Temp/OxideTerm_windows_x64_portable.zip"),
@@ -1061,7 +1052,7 @@ mod tests {
                 package_path,
                 &context(os, InstallFlavor::Portable, "/apps/oxideterm-native"),
             );
-            assert_eq!(plan.strategy, InstallStrategy::PortableReplaceArchive);
+            assert_eq!(plan.strategy, InstallStrategy::PortableManualReplacement);
             assert_eq!(plan.package_kind, InstallPackageKind::PortableArchive);
             assert!(plan.requires_app_exit);
         }

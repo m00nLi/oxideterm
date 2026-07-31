@@ -103,11 +103,12 @@ impl SharedGraphicsVncGeometry {
 }
 
 pub(super) fn graphics_vnc_canvas(
-    frame_size: Option<(u32, u32)>,
+    frame: Option<GraphicsVncFrame>,
     image: Option<Arc<RenderImage>>,
     geometry: SharedGraphicsVncGeometry,
     background: u32,
 ) -> impl IntoElement {
+    let frame_size = frame.as_ref().map(|frame| (frame.width, frame.height));
     canvas(
         move |bounds, _window: &mut Window, _cx: &mut App| {
             let image_bounds = frame_size.map(|(width, height)| {

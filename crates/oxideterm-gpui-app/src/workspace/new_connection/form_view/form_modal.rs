@@ -1,110 +1,26 @@
 use super::*;
 use gpui::StatefulInteractiveElement;
 
-/// Contains only values needed to build one modal frame after releasing the Entity borrow.
-struct ConnectionFormModalSnapshot {
-    transport: NewConnectionTransport,
-    name: String,
-    host: String,
-    port: String,
-    username: String,
-    auth_tab: SshAuthTab,
-    password_present: bool,
-    remote_desktop_profile_id: Option<String>,
-    saved_password_keychain_id: Option<String>,
-    password_visible: bool,
-    password_loading: bool,
-    password_error: Option<String>,
-    key_path: String,
-    managed_key_id: String,
-    cert_path: String,
-    save_password: bool,
-    group: String,
-    post_connect_command: String,
-    color: String,
-    icon_background_color: String,
-    icon: String,
-    icon_picker_expanded: bool,
-    legacy_ssh_compatibility: bool,
-    agent_forwarding: bool,
-    identity_agent: String,
-    agent_available: Option<bool>,
-    error: Option<String>,
-    pending: bool,
-    serial_port_path: String,
-    serial_baud_rate: String,
-}
-
-impl ConnectionFormModalSnapshot {
-    fn from_form(form: &NewConnectionForm) -> Self {
-        Self {
-            transport: form.transport,
-            name: form.name.clone(),
-            host: form.host.clone(),
-            port: form.port.clone(),
-            username: form.username.clone(),
-            auth_tab: form.auth_tab,
-            password_present: !form.password.is_empty(),
-            remote_desktop_profile_id: form.remote_desktop_profile_id.clone(),
-            saved_password_keychain_id: form.saved_password_keychain_id.clone(),
-            password_visible: form.password_visible,
-            password_loading: form.password_loading,
-            password_error: form.password_error.clone(),
-            key_path: form.key_path.clone(),
-            managed_key_id: form.managed_key_id.clone(),
-            cert_path: form.cert_path.clone(),
-            save_password: form.save_password,
-            group: form.group.clone(),
-            post_connect_command: form.post_connect_command.clone(),
-            color: form.color.clone(),
-            icon_background_color: form.icon_background_color.clone(),
-            icon: form.icon.clone(),
-            icon_picker_expanded: form.icon_picker_expanded,
-            legacy_ssh_compatibility: form.legacy_ssh_compatibility,
-            agent_forwarding: form.agent_forwarding,
-            identity_agent: form.identity_agent.clone(),
-            agent_available: form.agent_available,
-            error: form.error.clone(),
-            pending: form.pending,
-            serial_port_path: form.serial_port_path.clone(),
-            serial_baud_rate: form.serial_baud_rate.clone(),
-        }
-    }
-}
-
 impl WorkspaceApp {
     pub(in crate::workspace) fn render_new_connection_modal(
         &self,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(form) = self
-            .connection_form_state(cx)
-            .form
-            .as_ref()
-            .map(ConnectionFormModalSnapshot::from_form)
-        else {
+        let Some(form) = self.new_connection_form.as_ref() else {
             return div().into_any_element();
         };
         let theme = self.tokens.ui;
         let mode = new_connection_form_mode(
-            self.connection_form_state(cx)
-                .editing_saved_connection_id
-                .as_deref(),
-            self.connection_form_state(cx)
-                .duplicating_saved_connection_id
-                .as_deref(),
-            self.connection_form_state(cx)
-                .saved_connection_prompt_action,
+            self.editing_saved_connection_id.as_deref(),
+            self.duplicating_saved_connection_id.as_deref(),
+            self.saved_connection_prompt_action,
         );
         let prompt_mode = mode == NewConnectionFormMode::SavedConnectionPrompt;
         let duplicate_mode = mode == NewConnectionFormMode::DuplicateTemplate;
         let edit_properties_mode = mode.submits_saved_connection_properties();
         let remote_desktop_edit_mode = form.remote_desktop_profile_id.is_some();
-        let drill_down_mode = self
-            .connection_form_state(cx)
-            .drill_down_parent_node_id
-            .is_some();
+        let drill_down_mode = self.drill_down_parent_node_id.is_some();
         let modal_max_height = f32::from(window.viewport_size().height)
             * self.tokens.metrics.modal_max_viewport_height_ratio;
         let serial_mode = !prompt_mode
@@ -162,7 +78,6 @@ impl WorkspaceApp {
         };
         let description = if drill_down_mode {
             let parent_host = self
-                .connection_form_state(cx)
                 .drill_down_parent_node_id
                 .as_ref()
                 .and_then(|node_id| self.ssh_nodes.get(node_id))
@@ -213,7 +128,7 @@ impl WorkspaceApp {
             !form.host.trim().is_empty()
                 && !form.username.trim().is_empty()
                 && (remote_desktop_edit_mode
-                    || form.password_present
+                    || !form.password.is_empty()
                     || form.saved_password_keychain_id.is_some())
                 && form.port.trim().parse::<u16>().is_ok_and(|port| port > 0)
         } else if remote_desktop_mode {
@@ -227,12 +142,9 @@ impl WorkspaceApp {
                 && form.port.trim().parse::<u16>().is_ok()
         };
         let primary_disabled = form.pending || !has_required_fields;
-        let form_visible = self.connection_form_state(cx).presence.phase()
+        let form_visible = self.new_connection_form_presence.phase()
             == oxideterm_gpui_ui::motion::ExitPhase::Visible;
-        // This is a long, continuously scrolling surface. A full-window
-        // backdrop filter would run GPU blur and composite passes for every
-        // scroll frame, so retain the dialog tint without the live blur.
-        modal_backdrop(dialog_backdrop_color())
+        dismissible_dialog_backdrop()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event, window, cx| {
@@ -296,9 +208,9 @@ impl WorkspaceApp {
                                                 // scroll body moves its trigger. Native caches the
                                                 // trigger anchor explicitly, so clear both popup
                                                 // ownership and the stale group-select bounds here.
-                                                if this.connection_form_state(cx).open_select.is_some() {
-                                                    this.close_new_connection_select(cx);
-                                                    this.clear_new_connection_select_anchor(cx);
+                                                if this.open_new_connection_select.is_some() {
+                                                    this.close_new_connection_select();
+                                                    this.clear_new_connection_select_anchor();
                                                     cx.notify();
                                                 }
                                             },
@@ -446,11 +358,7 @@ impl WorkspaceApp {
                                         && form.saved_password_keychain_id.is_some()
                                     {
                                         content
-                                            .child(self.render_edit_saved_password_field(
-                                                form.password_visible,
-                                                form.password_loading,
-                                                cx,
-                                            ))
+                                            .child(self.render_edit_saved_password_field(form, cx))
                                             .child(self.render_connection_hint(
                                                 self.i18n.t(
                                                     "sessionManager.edit_properties.password_hint",
@@ -471,32 +379,40 @@ impl WorkspaceApp {
                                                 },
                                             )
                                     } else if edit_properties_mode {
-                                        content.child(self.render_connection_secret_field(
+                                        content.child(self.render_connection_field(
                                             self.i18n.t("ssh.form.password"),
+                                            &form.password,
                                             String::new(),
                                             NewConnectionField::Password,
+                                            true,
                                             cx,
                                         ))
                                     } else if prompt_mode {
-                                        content.child(self.render_connection_secret_field(
+                                        content.child(self.render_connection_field(
                                             self.i18n.t("ssh.form.password"),
+                                            &form.password,
                                             String::new(),
                                             NewConnectionField::Password,
+                                            true,
                                             cx,
                                         ))
                                     } else if drill_down_mode {
-                                        content.child(self.render_connection_secret_field(
+                                        content.child(self.render_connection_field(
                                             self.i18n.t("ssh.drill_down.password"),
+                                            &form.password,
                                             String::new(),
                                             NewConnectionField::Password,
+                                            true,
                                             cx,
                                         ))
                                     } else {
                                         content
-                                            .child(self.render_connection_secret_field(
+                                            .child(self.render_connection_field(
                                                 self.i18n.t("ssh.form.password"),
+                                                &form.password,
                                                 String::new(),
                                                 NewConnectionField::Password,
+                                                true,
                                                 cx,
                                             ))
                                             .child(self.render_connection_checkbox(
@@ -516,10 +432,12 @@ impl WorkspaceApp {
                                             .child(self.render_connection_hint(
                                                 self.i18n.t("ssh.form.default_key_desc"),
                                             ))
-                                            .child(self.render_connection_secret_field(
+                                            .child(self.render_connection_field(
                                                 self.i18n.t("ssh.form.passphrase"),
+                                                &form.passphrase,
                                                 self.i18n.t("ssh.form.passphrase_placeholder"),
                                                 NewConnectionField::Passphrase,
+                                                true,
                                                 cx,
                                             ))
                                     },
@@ -561,14 +479,16 @@ impl WorkspaceApp {
                                         };
                                         content
                                             .child(key_field)
-                                            .child(self.render_connection_secret_field(
+                                            .child(self.render_connection_field(
                                                 if drill_down_mode {
                                                     self.i18n.t("ssh.drill_down.passphrase")
                                                 } else {
                                                     self.i18n.t("ssh.form.passphrase")
                                                 },
+                                                &form.passphrase,
                                                 self.i18n.t("ssh.form.passphrase_placeholder"),
                                                 NewConnectionField::Passphrase,
+                                                true,
                                                 cx,
                                             ))
                                             .when(edit_properties_mode, |content| {
@@ -588,10 +508,12 @@ impl WorkspaceApp {
                                             false,
                                             cx,
                                         ))
-                                        .child(self.render_connection_secret_field(
+                                        .child(self.render_connection_field(
                                             self.i18n.t("ssh.form.passphrase"),
+                                            &form.passphrase,
                                             self.i18n.t("ssh.form.passphrase_placeholder"),
                                             NewConnectionField::Passphrase,
+                                            true,
                                             cx,
                                         ))
                                         .child(self.render_connection_hint(
@@ -643,10 +565,12 @@ impl WorkspaceApp {
                                                 cx,
                                             )
                                         })
-                                        .child(self.render_connection_secret_field(
+                                        .child(self.render_connection_field(
                                             self.i18n.t("ssh.form.passphrase"),
+                                            &form.passphrase,
                                             self.i18n.t("ssh.form.passphrase_placeholder"),
                                             NewConnectionField::Passphrase,
+                                            true,
                                             cx,
                                         ))
                                         .when(edit_properties_mode, |content| {
@@ -664,33 +588,18 @@ impl WorkspaceApp {
                                         } else {
                                             self.i18n.t("ssh.form.agent_desc")
                                         }))
-                                        .when(!prompt_mode, |content| {
+                                        .when(!drill_down_mode && !prompt_mode, |content| {
                                             content
-                                                .child(self.render_connection_field(
-                                                    self.i18n.t("ssh.form.agent_endpoint"),
-                                                    &form.identity_agent,
-                                                    self.i18n
-                                                        .t("ssh.form.agent_endpoint_placeholder"),
-                                                    NewConnectionField::IdentityAgent,
-                                                    false,
-                                                    cx,
+                                                .child(self.render_agent_status(
+                                                    form.agent_available,
                                                 ))
                                                 .child(self.render_connection_hint(
-                                                    self.i18n.t("ssh.form.agent_endpoint_hint"),
+                                                    self.i18n.t("ssh.form.agent_hint"),
                                                 ))
-                                                .when(!drill_down_mode, |content| {
-                                                    content.child(self.render_agent_status(
-                                                        form.agent_available,
-                                                    ))
-                                                })
                                         });
                                     if drill_down_mode {
                                         content.child(self.render_connection_hint(
                                             self.i18n.t("ssh.drill_down.agent_hint"),
-                                        ))
-                                    } else if !prompt_mode {
-                                        content.child(self.render_connection_hint(
-                                            self.i18n.t("ssh.form.agent_hint"),
                                         ))
                                     } else {
                                         content
@@ -725,9 +634,6 @@ impl WorkspaceApp {
                                         cx,
                                     ))
                                 })
-                                .when(!prompt_mode && !drill_down_mode, |content| {
-                                    content.child(self.render_connection_terminal_options(cx))
-                                })
                                 .when(edit_properties_mode, |content| {
                                     content
                                         .child(self.render_connection_field(
@@ -742,7 +648,7 @@ impl WorkspaceApp {
                                         .child(self.render_connection_hint(
                                             self.i18n.t("ssh.form.post_connect_command_hint"),
                                         ))
-                                        .child(self.render_upstream_proxy_policy_section(cx))
+                                        .child(self.render_upstream_proxy_policy_section(form, cx))
                                 })
                                 // Legacy compatibility is a persisted connection property, so it
                                 // remains editable for both new and existing saved connections.
@@ -811,6 +717,76 @@ impl WorkspaceApp {
                                                                 // ownership explicitly on leave.
                                                                 this.clear_workspace_tooltip(
                                                                     "new-connection-legacy-ssh-compatibility",
+                                                                    cx,
+                                                                );
+                                                            }
+                                                        },
+                                                    )),
+                                            ),
+                                    )
+                               })
+                                .when(!prompt_mode, |content| {
+                                    content.child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(self.tokens.spacing.two))
+                                            .child(self.render_connection_checkbox(
+                                                self.i18n
+                                                    .t("ssh.form.skip_remote_env_detection"),
+                                                form.skip_remote_env_detection,
+                                                |form| {
+                                                    form.skip_remote_env_detection =
+                                                        !form.skip_remote_env_detection
+                                                },
+                                                cx,
+                                            ))
+                                            .child(
+                                                div()
+                                                    .id(
+                                                        "new-connection-skip-remote-env-detection-help",
+                                                    )
+                                                    .size(px(18.0))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .cursor_pointer()
+                                                    .child(Self::render_lucide_icon(
+                                                        LucideIcon::Info,
+                                                        14.0,
+                                                        rgb(self.tokens.ui.warning),
+                                                    ))
+                                                    .on_mouse_move(cx.listener(
+                                                        |this,
+                                                         event: &MouseMoveEvent,
+                                                         _window,
+                                                         cx| {
+                                                            this.queue_workspace_tooltip(
+                                                                "new-connection-skip-remote-env-detection",
+                                                                this.i18n.t("ssh.form.skip_remote_env_detection_hint"),
+                                                                f32::from(event.position.x) + 12.0,
+                                                                f32::from(event.position.y) + 16.0,
+                                                                cx,
+                                                            );
+                                                        },
+                                                    ))
+                                                    .on_mouse_down(
+                                                        MouseButton::Left,
+                                                        cx.listener(
+                                                            |this, _event, _window, cx| {
+                                                                this.clear_workspace_tooltip(
+                                                                    "new-connection-skip-remote-env-detection",
+                                                                    cx,
+                                                                );
+                                                                cx.stop_propagation();
+                                                            },
+                                                        ),
+                                                    )
+                                                    .on_hover(cx.listener(
+                                                        |this, hovered: &bool, _window, cx| {
+                                                            if !*hovered {
+                                                                this.clear_workspace_tooltip(
+                                                                    "new-connection-skip-remote-env-detection",
                                                                     cx,
                                                                 );
                                                             }
@@ -903,7 +879,7 @@ impl WorkspaceApp {
                                         ))
                                         .when(!drill_down_mode, |content| {
                                             content
-                                                .child(self.render_upstream_proxy_policy_section(cx))
+                                                .child(self.render_upstream_proxy_policy_section(form, cx))
                                                 .child(self.render_proxy_chain_section(cx))
                                         })
                                 })
@@ -916,46 +892,21 @@ impl WorkspaceApp {
                                             form.icon_picker_expanded,
                                             cx,
                                         ))
-                                        .child(
-                                            // The two asset colors form one responsive pair:
-                                            // share a row when the modal has room and wrap together
-                                            // without compressing either input below a usable width.
-                                            div()
-                                                .flex()
-                                                .flex_row()
-                                                .flex_wrap()
-                                                .gap(px(self.tokens.spacing.three))
-                                                .child(
-                                                    div()
-                                                        .flex_1()
-                                                        .min_w(px(
-                                                            CONNECTION_ICON_COLOR_CONTROL_MIN_WIDTH,
-                                                        ))
-                                                        .child(self.render_edit_color_field(
-                                                            self.i18n.t(
-                                                                "sessionManager.edit_properties.icon_color",
-                                                            ),
-                                                            &form.color,
-                                                            NewConnectionField::Color,
-                                                            cx,
-                                                        )),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .flex_1()
-                                                        .min_w(px(
-                                                            CONNECTION_ICON_COLOR_CONTROL_MIN_WIDTH,
-                                                        ))
-                                                        .child(self.render_edit_color_field(
-                                                            self.i18n.t(
-                                                                "sessionManager.edit_properties.icon_background_color",
-                                                            ),
-                                                            &form.icon_background_color,
-                                                            NewConnectionField::IconBackgroundColor,
-                                                            cx,
-                                                        )),
-                                                ),
-                                        )
+                                        .child(self.render_edit_color_field(
+                                            self.i18n
+                                                .t("sessionManager.edit_properties.icon_color"),
+                                            &form.color,
+                                            NewConnectionField::Color,
+                                            cx,
+                                        ))
+                                        .child(self.render_edit_color_field(
+                                            self.i18n.t(
+                                                "sessionManager.edit_properties.icon_background_color",
+                                            ),
+                                            &form.icon_background_color,
+                                            NewConnectionField::IconBackgroundColor,
+                                            cx,
+                                        ))
                                     })
                                 ),
                         )
@@ -988,7 +939,7 @@ impl WorkspaceApp {
                         ))
                         .when(
                             !edit_properties_mode
-                                && self.connection_form_state(cx).saved_connection_prompt_action.is_none()
+                                && self.saved_connection_prompt_action.is_none()
                                 && !drill_down_mode
                                 && ssh_submission_mode,
                             |footer| {
@@ -1003,7 +954,7 @@ impl WorkspaceApp {
                         )
                         .when(
                             !edit_properties_mode
-                                && self.connection_form_state(cx).saved_connection_prompt_action.is_none()
+                                && self.saved_connection_prompt_action.is_none()
                                 && !remote_desktop_mode
                                 && !wsl_graphics_mode,
                             |footer| {
@@ -1046,20 +997,20 @@ impl WorkspaceApp {
                         .when(
                             edit_properties_mode
                                 || remote_desktop_edit_mode
-                                || self.connection_form_state(cx).saved_connection_prompt_action.is_some(),
+                                || self.saved_connection_prompt_action.is_some(),
                             |footer| {
                                 footer.child(self.render_connection_button(
-                                    if self.connection_form_state(cx).saved_connection_prompt_action
+                                    if self.saved_connection_prompt_action
                                         == Some(SavedConnectionPromptAction::Test)
                                     {
                                         self.i18n.t("ssh.form.test")
-                                    } else if self.connection_form_state(cx).saved_connection_prompt_action
+                                    } else if self.saved_connection_prompt_action
                                         == Some(SavedConnectionPromptAction::Connect)
                                     {
                                         self.i18n.t("ssh.form.connect")
                                     } else if edit_properties_mode
                                         && self
-                                            .connection_form_state(cx).editing_saved_connection_connect_after_save_node_id
+                                            .editing_saved_connection_connect_after_save_node_id
                                             .is_some()
                                     {
                                         self.i18n
@@ -1071,7 +1022,7 @@ impl WorkspaceApp {
                                     },
                                     true,
                                     if (edit_properties_mode || remote_desktop_edit_mode)
-                                        && self.connection_form_state(cx).saved_connection_prompt_action.is_none()
+                                        && self.saved_connection_prompt_action.is_none()
                                     {
                                         ConnectionButtonAction::Save
                                     } else {
@@ -1086,7 +1037,7 @@ impl WorkspaceApp {
                             remote_desktop_mode
                                 && !edit_properties_mode
                                 && !remote_desktop_edit_mode
-                                && self.connection_form_state(cx).saved_connection_prompt_action.is_none(),
+                                && self.saved_connection_prompt_action.is_none(),
                             |footer| {
                                 footer
                                     .child(self.render_connection_button(
@@ -1115,7 +1066,7 @@ impl WorkspaceApp {
                         .when(
                             wsl_graphics_mode
                                 && !edit_properties_mode
-                                && self.connection_form_state(cx).saved_connection_prompt_action.is_none(),
+                                && self.saved_connection_prompt_action.is_none(),
                             |footer| {
                                 footer.child(self.render_connection_button(
                                     self.i18n.t("modals.new_connection.wsl_graphics_open"),
@@ -1152,11 +1103,7 @@ impl WorkspaceApp {
 
     fn render_drill_saved_next_hop_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.tokens.ui;
-        let Some(parent_node_id) = self
-            .connection_form_state(cx)
-            .drill_down_parent_node_id
-            .clone()
-        else {
+        let Some(parent_node_id) = self.drill_down_parent_node_id.clone() else {
             return div().into_any_element();
         };
         let parent_title = self

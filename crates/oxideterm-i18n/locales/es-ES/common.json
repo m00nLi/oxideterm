@@ -115,9 +115,6 @@
   "common": {
     "enabled": "Activado",
     "disabled": "Desactivado",
-    "status": {
-      "error": "Error"
-    },
     "confirm": {
       "disconnect_node": "¿Estás seguro de que deseas desconectar \"{{name}}\" y todos sus nodos secundarios?"
     },
@@ -834,7 +831,6 @@
     "enable_success": "{{name}} habilitado.",
     "disable_success": "{{name}} deshabilitado.",
     "load_failed_default": "No se pudo cargar el plugin.",
-    "runtime_failure": "La operación del entorno de ejecución del plugin ha fallado.",
     "error_copied": "Error del plugin copiado.",
     "open_dir_create_failed": "No se pudo crear el directorio de plugins: {{message}}",
     "open_dir_failed": "No se pudo abrir el directorio de plugins: {{message}}",
@@ -1126,6 +1122,9 @@
     "copy_title": "Copiar título",
     "detach_to_window": "Mover a una nueva ventana",
     "return_to_main_window": "Volver a la ventana principal",
+    "rename_tab": "Cambiar nombre de pestaña",
+    "reset_title": "Restablecer título",
+    "rename_placeholder": "Nombre de pestaña",
     "detached_tab_closed": "Esta pestaña se cerró.",
     "confirm_close_terminal_title": "Cerrar sesión SSH",
     "confirm_close_terminal_desc": "¿Cerrar esta pestaña de terminal SSH? El trabajo no guardado en la sesión remota puede perderse.",
@@ -1180,25 +1179,7 @@
     "vnc_legacy_security_description": "Este método de seguridad no protege la identidad del servidor y puede exponer la sesión a interceptaciones. Continúe solo en una red protegida y de confianza.",
     "vnc_security_method": "Método de seguridad: {{method}}",
     "vnc_continue_anyway": "Continuar de todos modos",
-    "certificate_save_failed": "No se pudo guardar el registro de confianza del certificado",
-    "clipboard_file_failed": "No se pudieron recibir los archivos del portapapeles"
-  },
-  "portable_bootstrap": {
-    "title": "Modo portátil",
-    "setup_description": "Define una contraseña para el almacén de claves portátil local. OxideTerm la usará al iniciar para desbloquear los secretos guardados y la configuración cifrada.",
-    "unlock_description": "Introduce tu contraseña portátil para desbloquear los secretos guardados y continuar a la aplicación completa.",
-    "data_dir_label": "Directorio de datos portátil",
-    "keystore_path_label": "Almacén de claves portátil",
-    "keystore_pending": "El almacén de claves se creará después de la configuración",
-    "password_label": "Contraseña portátil",
-    "password_placeholder": "Introduce una contraseña",
-    "confirm_password_label": "Confirmar contraseña portátil",
-    "confirm_password_placeholder": "Vuelve a introducir la contraseña",
-    "password_too_short": "La contraseña debe tener al menos 6 caracteres",
-    "password_mismatch": "Las contraseñas no coinciden",
-    "setup_submit": "Crear y continuar",
-    "setup_pending": "Creando el almacén de claves portátil...",
-    "unlock_submit": "Desbloquear y continuar",
-    "unlock_pending": "Desbloqueando los datos portátiles..."
+    "certificate_save_failed": "No se pudo guardar el registro de confianza del certificado: {{error}}",
+    "clipboard_file_failed": "No se pudieron recibir los archivos del portapapeles: {{error}}"
   }
 }

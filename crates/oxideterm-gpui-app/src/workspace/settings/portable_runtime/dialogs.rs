@@ -15,22 +15,21 @@ use oxideterm_gpui_ui::{
 
 use crate::workspace::{ime::WorkspaceImeTarget, settings::settings_dialog_transition};
 
-use super::{PORTABLE_SETTINGS_DIALOG_WIDTH, WorkspaceApp};
+use super::{
+    PORTABLE_SETTINGS_DIALOG_WIDTH, PortableSettingsAction, PortableSettingsDialog, WorkspaceApp,
+};
 
 impl WorkspaceApp {
     pub(in crate::workspace) fn render_portable_password_change_dialog(
         &self,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let dialog = self
-            .settings_workspace
-            .read(cx)
-            .portable_password_dialog_snapshot();
-        if !dialog.open {
+        if self.portable_settings_dialog != Some(PortableSettingsDialog::ChangePassword) {
             return None;
         }
-        let pending = dialog.pending;
-        let can_submit = !pending && dialog.current_password_present;
+        let pending =
+            self.portable_settings_action_pending == Some(PortableSettingsAction::ChangePassword);
+        let can_submit = !pending && !self.portable_current_password.is_empty();
 
         let backdrop = dismissible_dialog_backdrop().on_mouse_down(
             MouseButton::Left,
@@ -66,35 +65,41 @@ impl WorkspaceApp {
                     .flex()
                     .flex_col()
                     .gap(px(12.0))
-                    .child(self.portable_entity_password_field(
+                    .child(self.portable_password_field(
                         "settings_view.general.portable_current_password",
                         SettingsInput::PortableCurrentPassword,
+                        &self.portable_current_password,
                         cx,
                     ))
-                    .child(self.portable_entity_password_field(
+                    .child(self.portable_password_field(
                         "settings_view.general.portable_new_password",
                         SettingsInput::PortableNewPassword,
+                        &self.portable_new_password,
                         cx,
                     ))
-                    .child(self.portable_entity_password_field(
+                    .child(self.portable_password_field(
                         "settings_view.general.portable_confirm_password",
                         SettingsInput::PortableConfirmPassword,
+                        &self.portable_confirm_password,
                         cx,
                     ))
-                    .when_some(dialog.error, |body, error| {
-                        body.child(
-                            div()
-                                .rounded(px(self.tokens.radii.md))
-                                .border_1()
-                                .border_color(rgba((self.tokens.ui.error << 8) | 0x4d))
-                                .bg(rgba((self.tokens.ui.error << 8) | 0x1a))
-                                .px(px(10.0))
-                                .py(px(8.0))
-                                .text_size(px(self.tokens.metrics.ui_text_sm))
-                                .text_color(rgb(self.tokens.ui.error))
-                                .child(error),
-                        )
-                    }),
+                    .when_some(
+                        self.portable_settings_action_error.clone(),
+                        |body, error| {
+                            body.child(
+                                div()
+                                    .rounded(px(self.tokens.radii.md))
+                                    .border_1()
+                                    .border_color(rgba((self.tokens.ui.error << 8) | 0x4d))
+                                    .bg(rgba((self.tokens.ui.error << 8) | 0x1a))
+                                    .px(px(10.0))
+                                    .py(px(8.0))
+                                    .text_size(px(self.tokens.metrics.ui_text_sm))
+                                    .text_color(rgb(self.tokens.ui.error))
+                                    .child(error),
+                            )
+                        },
+                    ),
             )
             .child(
                 dialog_footer(&self.tokens)
@@ -130,84 +135,8 @@ impl WorkspaceApp {
             "portable-password-dialog-form",
             backdrop,
             form,
-            dialog.presence.phase(),
+            self.portable_settings_dialog_presence,
         ))
-    }
-
-    fn portable_entity_password_field(
-        &self,
-        label_key: &str,
-        input: SettingsInput,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .child(
-                div()
-                    .text_size(px(self.tokens.metrics.ui_text_sm))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(rgb(self.tokens.ui.text))
-                    .child(self.i18n.t(label_key)),
-            )
-            .child(self.portable_entity_password_input(input, cx))
-            .into_any_element()
-    }
-
-    fn portable_entity_password_input(
-        &self,
-        input: SettingsInput,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let settings = self.settings_workspace.read(cx);
-        let display_value = settings
-            .settings_entity_input_value(input)
-            .expect("portable inputs are owned by the Settings Entity");
-        let focused = settings.settings_entity_focused_input() == Some(input);
-        let target = WorkspaceImeTarget::Settings(input);
-        let workspace = cx.entity();
-        text_input_anchor_probe(
-            target.anchor_id(),
-            text_input(
-                &self.tokens,
-                TextInputView {
-                    value: display_value,
-                    placeholder: String::new(),
-                    focused,
-                    caret_visible: self.input_caret.visible(),
-                    secret: true,
-                    selected_all: false,
-                    selected_range: self.ime_selected_range_for_target(target, cx),
-                    marked_text: self.marked_text_for_target(target, cx),
-                },
-            )
-            .w_full()
-            .cursor(CursorStyle::IBeam)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                    // The Settings Entity remains the only portable secret owner;
-                    // root focus routing never receives a plaintext draft.
-                    this.focus_settings_input(input, String::new(), cx);
-                    this.ime_marked_text = None;
-                    window.focus(&this.focus_handle, cx);
-                    this.begin_ime_selection_from_mouse_down(target, event, window, cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .on_mouse_move(cx.listener(
-                |this, event: &gpui::MouseMoveEvent, window, cx| {
-                    this.update_ime_selection_drag_from_mouse_move(event, window, cx);
-                },
-            )),
-            move |anchor, _window, cx| {
-                let _ = workspace.update(cx, |this, cx| {
-                    this.update_text_input_anchor(anchor, cx);
-                });
-            },
-        )
-        .into_any_element()
     }
 
     pub(in crate::workspace) fn portable_password_field(
@@ -254,11 +183,11 @@ impl WorkspaceApp {
                     value: display_value,
                     placeholder: String::new(),
                     focused,
-                    caret_visible: self.input_caret.visible(),
+                    caret_visible: self.new_connection_caret_visible,
                     secret: true,
                     selected_all: false,
-                    selected_range: self.ime_selected_range_for_target(target, cx),
-                    marked_text: self.marked_text_for_target(target, cx),
+                    selected_range: self.ime_selected_range_for_target(target),
+                    marked_text: self.marked_text_for_target(target),
                 },
             )
             .w_full()
@@ -266,9 +195,8 @@ impl WorkspaceApp {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                    // App Lock moves the secret into the root IME adapter instead
-                    // of creating a second focused draft.
-                    this.focus_settings_input(input, String::new(), cx);
+                    let current = this.current_settings_input_value(input);
+                    this.focus_settings_input(input, current, cx);
                     this.ime_marked_text = None;
                     window.focus(&this.focus_handle, cx);
                     this.begin_ime_selection_from_mouse_down(target, event, window, cx);

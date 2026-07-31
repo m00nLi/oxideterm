@@ -1,21 +1,16 @@
 use super::*;
+use crate::workspace::forwards::ForwardingWorkerResult;
 
 // Keep tab responsibilities in real modules while preserving WorkspaceApp's API.
 mod create;
 mod detach;
-mod entity;
 mod helpers;
 mod navigation;
 mod nodes;
 mod nodes_reconnect_helpers;
 mod render;
+mod rename;
 mod state;
-
-pub(in crate::workspace) use entity::{
-    TabCloseConfirmKeyAction, TabCloseProcessProbe, TabDetachTransition, TabMountCleanupPlan,
-    TabMountCloseReason, TabMountId, TabRemovalTransition, TerminalLocation,
-    WorkspaceTabHostEntity, WorkspaceTabHostEvent,
-};
 
 // The main tab strip keeps a thin visual thumb while exposing a larger drag target.
 const TABBAR_SCROLLBAR_HEIGHT: f32 = 3.0;

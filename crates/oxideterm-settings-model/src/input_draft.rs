@@ -38,6 +38,12 @@ pub fn persisted_settings_input_value(
         SettingsInput::TerminalFontSize => settings.terminal.font_size.to_string(),
         SettingsInput::TerminalScrollback => settings.terminal.scrollback.to_string(),
         SettingsInput::TerminalLineHeight => compact_decimal(settings.terminal.line_height),
+        SettingsInput::TerminalKeepaliveInterval => {
+            settings.terminal.keepalive.interval_secs.to_string()
+        }
+        SettingsInput::TerminalKeepaliveString => {
+            settings.terminal.keepalive.send_string.clone()
+        }
         SettingsInput::IdeFontSize => settings
             .ide
             .font_size
@@ -198,6 +204,7 @@ pub fn persisted_settings_input_value(
                     .join("\n")
             })
             .unwrap_or_default(),
+        SettingsInput::AiAcpAgentAuthToken(_) => String::new(),
         SettingsInput::AiSystemPrompt => settings.ai.custom_system_prompt.clone(),
         SettingsInput::AiMemoryContent => settings.ai.memory.content.clone(),
         SettingsInput::AiToolUseMaxRounds => settings
@@ -286,6 +293,16 @@ pub fn apply_persisted_settings_input_draft(
         SettingsInput::TerminalLineHeight => parse_f64(draft)
             .map(|value| settings.terminal.line_height = value.clamp(0.8, 2.0))
             .into(),
+        SettingsInput::TerminalKeepaliveInterval => parse_i64(draft)
+            .map(|value| {
+                settings.terminal.keepalive.interval_secs =
+                    value.clamp(0, 3600) as u32;
+            })
+            .into(),
+        SettingsInput::TerminalKeepaliveString => {
+            settings.terminal.keepalive.send_string = draft.to_string();
+            SettingsInputDraftApply::Applied
+        }
         SettingsInput::IdeFontSize => {
             let value = draft.trim();
             if value.is_empty() {
@@ -472,6 +489,7 @@ pub fn apply_persisted_settings_input_draft(
             }
             SettingsInputDraftApply::Applied
         }
+        SettingsInput::AiAcpAgentAuthToken(_) => SettingsInputDraftApply::Unhandled,
         SettingsInput::AiSystemPrompt => {
             settings.ai.custom_system_prompt = draft.to_string();
             SettingsInputDraftApply::Applied
@@ -631,11 +649,7 @@ impl From<Option<()>> for SettingsInputDraftApply {
 ///
 /// GPUI IME selections are tracked in UTF-16 code units to match browser input
 /// semantics, so the model layer owns this conversion instead of each view.
-/// Visual lines may contain private-key material, so every owned line buffer is
-/// zeroized when the render frame releases it.
-pub fn settings_multiline_line_ranges(
-    value: &str,
-) -> Vec<(std::ops::Range<usize>, zeroize::Zeroizing<String>)> {
+pub fn settings_multiline_line_ranges(value: &str) -> Vec<(std::ops::Range<usize>, String)> {
     let mut ranges = Vec::new();
     let mut utf16_start = 0usize;
     let mut utf16_offset = 0usize;
@@ -645,7 +659,7 @@ pub fn settings_multiline_line_ranges(
         if ch == '\n' {
             ranges.push((
                 utf16_start..utf16_offset,
-                zeroize::Zeroizing::new(value[byte_start..byte_index].to_string()),
+                value[byte_start..byte_index].to_string(),
             ));
             utf16_offset += ch.len_utf16();
             utf16_start = utf16_offset;
@@ -655,10 +669,7 @@ pub fn settings_multiline_line_ranges(
         }
     }
 
-    ranges.push((
-        utf16_start..utf16_offset,
-        zeroize::Zeroizing::new(value[byte_start..].to_string()),
-    ));
+    ranges.push((utf16_start..utf16_offset, value[byte_start..].to_string()));
     ranges
 }
 
@@ -811,13 +822,10 @@ mod tests {
     #[test]
     fn multiline_textarea_ranges_keep_trailing_empty_line() {
         let ranges = settings_multiline_line_ranges("vim\n");
-        let _: &zeroize::Zeroizing<String> = &ranges[0].1;
 
         assert_eq!(ranges.len(), 2);
-        assert_eq!(ranges[0].0, 0..3);
-        assert_eq!(ranges[0].1.as_str(), "vim");
-        assert_eq!(ranges[1].0, 4..4);
-        assert!(ranges[1].1.is_empty());
+        assert_eq!(ranges[0], (0..3, "vim".to_string()));
+        assert_eq!(ranges[1], (4..4, String::new()));
     }
 
     #[test]

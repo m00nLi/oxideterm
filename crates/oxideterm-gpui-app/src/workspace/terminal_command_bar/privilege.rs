@@ -6,15 +6,14 @@ use super::*;
 impl WorkspaceApp {
     pub(super) fn active_privilege_scope_credentials(
         &self,
-        cx: &App,
     ) -> Option<(String, Vec<SavedPrivilegeCredential>)> {
-        let Some(active_tab) = self.active_tab(cx) else {
+        let Some(active_tab) = self.active_tab() else {
             log_privilege_prompt_helper(format_args!("scope unavailable: no active tab"));
             return None;
         };
         match &active_tab.kind {
             TabKind::LocalTerminal => {
-                if self.active_tab_has_serial_terminal(cx) {
+                if self.active_tab_has_serial_terminal() {
                     log_privilege_prompt_helper(format_args!(
                         "scope unavailable: local tab is backed by a serial terminal"
                     ));
@@ -35,23 +34,19 @@ impl WorkspaceApp {
                 Some((connection_id, credentials))
             }
             TabKind::SshTerminal => {
-                let Some(session_id) = self.active_terminal_session_id(cx) else {
+                let Some(session_id) = self.active_terminal_session_id() else {
                     log_privilege_prompt_helper(format_args!(
                         "scope unavailable: ssh tab has no active terminal session"
                     ));
                     return None;
                 };
-                let Some(node_id) = self
-                    .workspace_runtime
-                    .read(cx)
-                    .ssh_terminal_node_id(session_id)
-                else {
+                let Some(node_id) = self.terminal_ssh_nodes.get(&session_id) else {
                     log_privilege_prompt_helper(format_args!(
                         "scope unavailable: ssh terminal session has no node mapping"
                     ));
                     return None;
                 };
-                let Some(connection_id) = self.ssh_privilege_scope_id_for_node(&node_id) else {
+                let Some(connection_id) = self.ssh_privilege_scope_id_for_node(node_id) else {
                     log_privilege_prompt_helper(format_args!(
                         "scope unavailable: ssh node has no saved owner"
                     ));
@@ -89,8 +84,8 @@ impl WorkspaceApp {
             .get(node_id)
             .and_then(|node| node.saved_connection_id.as_deref());
         let node_origin = self
-            .node_router
-            .node_metadata(node_id)
+            .node_runtime_store
+            .snapshot(node_id)
             .map(|snapshot| snapshot.origin);
         let has_origin_saved_owner = node_origin
             .as_ref()
@@ -112,9 +107,9 @@ impl WorkspaceApp {
 
     pub(super) fn active_privilege_prompt_state(
         &self,
-        cx: &App,
+        cx: &mut Context<Self>,
     ) -> Option<PrivilegePromptHelperState> {
-        let Some(active_tab) = self.active_tab(cx) else {
+        let Some(active_tab) = self.active_tab() else {
             log_privilege_prompt_helper(format_args!("state unavailable: no active tab"));
             return None;
         };
@@ -125,17 +120,11 @@ impl WorkspaceApp {
             ));
             return None;
         }
-        let Some(active_pane) = self.active_pane(cx) else {
+        let Some(active_pane) = self.active_pane() else {
             log_privilege_prompt_helper(format_args!("state unavailable: no active pane"));
             return None;
         };
         let pane = active_pane.read(cx);
-        if pane.ai_screen_is_alternate_buffer() {
-            // Full-screen applications own Enter and may display arbitrary
-            // password-like text. Privilege assistance is shell-screen only.
-            log_privilege_prompt_helper(format_args!("state unavailable: alternate screen active"));
-            return None;
-        }
         let visible_text = pane.privilege_prompt_text_snapshot();
         let visible_shape = privilege_prompt_text_shape(&visible_text);
         let tracked_prompt = pane
@@ -155,7 +144,7 @@ impl WorkspaceApp {
         // Tauri keeps the prompt state alive even when credential metadata
         // cannot be loaded. Do not let a missing credential row or transient
         // keychain/config error suppress the detected sudo/su prompt.
-        let Some((connection_id, credentials)) = self.active_privilege_scope_credentials(cx) else {
+        let Some((connection_id, credentials)) = self.active_privilege_scope_credentials() else {
             log_privilege_prompt_helper(format_args!(
                 "state unavailable: no credential scope tracked_prompt={} visible_chars={}",
                 tracked_prompt_kind, visible_shape.chars
@@ -198,9 +187,9 @@ impl WorkspaceApp {
 
     pub(in crate::workspace) fn sync_active_privilege_prompt_inline_hint(
         &mut self,
-        cx: &mut App,
+        cx: &mut Context<Self>,
     ) -> bool {
-        let Some(active_pane) = self.active_pane(cx) else {
+        let Some(active_pane) = self.active_pane() else {
             return false;
         };
         let hint = self.active_privilege_prompt_inline_hint(cx);
@@ -209,7 +198,10 @@ impl WorkspaceApp {
         })
     }
 
-    pub(super) fn active_privilege_prompt_inline_hint(&self, cx: &App) -> Option<String> {
+    pub(super) fn active_privilege_prompt_inline_hint(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
         let Some(state) = self.active_privilege_prompt_state(cx) else {
             log_privilege_prompt_helper(format_args!("hint unavailable: no prompt state"));
             return None;
@@ -246,16 +238,6 @@ impl WorkspaceApp {
             return false;
         }
 
-        let Some(active_pane) = self.active_pane(cx) else {
-            return false;
-        };
-        if !active_pane.read(cx).has_privilege_prompt_inline_hint() {
-            // Enter is confirmation only after the same pane exposes the
-            // current fill affordance. A fallback screen match alone must not
-            // consume input in a full-screen application.
-            return false;
-        }
-
         log_privilege_prompt_helper(format_args!("root enter: evaluating privilege helper"));
         let Some(state) = self.active_privilege_prompt_state(cx) else {
             log_privilege_prompt_helper(format_args!("root enter: no prompt state"));
@@ -279,7 +261,7 @@ impl WorkspaceApp {
             "root enter: filling prompt_kind={}",
             privilege_prompt_kind_name(&state.prompt)
         ));
-        self.fill_privilege_prompt_match(matched.clone(), state.prompt, window, cx);
+        self.fill_privilege_prompt_match(matched.clone(), window, cx);
         true
     }
 
@@ -288,7 +270,7 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(active_pane) = self.active_pane(cx) else {
+        let Some(active_pane) = self.active_pane() else {
             return false;
         };
         let requested =
@@ -320,14 +302,13 @@ impl WorkspaceApp {
             "terminal submit request: filling prompt_kind={}",
             privilege_prompt_kind_name(&state.prompt)
         ));
-        self.fill_privilege_prompt_match(matched.clone(), state.prompt, window, cx);
+        self.fill_privilege_prompt_match(matched.clone(), window, cx);
         true
     }
 
     pub(super) fn fill_privilege_prompt_match(
         &mut self,
         matched: MatchedPrivilegeCredential,
-        confirmed_prompt: PrivilegePromptMatch,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -343,7 +324,6 @@ impl WorkspaceApp {
                     self.i18n.t("terminal.privilege_helper.load_failed"),
                     Some(error.to_string()),
                     TerminalNoticeVariant::Error,
-                    cx,
                 );
                 cx.notify();
                 return;
@@ -354,9 +334,9 @@ impl WorkspaceApp {
         // GPUI layer. It is zeroized after the PTY write attempt, matching the
         // Tauri click-only secret handoff without involving command history.
         let secret_line = zeroize::Zeroizing::new(format!("{}\n", secret.expose_secret()));
-        let sent = self.active_pane(cx).is_some_and(|pane| {
+        let sent = self.active_pane().is_some_and(|pane| {
             pane.update(cx, |pane, cx| {
-                pane.send_privilege_secret_input_bytes(secret_line.as_bytes(), confirmed_prompt, cx)
+                pane.send_privilege_secret_input_bytes(secret_line.as_bytes(), cx)
             })
         });
         log_privilege_prompt_helper(format_args!("fill: write attempted sent={sent}"));
@@ -365,7 +345,6 @@ impl WorkspaceApp {
                 self.i18n.t("terminal.privilege_helper.send_failed"),
                 None,
                 TerminalNoticeVariant::Error,
-                cx,
             );
         }
         self.focus_active_pane(window, cx);
@@ -375,7 +354,6 @@ impl WorkspaceApp {
     pub(in crate::workspace) fn render_terminal_surface(
         &self,
         root_pane: &PaneNode,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let terminal = self.render_pane_tree(root_pane, cx);
@@ -406,18 +384,7 @@ impl WorkspaceApp {
                         surface.child(self.render_terminal_recording_controls(recording_status, cx))
                     }),
             )
-            .when(
-                self.settings_store
-                    .settings()
-                    .terminal
-                    .command_bar
-                    .quick_bar_enabled,
-                |surface| surface.child(self.render_terminal_quick_bar(window, cx)),
-            )
             .child(self.render_terminal_command_bar(cx))
-            // The toolbar is the sender header. Hidden, compact, and expanded
-            // layouts all retain the same document and running jobs below it.
-            .child(self.render_terminal_command_sender_panel(window, cx))
             .into_any_element()
     }
 

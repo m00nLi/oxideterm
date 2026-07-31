@@ -1,12 +1,5 @@
 {
   "ai": {
-    "acp": {
-      "auth_required": "Authentification requise",
-      "authenticate": "S’authentifier",
-      "auth_environment_hint": "Définissez les variables d’environnement requises dans les paramètres de l’agent",
-      "auth_terminal_hint": "Terminez l’authentification interactive du terminal en externe, puis réessayez",
-      "auth_unsupported_hint": "Cette méthode d’authentification n’est pas prise en charge"
-    },
     "chat": {
       "header": "Chat",
       "get_started": "Commencer avec OxideSens",
@@ -27,11 +20,7 @@
       "start_conversation": "Démarrer une conversation",
       "start_conversation_hint": "Posez des questions sur les commandes shell, les scripts ou les opérations du terminal.",
       "delete_conversation": "Supprimer la conversation",
-      "rename_conversation": "Renommer la conversation",
-      "save_conversation_title": "Enregistrer le titre",
       "messages_count": "{{count}} messages",
-      "today": "Aujourd’hui",
-      "yesterday": "Hier",
       "double_click_rename": "Double-cliquez pour renommer",
       "branch_prev": "Version précédente",
       "branch_next": "Version suivante"
@@ -132,7 +121,6 @@
       "manage_providers": "Gérer les fournisseurs",
       "no_provider": "Aucun fournisseur configuré",
       "select_model": "Sélectionner un modèle",
-      "session_mode": "Mode de session",
       "no_model_selected": "Aucun modèle sélectionné. Sélectionnez-en un dans le menu des modèles du chat.",
       "agent_decides": "Choisi par l’agent",
       "agent_model_unavailable": "Sélection automatique (modèle non communiqué par l’agent)",
@@ -157,18 +145,6 @@
       "show_raw_output": "Afficher toute la sortie",
       "hide_raw_output": "Replier la sortie",
       "recovery_actions": "Actions de récupération",
-      "choose_target": "Choisissez la cible pour continuer",
-      "cancel_selection": "Annuler",
-      "recovery": {
-        "stale_target": "La cible active a changé ou n’est plus disponible.",
-        "state_changed_after_approval": "Rien n’a été exécuté, car la cible a changé pendant l’attente de l’approbation.",
-        "resource_removed": "La ressource enregistrée n’existe plus.",
-        "resource_disconnected": "La ressource enregistrée est déconnectée.",
-        "credential_interaction_required": "Le flux de connexion normal nécessite des identifiants ou une confirmation.",
-        "operation_cancelled": "L’opération a été annulée sans modification.",
-        "rediscover": "Rechercher à nouveau",
-        "connect": "Connecter"
-      },
       "copy_session_id": "Copier session_id",
       "recoverable_error": "Erreur récupérable",
       "output_truncated": "La sortie a été tronquée",
@@ -333,7 +309,6 @@
       "status": {
         "pending": "En attente",
         "pending_approval": "En attente d’approbation",
-        "pending_selection": "En attente du choix de la cible",
         "approved": "Approuvé",
         "running": "En cours",
         "completed": "Terminé",

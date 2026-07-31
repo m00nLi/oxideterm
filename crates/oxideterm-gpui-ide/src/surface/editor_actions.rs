@@ -1,10 +1,4 @@
 impl IdeSurface {
-    /// Returns the surface-owned filesystem scope for host-mediated AI actions.
-    /// The caller must still validate its own runtime capability before use.
-    pub fn ai_owner_file_system(&self) -> NodeAgentIdeFileSystem {
-        self.fs.clone()
-    }
-
     pub fn project_root_path(&self) -> Option<String> {
         self.root_path.clone()
     }
@@ -270,7 +264,9 @@ impl IdeSurface {
         for buffer in buffers {
             self.create_editor(buffer.tab_id, &buffer.location, buffer.text, cx);
         }
-        self.resume_agent_sampling(cx);
+        self.refresh_agent_status(cx);
+        self.schedule_next_agent_status_poll(cx);
+        self.start_agent_watch_if_ready(cx);
         cx.notify();
     }
 
@@ -284,7 +280,9 @@ impl IdeSurface {
         self.load_state = IdeLoadState::Ready;
         self.agent_opt_in_open = self.runtime_settings.agent_mode == NodeAgentMode::Ask;
         self.clear_search_cache();
-        self.resume_agent_sampling(cx);
+        self.refresh_agent_status(cx);
+        self.schedule_next_agent_status_poll(cx);
+        self.start_agent_watch_if_ready(cx);
         cx.emit(IdeSurfaceEvent::ProjectOpened);
         let node_id = self.node_id.clone();
         let pending_restore_files = std::mem::take(&mut self.pending_restore_files);
@@ -357,9 +355,6 @@ impl IdeSurface {
     }
 
     fn refresh_tree_for_watch_path(&mut self, path: String, cx: &mut Context<Self>) {
-        if !self.mount.is_visible() {
-            return;
-        }
         let Some(node_id) = self.node_id.clone() else {
             return;
         };
@@ -376,15 +371,6 @@ impl IdeSurface {
     }
 
     fn start_agent_watch_if_ready(&mut self, cx: &mut Context<Self>) {
-        if !self.mount.is_visible() {
-            self.stop_agent_watch(cx);
-            return;
-        }
-        if self.agent_watch_stop_in_flight {
-            // Re-evaluate readiness after the retained stop operation finishes.
-            self.agent_watch_restart_requested = true;
-            return;
-        }
         if !matches!(
             self.fs.status_for_node(self.node_id.as_deref()),
             AgentStatus::Ready { .. }
@@ -402,24 +388,20 @@ impl IdeSurface {
         if self.watched_root_path.as_deref() == Some(root_path.as_str()) {
             return;
         }
-        if self.watched_root_path.is_some() {
-            self.stop_agent_watch_with_restart(true, cx);
-            return;
-        }
+
+        self.stop_agent_watch(cx);
         self.agent_watch_generation = self.agent_watch_generation.wrapping_add(1);
         let generation = self.agent_watch_generation;
         self.watched_root_path = Some(root_path.clone());
         let fs = self.fs.clone();
         let backend_runtime = self.backend_runtime.clone();
-        let watch_backend_task = backend_runtime.spawn({
-            let node_id = node_id.clone();
-            let root_path = root_path.clone();
-            async move { fs.watch_directory(node_id, root_path, Vec::new()).await }
-        });
-        self.agent_watch_backend_abort = Some(watch_backend_task.abort_handle());
-        self.agent_watch_task = Some(cx.spawn(async move |weak, cx| {
-            let watch = await_ide_backend(watch_backend_task)
-                .await;
+        cx.spawn(async move |weak, cx| {
+            let watch = await_ide_backend(backend_runtime.spawn({
+                let node_id = node_id.clone();
+                let root_path = root_path.clone();
+                async move { fs.watch_directory(node_id, root_path, Vec::new()).await }
+            }))
+            .await;
 
             match watch {
                 Ok(Some(mut subscription)) => {
@@ -427,9 +409,7 @@ impl IdeSurface {
                         let refresh_path = watch_refresh_path(&root_path, &event.path);
                         let should_continue = weak
                             .update(cx, |this, cx| {
-                                if this.agent_watch_generation != generation
-                                    || !this.mount.is_visible()
-                                {
+                                if this.agent_watch_generation != generation {
                                     return false;
                                 }
                                 this.clear_search_cache();
@@ -448,54 +428,32 @@ impl IdeSurface {
             let _ = weak.update(cx, |this, cx| {
                 if this.agent_watch_generation == generation
                     && this.watched_root_path.as_deref() == Some(root_path.as_str())
-                    && this.mount.is_visible()
                 {
-                    this.agent_watch_backend_abort = None;
                     this.schedule_agent_watch_retry(cx);
                 }
             });
-        }));
+        })
+        .detach();
     }
 
     fn schedule_agent_watch_retry(&mut self, cx: &mut Context<Self>) {
-        if !self.mount.is_visible() {
-            return;
-        }
         let generation = self.agent_watch_generation;
-        self.agent_watch_retry_task = Some(cx.spawn(async move |weak, cx| {
+        cx.spawn(async move |weak, cx| {
             cx.background_executor()
                 .timer(Duration::from_secs(IDE_AGENT_WATCH_RETRY_SECS))
                 .await;
             let _ = weak.update(cx, |this, cx| {
-                if this.agent_watch_generation == generation && this.mount.is_visible() {
+                if this.agent_watch_generation == generation {
                     this.watched_root_path = None;
                     this.start_agent_watch_if_ready(cx);
                 }
             });
-        }));
+        })
+        .detach();
     }
 
     fn stop_agent_watch(&mut self, cx: &mut Context<Self>) {
-        self.stop_agent_watch_with_restart(false, cx);
-    }
-
-    fn stop_agent_watch_with_restart(
-        &mut self,
-        restart_after_stop: bool,
-        cx: &mut Context<Self>,
-    ) {
         self.agent_watch_generation = self.agent_watch_generation.wrapping_add(1);
-        self.agent_watch_task = None;
-        self.agent_watch_retry_task = None;
-        if let Some(abort_handle) = self.agent_watch_backend_abort.take() {
-            // The Tokio acquisition can otherwise outlive the cancelled GPUI
-            // listener and register a consumer after the surface is released.
-            abort_handle.abort();
-        }
-        if self.agent_watch_stop_in_flight {
-            self.agent_watch_restart_requested = restart_after_stop;
-            return;
-        }
         let Some(root_path) = self.watched_root_path.take() else {
             return;
         };
@@ -504,32 +462,12 @@ impl IdeSurface {
         };
         let fs = self.fs.clone();
         let backend_runtime = self.backend_runtime.clone();
-        let release_queue = Arc::new(IdeWatchStopReleaseQueue::default());
-        self.agent_watch_stop_release_queue = Some(release_queue.clone());
-        self.agent_watch_stop_generation = self.agent_watch_stop_generation.wrapping_add(1);
-        let stop_generation = self.agent_watch_stop_generation;
-        self.agent_watch_stop_in_flight = true;
-        self.agent_watch_restart_requested = restart_after_stop;
-        self.agent_watch_stop_task = Some(cx.spawn(async move |weak, cx| {
+        cx.spawn(async move |_weak, _cx| {
             let _ = backend_runtime
-                .spawn(async move {
-                    let _ = fs.stop_watch_directory(node_id, root_path).await;
-                    // Resource release belongs to this backend completion path,
-                    // not the optional GPUI weak update below.
-                    release_queue.finish_stop(&fs);
-                })
+                .spawn(async move { fs.stop_watch_directory(node_id, root_path).await })
                 .await;
-            let _ = weak.update(cx, |this, cx| {
-                if this.agent_watch_stop_generation != stop_generation {
-                    return;
-                }
-                this.agent_watch_stop_in_flight = false;
-                this.agent_watch_stop_release_queue = None;
-                if std::mem::take(&mut this.agent_watch_restart_requested) {
-                    this.start_agent_watch_if_ready(cx);
-                }
-            });
-        }));
+        })
+        .detach();
     }
 
     fn open_project_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {

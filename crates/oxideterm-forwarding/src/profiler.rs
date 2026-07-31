@@ -15,7 +15,7 @@ use oxideterm_ssh::{ConnectionState, ConnectionTransportStatus, SshConnectionHan
 use tokio::{sync::oneshot, task::JoinHandle};
 
 use crate::{
-    DetectedPort, ForwardEvent, ForwardEventDeliverySender, PortDetectionSnapshot,
+    DetectedPort, ForwardEvent, PortDetectionSnapshot,
     detection::{
         PORT_SCAN_MAX_OUTPUT_SIZE, PORT_SCAN_TIMEOUT_SECS, REMOTE_OS_PROBE_TIMEOUT_SECS,
         REMOTE_OS_PROBE_UNIX, REMOTE_OS_PROBE_WINDOWS, RemotePortScanPlatform,
@@ -71,18 +71,6 @@ impl PortDetectionProfiler {
         connection_id: String,
         ssh_connection: SshConnectionHandle,
         event_tx: Sender<ForwardEvent>,
-    ) -> Self {
-        Self::spawn_with_event_delivery(
-            connection_id,
-            ssh_connection,
-            ForwardEventDeliverySender::new(event_tx),
-        )
-    }
-
-    pub fn spawn_with_event_delivery(
-        connection_id: String,
-        ssh_connection: SshConnectionHandle,
-        event_tx: ForwardEventDeliverySender,
     ) -> Self {
         let detected_ports = Arc::new(Mutex::new(Vec::new()));
         let ignored_ports = Arc::new(Mutex::new(HashSet::new()));
@@ -192,7 +180,7 @@ impl Drop for PortDetectionProfiler {
 async fn profiler_loop(
     connection_id: String,
     ssh_connection: SshConnectionHandle,
-    event_tx: ForwardEventDeliverySender,
+    event_tx: Sender<ForwardEvent>,
     detected_ports: Arc<Mutex<Vec<DetectedPort>>>,
     ignored_ports: Arc<Mutex<HashSet<u16>>>,
     lifecycle: Arc<AtomicU8>,

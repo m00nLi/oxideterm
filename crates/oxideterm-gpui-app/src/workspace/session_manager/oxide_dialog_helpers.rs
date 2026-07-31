@@ -301,23 +301,6 @@ pub(super) fn import_preview_selectable_names(preview: &ImportPreview) -> HashSe
     names
 }
 
-pub(super) fn import_preview_selectable_name_count(preview: &ImportPreview) -> usize {
-    // Counting borrowed names avoids rebuilding an owned selection set during
-    // every dialog render; owned names are created only when Select All runs.
-    let mut names = HashSet::new();
-    names.extend(preview.unchanged.iter().map(String::as_str));
-    names.extend(
-        preview
-            .will_rename
-            .iter()
-            .map(|(original, _)| original.as_str()),
-    );
-    names.extend(preview.will_skip.iter().map(String::as_str));
-    names.extend(preview.will_replace.iter().map(String::as_str));
-    names.extend(preview.will_merge.iter().map(String::as_str));
-    names.len()
-}
-
 pub(super) fn oxide_settings_field_label(field: &str, i18n: &oxideterm_i18n::I18n) -> String {
     // These mappings mirror Tauri's OxideImportModal field formatter.
     match field {
@@ -349,7 +332,6 @@ pub(super) fn oxide_settings_field_label(field: &str, i18n: &oxideterm_i18n::I18
         "osc52ClipboardRead" => i18n.t("settings_view.terminal.osc52_clipboard_read"),
         "copyOnSelect" => i18n.t("settings_view.terminal.copy_on_select"),
         "middleClickPaste" => i18n.t("settings_view.terminal.middle_click_paste"),
-        "rightClickPaste" => i18n.t("settings_view.terminal.right_click_paste"),
         "openLinksWithModifier" => i18n.t("settings_view.terminal.open_links_with_modifier"),
         "detectFilePathsAsLinks" => i18n.t("settings_view.terminal.detect_file_paths_as_links"),
         "selectionRequiresShift" => i18n.t("settings_view.terminal.selection_requires_shift"),

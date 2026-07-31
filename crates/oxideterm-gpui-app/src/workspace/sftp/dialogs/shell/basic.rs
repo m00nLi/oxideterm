@@ -106,14 +106,11 @@ impl WorkspaceApp {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _event, _window, cx| {
-                                    this.sftp_view.update(cx, |sftp_view, cx| {
-                                        // Drive selection is committed navigation, so refresh the
-                                        // file list and reset selection state through one path.
-                                        sftp_view.apply_local_path(path.clone());
-                                        cx.notify();
-                                    });
-                                    this.close_sftp_dialog(cx);
+                                    this.sftp_view.local_path = path.clone();
+                                    this.sftp_view.local_path_input = path.clone();
+                                    this.close_sftp_dialog();
                                     cx.stop_propagation();
+                                    cx.notify();
                                 }),
                             )
                     })),
@@ -125,7 +122,6 @@ impl WorkspaceApp {
         &self,
         files: Vec<String>,
         _has_background: bool,
-        cx: &App,
     ) -> AnyElement {
         let theme = self.tokens.ui;
         div()
@@ -135,7 +131,9 @@ impl WorkspaceApp {
                 div()
                     .id("sftp-drives-scroll")
                     .max_h(px(128.0))
-                    .selectable_overflow_y_scroll(&self.sftp_view.read(cx).drives_scroll)
+                    .selectable_overflow_y_scroll(
+                        &self.selectable_text_scroll_handle("sftp-drives-scroll"),
+                    )
                     .rounded(px(self.tokens.radii.sm))
                     .bg(rgb(theme.bg_sunken))
                     .p(px(8.0))
@@ -152,13 +150,7 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.tokens.ui;
-        let (focused, dialog_value) = {
-            let sftp_view = self.sftp_view.read(cx);
-            (
-                sftp_view.focused_input == Some(SftpInput::DialogValue),
-                sftp_view.dialog_value.clone(),
-            )
-        };
+        let focused = self.sftp_view.focused_input == Some(SftpInput::DialogValue);
         div()
             .px(px(16.0))
             .py(px(12.0))
@@ -180,7 +172,7 @@ impl WorkspaceApp {
                     .child(self.render_sftp_inline_text(
                         SftpInput::DialogValue,
                         None,
-                        &dialog_value,
+                        &self.sftp_view.dialog_value,
                         placeholder_key,
                         focused,
                         cx,
@@ -188,11 +180,9 @@ impl WorkspaceApp {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _event, _window, cx| {
-                            this.sftp_view.update(cx, |sftp_view, cx| {
-                                sftp_view.focused_input = Some(SftpInput::DialogValue);
-                                cx.notify();
-                            });
+                            this.sftp_view.focused_input = Some(SftpInput::DialogValue);
                             cx.stop_propagation();
+                            cx.notify();
                         }),
                     ),
             )

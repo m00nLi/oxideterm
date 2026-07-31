@@ -1,24 +1,4 @@
 impl AiOrchestratorRuntimeSnapshot {
-    fn background_result_projection() -> Self {
-        // Background MCP execution needs only the shared result formatter. An
-        // empty projection prevents raw application identifiers entering the loop.
-        Self {
-            targets: Vec::new(),
-            runtime_handles: HashMap::new(),
-            active_tab: None,
-            active_node: None,
-            active_session_id: None,
-            active_tab_id: None,
-            active_node_id: None,
-            memory: serde_json::Value::Null,
-            health_state: serde_json::Value::Null,
-            transfers_state: serde_json::Value::Null,
-            model_visible_settings: serde_json::Value::Null,
-        }
-    }
-}
-
-impl AiModelBackendServices {
     pub(in crate::workspace) async fn build_rag_system_prompt(
         &self,
         query: Option<&str>,
@@ -85,37 +65,40 @@ impl AiModelBackendServices {
         let key_decision = oxideterm_ai::resolve_chat_embedding_api_key(
             &provider.id,
             config.provider_id.as_deref(),
-            config.api_key.as_ref(),
+            config.api_key.clone(),
             oxideterm_ai::ai_embedding_requires_api_key(&provider),
             resolved.mode,
         );
-        let loaded_api_key = match &key_decision {
-            oxideterm_ai::AiChatEmbeddingApiKeyDecision::LoadProviderKey(provider_id) => self
-                .ai_key_store
-                .get_provider_key(provider_id)
-                .ok()
-                .flatten()
-                .filter(|key| !key.trim().is_empty())
-                .map(oxideterm_ai::SharedAiProviderKey::new),
-            _ => None,
-        };
         let api_key = match key_decision {
             oxideterm_ai::AiChatEmbeddingApiKeyDecision::NoKey => None,
             oxideterm_ai::AiChatEmbeddingApiKeyDecision::UseKey(key) => Some(key),
-            oxideterm_ai::AiChatEmbeddingApiKeyDecision::LoadProviderKey(_) => {
-                loaded_api_key.as_ref()
-            }
+            oxideterm_ai::AiChatEmbeddingApiKeyDecision::LoadProviderKey(provider_id) => self
+                .ai_key_store
+                .get_provider_key(&provider_id)
+                .ok()
+                .flatten()
+                .filter(|key| !key.trim().is_empty()),
             oxideterm_ai::AiChatEmbeddingApiKeyDecision::Skip => None,
         };
         if oxideterm_ai::ai_embedding_requires_api_key(&provider) && api_key.is_none() {
             return None;
         }
-        oxideterm_ai::embed_query_text(&provider, api_key, &resolved.model, query)
+        oxideterm_ai::embed_texts(&provider, api_key, &resolved.model, vec![query.to_string()])
             .await
             .ok()
             .and_then(|vectors| vectors.into_iter().next())
     }
 
+    pub(in crate::workspace) fn target_kind_for_args(
+        &self,
+        args: &serde_json::Value,
+    ) -> Option<String> {
+        let target_id = args.get("target_id").and_then(serde_json::Value::as_str)?;
+        self.targets
+            .iter()
+            .find(|target| target.id == target_id)
+            .map(|target| target.kind.clone())
+    }
 
     pub(in crate::workspace) async fn execute_tool(
         &self,
@@ -124,27 +107,49 @@ impl AiModelBackendServices {
         args: serde_json::Value,
     ) -> AiExecutedToolResult {
         let started = std::time::Instant::now();
-        let snapshot = AiOrchestratorRuntimeSnapshot::background_result_projection();
         let result = match tool_name.as_str() {
-            "list_mcp_resources" => self.list_mcp_resources(&snapshot),
-            "read_mcp_resource" => self.read_mcp_resource(&snapshot, &args).await,
-            name if oxideterm_ai::is_orchestrator_tool_name(name) => snapshot.fail(
-                "Application tool requires the current runtime broker.",
-                "runtime_broker_required",
-                "The tool cannot run from a frozen background snapshot.",
-                "read",
-            ),
-            _ if oxideterm_ai::is_mcp_tool_name(&tool_name) => {
-                self.call_mcp_tool(&snapshot, &tool_name, args).await
+            "list_mcp_resources" => self.list_mcp_resources(),
+            "read_mcp_resource" => self.read_mcp_resource(&args).await,
+            "list_targets" => self.list_targets(&args),
+            "select_target" => self.select_target(&args),
+            "run_command" => self.run_command(&args).await,
+            "observe_terminal" => self.observe_terminal(&args),
+            "read_resource" => self.read_resource(&args).await,
+            "write_resource" => self.write_resource(&args).await,
+            "transfer_resource" => self.transfer_resource(&args).await,
+            "get_state" => self.get_state(&args),
+            "recall_preferences" => {
+                let memory_content = ai_memory_trimmed_content(&self.memory);
+                self.ok(
+                    if memory_content.is_empty() {
+                        "No saved preferences."
+                    } else {
+                        "Preferences recalled."
+                    },
+                    if memory_content.is_empty() {
+                        "No saved preferences.".to_string()
+                    } else {
+                        memory_content.to_string()
+                    },
+                    self.memory.clone(),
+                    "read",
+                )
             }
-            _ => snapshot.fail(
+            "connect_target"
+            | "send_terminal_input"
+            | "open_app_surface"
+            | "remember_preference" => self.ui_thread_required_action(&tool_name, &args),
+            _ if oxideterm_ai::is_mcp_tool_name(&tool_name) => {
+                self.call_mcp_tool(&tool_name, args).await
+            }
+            _ => self.fail(
                 "Unknown orchestrator tool.",
                 "unknown_tool",
                 format!("{tool_name} is not an OxideSens task tool."),
                 "read",
             ),
         };
-        snapshot.to_executed_tool_result(
+        self.to_executed_tool_result(
             tool_call_id,
             tool_name,
             result,
@@ -152,13 +157,10 @@ impl AiModelBackendServices {
         )
     }
 
-    pub(in crate::workspace) fn list_mcp_resources(
-        &self,
-        snapshot: &AiOrchestratorRuntimeSnapshot,
-    ) -> AiActionResultLite {
+    pub(in crate::workspace) fn list_mcp_resources(&self) -> AiActionResultLite {
         let resources = self.ai_mcp_registry.resources();
         if resources.is_empty() {
-            return snapshot.ok(
+            return self.ok(
                 "No MCP resources available.",
                 "No MCP resources available. Either no MCP servers are connected, or none expose resources.",
                 serde_json::json!([]),
@@ -198,7 +200,7 @@ impl AiModelBackendServices {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        snapshot.ok(
+        self.ok(
             format!(
                 "Found {} MCP resource{}.",
                 resources.len(),
@@ -212,7 +214,6 @@ impl AiModelBackendServices {
 
     pub(in crate::workspace) async fn read_mcp_resource(
         &self,
-        snapshot: &AiOrchestratorRuntimeSnapshot,
         args: &serde_json::Value,
     ) -> AiActionResultLite {
         let server_id = args
@@ -224,7 +225,7 @@ impl AiModelBackendServices {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
         if server_id.is_empty() || uri.is_empty() {
-            return snapshot.fail(
+            return self.fail(
                 "MCP resource arguments are required.",
                 "missing_mcp_resource_args",
                 "Both server_id and uri are required.",
@@ -234,7 +235,7 @@ impl AiModelBackendServices {
         match self.ai_mcp_registry.read_resource(server_id, uri).await {
             Ok(content) => {
                 let (output, truncated) = oxideterm_ai::mcp_resource_output(&content);
-                snapshot.ok(
+                self.ok(
                     format!("Read MCP resource {uri}."),
                     output,
                     serde_json::json!(content),
@@ -242,7 +243,7 @@ impl AiModelBackendServices {
                 )
                 .with_verified(!truncated)
             }
-            Err(error) => snapshot.fail(
+            Err(error) => self.fail(
                 "MCP resource read failed.",
                 "mcp_resource_read_failed",
                 error.to_string(),
@@ -253,7 +254,6 @@ impl AiModelBackendServices {
 
     pub(in crate::workspace) async fn call_mcp_tool(
         &self,
-        snapshot: &AiOrchestratorRuntimeSnapshot,
         tool_name: &str,
         args: serde_json::Value,
     ) -> AiActionResultLite {
@@ -265,7 +265,7 @@ impl AiModelBackendServices {
             Ok(result) => {
                 let (success, output, truncated) = oxideterm_ai::mcp_tool_output(&result);
                 if success {
-                    snapshot.ok(
+                    self.ok(
                         format!("Executed MCP tool {tool_name}."),
                         output,
                         serde_json::json!(result),
@@ -273,7 +273,7 @@ impl AiModelBackendServices {
                     )
                     .with_verified(!truncated)
                 } else {
-                    snapshot.fail(
+                    self.fail(
                         "MCP tool returned an error.",
                         "mcp_tool_error",
                         if output.is_empty() {
@@ -285,7 +285,7 @@ impl AiModelBackendServices {
                     )
                 }
             }
-            Err(error) => snapshot.fail(
+            Err(error) => self.fail(
                 "MCP tool execution failed.",
                 "mcp_tool_execution_failed",
                 error.to_string(),
@@ -293,9 +293,7 @@ impl AiModelBackendServices {
             ),
         }
     }
-}
 
-impl AiOrchestratorRuntimeSnapshot {
     pub(in crate::workspace) fn list_targets(
         &self,
         args: &serde_json::Value,
@@ -312,44 +310,30 @@ impl AiOrchestratorRuntimeSnapshot {
             .filter(|target| kind == "all" || target.kind == kind)
             .filter(|target| target_in_ai_view(target, view))
             .filter(|target| target_matches_ai_query(target, &query))
-            .take(AI_TARGET_DISCOVERY_LIMIT)
             .cloned()
             .collect::<Vec<_>>();
-        let model_targets = targets
-            .iter()
-            .filter_map(|target| self.model_target_json(target))
-            .collect::<Vec<_>>();
-        let output = model_targets
+        let output = targets
             .iter()
             .map(|target| {
-                let label = target
-                    .get("label")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("Target");
-                let kind = target
-                    .get("kind")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("unknown");
-                let state = target
-                    .get("state")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("available");
-                format!("{label} [{kind}, {state}]")
+                format!(
+                    "{} — {} [{}, {}]",
+                    target.id, target.label, target.kind, target.state
+                )
             })
             .collect::<Vec<_>>()
             .join("\n");
         self.ok(
             format!(
                 "Found {} target{}.",
-                model_targets.len(),
-                if model_targets.len() == 1 { "" } else { "s" }
+                targets.len(),
+                if targets.len() == 1 { "" } else { "s" }
             ),
             if output.is_empty() {
                 "No targets found.".to_string()
             } else {
                 output
             },
-            serde_json::Value::Array(model_targets),
+            serde_json::json!(targets.iter().map(target_json).collect::<Vec<_>>()),
             "read",
         )
         .with_targets(targets)
@@ -410,7 +394,6 @@ impl AiOrchestratorRuntimeSnapshot {
             // values are ignored instead of producing an empty candidate set.
             .filter(|target| select_kind.is_none_or(|kind| kind == "all" || target.kind == kind))
             .filter(|target| target_matches_ai_query(target, &lowered))
-            .take(AI_TARGET_DISCOVERY_LIMIT)
             .cloned()
             .collect::<Vec<_>>();
         match matches.as_slice() {
@@ -435,24 +418,15 @@ impl AiOrchestratorRuntimeSnapshot {
                 )
                 .with_next_actions(next_actions)
             }
-            [target] => {
-                let Some(model_target) = self.model_target_json(target) else {
-                    return self.fail(
-                        "Target is no longer available.",
-                        "runtime_owner_closed",
-                        "Rediscover the current terminal target before retrying.",
-                        "read",
-                    );
-                };
-                self.ok(
+            [target] => self
+                .ok(
                     format!("Selected target: {}", target.label),
-                    serde_json::to_string_pretty(&model_target)
-                        .unwrap_or_else(|_| target.label.clone()),
-                    model_target,
+                    serde_json::to_string_pretty(&target_json(target))
+                        .unwrap_or_else(|_| target.id.clone()),
+                    target_json(target),
                     "read",
                 )
-                .with_target(target.clone())
-            }
+                .with_target(target.clone()),
             _ => {
                 let mut retry_args = serde_json::Map::from_iter([
                     ("query".to_string(), serde_json::json!(query)),
@@ -469,8 +443,9 @@ impl AiOrchestratorRuntimeSnapshot {
                         .enumerate()
                         .map(|(index, target)| {
                             format!(
-                                "{}. {} [{}]",
+                                "{}. {} — {} [{}]",
                                 index + 1,
+                                target.id,
                                 target.label,
                                 target.kind
                             )
@@ -483,67 +458,297 @@ impl AiOrchestratorRuntimeSnapshot {
                 .with_next_actions(vec![serde_json::json!({
                     "action": "select_target",
                     "args": retry_args,
-                    "reason": "Retry with a more specific label or host, or add a target kind filter."
+                    "reason": "Retry with a more specific label, host, or target id."
                 })])
             }
         }
     }
 
-
-
-
-
-
-    /// Executes a v2 live read after the UI broker resolved an opaque owner
-    /// handle to this exact node. No target identifier crosses this boundary.
-    pub(in crate::workspace) async fn read_live_resource(
+    pub(in crate::workspace) async fn run_command(
         &self,
-        services: &AiLiveToolServices,
-        node_id: NodeId,
-        sftp_owner: Option<crate::workspace::ai_runtime_context::AiSftpRuntimeOwner>,
         args: &serde_json::Value,
-        ide_file_system: Option<oxideterm_ide_fs::NodeAgentIdeFileSystem>,
-        post_user_approval: bool,
     ) -> AiActionResultLite {
-        let resource = args
-            .get("resource")
+        let Some(target_id) = args.get("target_id").and_then(serde_json::Value::as_str) else {
+            return self.fail_missing_target_id("execute");
+        };
+        let timeout_secs = args
+            .get("timeout_secs")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(30);
+        let Some(target) = self.targets.iter().find(|target| target.id == target_id) else {
+            return self.fail_target_not_found(target_id, "execute");
+        };
+        if target_requires_live_state(target) && target.state != "connected" {
+            return self
+                .fail(
+                    "Target is not ready.",
+                    "target_not_ready",
+                    format!(
+                        "{target_id} is {}; run_command requires a connected target.",
+                        target.state
+                    ),
+                    "execute",
+                )
+                .with_target(target.clone())
+                .with_next_actions(recovery_actions_for_target(target));
+        }
+        let Some(command) = args
+            .get("command")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
+            .filter(|command| !command.trim().is_empty())
+        else {
+            // Tauri resolves the target before runCommandOnTarget validates the
+            // command, so target recovery hints win when both inputs are bad.
+            return self.fail(
+                "Command is required.",
+                "missing_command",
+                "run_command requires a command.",
+                "execute",
+            );
+        };
+
+        match target.kind.as_str() {
+            "local-shell" => {
+                let cwd = args.get("cwd").and_then(serde_json::Value::as_str);
+                let dangerous_command_approved = args
+                    .get("dangerousCommandApproved")
+                    .or_else(|| args.get("dangerous_command_approved"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                // Tauri relies on the tool schema for timeout bounds and passes
+                // the requested value through to local command execution.
+                run_local_ai_command(command, cwd, timeout_secs, dangerous_command_approved, target)
+                    .await
+            }
+            "ssh-node" => {
+                // SSH commands are visible terminal side effects in the native app.
+                // If this async executor is reached, the UI-thread dispatcher was bypassed.
+                self.fail(
+                    "SSH command requires the native UI executor.",
+                    "ui_thread_required",
+                    "The chat tool loop must dispatch ssh-node run_command through the native UI executor so the command is shown in a visible terminal.",
+                    "interactive",
+                ).with_target(target.clone())
+            }
+            "terminal-session" => self.fail(
+                "Terminal command requires the native UI executor.",
+                "ui_thread_required",
+                "The chat tool loop must dispatch terminal-session run_command through the native UI executor.",
+                "interactive",
+            ).with_target(target.clone()),
+            "saved-connection" => self.fail(
+                "Connect the saved SSH target before running commands.",
+                "saved_connection_not_connected",
+                "Saved connection targets are not live shells. Call connect_target first, then run_command on the returned ssh-node or terminal-session target.",
+                "execute",
+            ).with_target(target.clone()),
+            _ => self.fail("Target cannot run commands.", "unsupported_command_target", format!("{} does not support command execution.", target.kind), "execute").with_target(target.clone()),
+        }
+    }
+
+    pub(in crate::workspace) fn observe_terminal(
+        &self,
+        args: &serde_json::Value,
+    ) -> AiActionResultLite {
+        let Some(target_id) = args.get("target_id").and_then(serde_json::Value::as_str) else {
+            return self.fail_missing_target_id("read");
+        };
+        let max_chars = args
+            .get("max_chars")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(4000) as usize;
+        let Some(target) = self.targets.iter().find(|target| target.id == target_id) else {
+            return self.fail_target_not_found(target_id, "read");
+        };
+        let Some(session_id) = target.refs.get("sessionId") else {
+            return self
+                .fail(
+                    "Terminal target is missing sessionId.",
+                    "missing_session_id",
+                    "observe_terminal requires a terminal-session target.",
+                    "read",
+                )
+                .with_target(target.clone());
+        };
+        let observed_target = self
+            .targets
+            .iter()
+            .find(|candidate| {
+                candidate.kind == "terminal-session"
+                    && candidate.refs.get("sessionId") == Some(session_id)
+            })
+            .unwrap_or(target);
+        if observed_target.terminal_buffer.is_none() {
+            // Tauri resolves the pane from sessionId, so a target with sessionId
+            // but no visible terminal snapshot maps to the pane-missing branch.
+            return self
+                .fail(
+                    "Terminal pane is not registered.",
+                    "terminal_pane_missing",
+                    "No visible pane is registered for this terminal session.",
+                    "read",
+                )
+                .with_target(target.clone());
+        }
+        let output = observed_target.terminal_buffer.clone().unwrap_or_default();
+        let output = trim_tail_chars(&output, max_chars);
+        self.ok(
+            "Terminal observed.",
+            output.clone(),
+            serde_json::json!({
+                "buffer": output,
+                "screen": observed_target.terminal_screen.clone().unwrap_or_else(|| serde_json::json!({ "lines": [] })),
+                "readiness": ai_terminal_readiness_json(observed_target),
+                "waitingForInput": looks_waiting_for_input(observed_target.terminal_buffer.as_deref().unwrap_or_default()),
+            }),
+            "read",
+        ).with_target(target.clone())
+    }
+
+    pub(in crate::workspace) async fn read_resource(
+        &self,
+        args: &serde_json::Value,
+    ) -> AiActionResultLite {
+        let resource =
+            normalized_ai_resource_kind(args.get("resource").and_then(serde_json::Value::as_str));
+        let Some(target_id) = args.get("target_id").and_then(serde_json::Value::as_str) else {
+            return self.fail_missing_target_id("read");
+        };
+        let Some(target) = self
+            .targets
+            .iter()
+            .find(|target| target.id == target_id)
+            .cloned()
+        else {
+            return self.fail_target_not_found(target_id, "read");
+        };
+        if target_requires_live_state(&target) && target.state != "connected" {
+            return self
+                .fail(
+                    "Target is not ready.",
+                    "target_not_ready",
+                    format!(
+                        "{target_id} is {}; read_resource requires a connected target.",
+                        target.state
+                    ),
+                    "read",
+                )
+                .with_target(target.clone())
+                .with_next_actions(recovery_actions_for_target(&target));
+        }
+        if !matches!(
+            resource,
+            "settings" | "file" | "ide" | "directory" | "sftp" | "rag"
+        ) {
+            return self
+                .fail(
+                    "Unsupported resource read.",
+                    "unsupported_resource",
+                    format!("Cannot read unsupported resource \"{resource}\"."),
+                    "read",
+                )
+                .with_target(target);
+        }
+        if resource == "settings" {
+            let section = args.get("section").and_then(serde_json::Value::as_str);
+            let data = section
+                .and_then(|section| self.settings_state.get(section).cloned())
+                .unwrap_or_else(|| self.settings_state.clone());
+            return self
+                .ok(
+                    section
+                        .map(|section| format!("Read settings section {section}."))
+                        .unwrap_or_else(|| "Read settings.".to_string()),
+                    serde_json::to_string_pretty(&data).unwrap_or_default(),
+                    data,
+                    "read",
+                )
+                .with_target(target);
+        }
+        if target.kind == "rag-index" || resource == "rag" {
+            let query = ai_rag_query_arg(args);
+            let results = oxideterm_ai::rag_search(
+                &self.rag_store,
+                oxideterm_ai::RagSearchRequest {
+                    query: query.to_string(),
+                    collection_ids: Vec::new(),
+                    query_vector: None,
+                    top_k: Some(8),
+                },
+            );
+            return match results {
+                Ok(results) => self
+                    .ok(
+                        format!("Found {} knowledge results.", results.len()),
+                        serde_json::to_string_pretty(&results).unwrap_or_default(),
+                        serde_json::to_value(results).unwrap_or_else(|_| serde_json::json!([])),
+                        "read",
+                    )
+                    .with_target(target),
+                Err(error) => self
+                    .fail(
+                        "Knowledge search failed.",
+                        "rag_search_error",
+                        error,
+                        "read",
+                    )
+                    .with_target(target),
+            };
+        }
+        if ai_target_is_serial_terminal(&target) {
+            return self.fail(
+                "Serial terminals do not expose SSH resources.",
+                "unsupported_serial_resource_target",
+                "Serial targets only support terminal observe/send/wait. They do not provide SFTP, remote files, or port forwarding.",
+                "read",
+            ).with_target(target);
+        }
+        let node_id = target
+            .refs
+            .get("nodeId")
+            .map(|value| NodeId::new(value.clone()));
+        if node_id.is_none() && target.kind != "sftp-session" {
+            return self
+                .fail(
+                    "Target cannot read resources.",
+                    "unsupported_read_target",
+                    format!("{} does not expose readable resources.", target.kind),
+                    "read",
+                )
+                .with_target(target);
+        };
         let Some(path) = args
             .get("path")
             .and_then(serde_json::Value::as_str)
             .filter(|value| !value.trim().is_empty())
         else {
-            return self.fail(
-                "Resource path is required.",
-                "missing_path",
-                "read_resource requires path for file or directory resources.",
-                "read",
-            );
+            return self
+                .fail(
+                    "Resource path is required.",
+                    "missing_path",
+                    "read_resource requires path for file or directory resources.",
+                    "read",
+                )
+                .with_target(target);
         };
 
-        if resource == "ide" {
-            let Some(ide_file_system) = ide_file_system else {
-                return self.fail(
-                    "IDE capability is unavailable.",
-                    "runtime_capability_unavailable",
-                    "Rediscover the current IDE workspace before reading a file.",
-                    "read",
-                );
-            };
-            if let Ok(result) = ide_file_system.node_agent_read_file(node_id.0.clone(), path).await {
-                let data = serde_json::json!({
-                    "path": path,
-                    "content": result.content,
-                    "hash": result.hash,
-                    "contentHash": result.hash,
-                    "size": result.size,
-                    "mtime": result.mtime,
-                    "encoding": result.encoding,
-                    "source": "ide-surface-agent",
-                });
-                return self.ok(
-                    format!("Read IDE file {path}."),
+        if matches!(resource, "file" | "ide")
+            && let Some(node_id) = node_id.as_ref()
+            && let Ok(result) = self.agent_fs.node_agent_read_file(&node_id.0, path).await
+        {
+            let data = serde_json::json!({
+                "path": path,
+                "content": result.content,
+                "hash": result.hash,
+                "contentHash": result.hash,
+                "size": result.size,
+                "mtime": result.mtime,
+                "encoding": result.encoding,
+                "source": "node-agent",
+            });
+            return self
+                .ok(
+                    format!("Read remote file {path}."),
                     truncate_for_model(
                         data.get("content")
                             .and_then(serde_json::Value::as_str)
@@ -553,48 +758,57 @@ impl AiOrchestratorRuntimeSnapshot {
                     ),
                     data,
                     "read",
-                );
-            }
-            return self.fail(
-                "IDE file read failed.",
-                "resource_disconnected",
-                "The current IDE file owner is unavailable. Rediscover it before retrying.",
-                "read",
-            );
+                )
+                .with_target(target.clone());
         }
 
-        let Some(sftp_owner) = sftp_owner else {
-            return self.fail(
-                "SFTP capability is unavailable.",
-                "runtime_capability_unavailable",
-                "Rediscover the current SFTP session before reading.",
-                "read",
-            );
-        };
-        let shared = match services
-            .node_router
-            .acquire_existing_sftp_generation(
-                &sftp_owner.node_id,
-                &sftp_owner.connection_id,
-                sftp_owner.session_generation,
-            )
-            .await
-        {
-            Ok(shared) => shared,
-            Err(_) => {
-                return self.fail(
-                    "SFTP session changed before the read.",
-                    if post_user_approval {
-                        "runtime_state_changed_after_approval"
-                    } else {
-                        "runtime_owner_replaced"
-                    },
-                    ai_runtime_validation_recovery_message(post_user_approval),
+        if matches!(resource, "file" | "ide") && node_id.is_none() {
+            return self
+                .fail(
+                    "Unsupported resource read.",
+                    "unsupported_resource",
+                    format!("Cannot read resource \"{resource}\" from {}.", target.kind),
                     "read",
-                );
+                )
+                .with_target(target);
+        }
+
+        if matches!(resource, "directory" | "sftp") && node_id.is_none() {
+            let data = serde_json::json!([]);
+            return self
+                .ok(
+                    "Listed 0 entries.",
+                    serde_json::to_string_pretty(&data).unwrap_or_default(),
+                    data,
+                    "read",
+                )
+                .with_target(target);
+        }
+
+        let Some(node_id) = node_id else {
+            return self
+                .fail(
+                    "Target cannot read resources.",
+                    "unsupported_read_target",
+                    format!("{} does not expose readable resources.", target.kind),
+                    "read",
+                )
+                .with_target(target);
+        };
+        let shared = match self.node_router.acquire_sftp(&node_id).await {
+            Ok(shared) => shared,
+            Err(error) => {
+                return self
+                    .fail(
+                        "Resource read failed.",
+                        "resource_read_failed",
+                        error.to_string(),
+                        "read",
+                    )
+                    .with_target(target);
             }
         };
-        let result = {
+        let result = async {
             let sftp = shared.lock().await;
             if matches!(resource, "directory" | "sftp") {
                 sftp.list_dir(
@@ -608,9 +822,15 @@ impl AiOrchestratorRuntimeSnapshot {
                 .await
                 .map(|entries| serde_json::json!(entries))
             } else {
-                sftp.preview(path).await.map(|preview| serde_json::json!(preview))
+                // Tauri falls back from node-agent reads to nodeSftpPreview,
+                // so the model sees preview-shaped data instead of full file
+                // contents when the agent path is unavailable.
+                sftp.preview(path)
+                    .await
+                    .map(|preview| serde_json::json!(preview))
             }
-        };
+        }
+        .await;
         match result {
             Ok(data) => {
                 let output = truncate_for_model(
@@ -619,7 +839,10 @@ impl AiOrchestratorRuntimeSnapshot {
                 );
                 self.ok(
                     if matches!(resource, "directory" | "sftp") {
-                        format!("Listed {} entries.", data.as_array().map(Vec::len).unwrap_or(0))
+                        format!(
+                            "Listed {} entries.",
+                            data.as_array().map(Vec::len).unwrap_or(0)
+                        )
                     } else {
                         format!("Read remote file preview {path}.")
                     },
@@ -627,67 +850,202 @@ impl AiOrchestratorRuntimeSnapshot {
                     data,
                     "read",
                 )
+                .with_target(target)
             }
             Err(error) if error.is_channel_recoverable() => {
-                // Rebuild may prepare a future owner, but this authorized call
-                // must fail instead of transparently switching generations.
-                let _ = services
+                // Tauri wraps node_sftp_list_dir/node_sftp_preview in
+                // sftp_with_retry!, so AI read_resource must rebuild a stale
+                // shared SFTP channel once before exposing a read failure.
+                let rebuilt = match self
                     .node_router
-                    .invalidate_and_reacquire_sftp(&sftp_owner.node_id)
-                    .await;
-                self.fail(
-                    "SFTP session changed during the read.",
-                    if post_user_approval {
-                        "runtime_state_changed_after_approval"
+                    .invalidate_and_reacquire_sftp(&node_id)
+                    .await
+                {
+                    Ok(shared) => shared,
+                    Err(route_error) => {
+                        return self
+                            .fail(
+                                "Resource read failed.",
+                                "resource_read_failed",
+                                route_error.to_string(),
+                                "read",
+                            )
+                            .with_target(target);
+                    }
+                };
+                let retry = async {
+                    let sftp = rebuilt.lock().await;
+                    if matches!(resource, "directory" | "sftp") {
+                        sftp.list_dir(
+                            path,
+                            Some(oxideterm_sftp::ListFilter {
+                                show_hidden: true,
+                                pattern: None,
+                                sort: oxideterm_sftp::SortOrder::Name,
+                            }),
+                        )
+                        .await
+                        .map(|entries| serde_json::json!(entries))
                     } else {
-                        "resource_disconnected"
-                    },
-                    ai_runtime_validation_recovery_message(post_user_approval),
+                        sftp.preview(path)
+                            .await
+                            .map(|preview| serde_json::json!(preview))
+                    }
+                }
+                .await;
+                match retry {
+                    Ok(data) => {
+                        let output = truncate_for_model(
+                            serde_json::to_string_pretty(&data).unwrap_or_default(),
+                            12_000,
+                        );
+                        self.ok(
+                            if matches!(resource, "directory" | "sftp") {
+                                format!(
+                                    "Listed {} entries.",
+                                    data.as_array().map(Vec::len).unwrap_or(0)
+                                )
+                            } else {
+                                format!("Read remote file preview {path}.")
+                            },
+                            output,
+                            data,
+                            "read",
+                        )
+                        .with_target(target)
+                    }
+                    Err(retry_error) => self
+                        .fail(
+                            "Resource read failed.",
+                            "resource_read_failed",
+                            retry_error.to_string(),
+                            "read",
+                        )
+                        .with_target(target),
+                }
+            }
+            Err(error) => self
+                .fail(
+                    "Resource read failed.",
+                    "resource_read_failed",
+                    error.to_string(),
                     "read",
                 )
-            }
-            Err(error) => self.fail(
-                "Resource read failed.",
-                "resource_read_failed",
-                error.to_string(),
-                "read",
-            ),
+                .with_target(target),
         }
     }
 
-    /// Executes a v2 live write after validating the exact SFTP or IDE owner.
-    pub(in crate::workspace) async fn write_live_resource(
+    pub(in crate::workspace) async fn write_resource(
         &self,
-        services: &AiLiveToolServices,
-        node_id: NodeId,
-        sftp_owner: Option<crate::workspace::ai_runtime_context::AiSftpRuntimeOwner>,
         args: &serde_json::Value,
-        ide_file_system: Option<oxideterm_ide_fs::NodeAgentIdeFileSystem>,
-        post_user_approval: bool,
     ) -> AiActionResultLite {
-        let resource = args
-            .get("resource")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
+        let resource =
+            normalized_ai_resource_kind(args.get("resource").and_then(serde_json::Value::as_str));
+        let Some(target_id) = args.get("target_id").and_then(serde_json::Value::as_str) else {
+            return self.fail_missing_target_id("write");
+        };
+        let Some(target) = self
+            .targets
+            .iter()
+            .find(|target| target.id == target_id)
+            .cloned()
+        else {
+            return self.fail_target_not_found(target_id, "write");
+        };
+        if target_requires_live_state(&target) && target.state != "connected" {
+            return self
+                .fail(
+                    "Target is not ready.",
+                    "target_not_ready",
+                    format!(
+                        "{target_id} is {}; write_resource requires a connected target.",
+                        target.state
+                    ),
+                    "write",
+                )
+                .with_target(target.clone())
+                .with_next_actions(recovery_actions_for_target(&target));
+        }
+        if resource == "settings" {
+            return self.fail(
+                "Settings write requires the native UI executor.",
+                "settings_write_requires_ui",
+                "write_resource(settings) must run on the UI thread so settings are persisted and runtime surfaces are refreshed.",
+                "write",
+            );
+        }
+        if resource != "file" {
+            let mut read_args = serde_json::Map::new();
+            read_args.insert(
+                "target_id".to_string(),
+                serde_json::json!(target.id.clone()),
+            );
+            read_args.insert("resource".to_string(), serde_json::json!(resource));
+            if let Some(path) = args.get("path") {
+                read_args.insert("path".to_string(), path.clone());
+            }
+            if let Some(section) = args.get("section") {
+                read_args.insert("section".to_string(), section.clone());
+            }
+            return self
+                .fail(
+                    "Unsupported resource write.",
+                    "unsupported_resource_write",
+                    format!("write_resource only supports settings or file, not \"{resource}\"."),
+                    "write",
+                )
+                .with_target(target.clone())
+                .with_next_actions(vec![serde_json::json!({
+                    "action": "read_resource",
+                    "args": read_args,
+                    "reason": "Read or inspect the resource instead of writing it."
+                })]);
+        };
+        if ai_target_is_serial_terminal(&target) {
+            return self.fail(
+                "Serial terminals do not expose SSH resources.",
+                "unsupported_serial_resource_target",
+                "Serial targets only support terminal observe/send/wait. They do not provide SFTP, remote files, or port forwarding.",
+                "write",
+            ).with_target(target);
+        }
+        let Some(node_id) = target
+            .refs
+            .get("nodeId")
+            .map(|value| NodeId::new(value.clone()))
+        else {
+            return self
+                .fail(
+                    "Target cannot write resources.",
+                    "unsupported_write_target",
+                    format!("{} does not expose writable resources.", target.kind),
+                    "write",
+                )
+                .with_target(target);
+        };
         let Some(path) = args
             .get("path")
             .and_then(serde_json::Value::as_str)
             .filter(|value| !value.trim().is_empty())
         else {
-            return self.fail(
-                "Path and content are required.",
-                "missing_file_write_args",
-                "write_resource(file) requires path and content.",
-                "write",
-            );
+            return self
+                .fail(
+                    "Path and content are required.",
+                    "missing_file_write_args",
+                    "write_resource(file) requires path and content.",
+                    "write",
+                )
+                .with_target(target);
         };
         let Some(content) = args.get("content").and_then(serde_json::Value::as_str) else {
-            return self.fail(
-                "Path and content are required.",
-                "missing_file_write_args",
-                "write_resource(file) requires path and content.",
-                "write",
-            );
+            return self
+                .fail(
+                    "Path and content are required.",
+                    "missing_file_write_args",
+                    "write_resource(file) requires path and content.",
+                    "write",
+                )
+                .with_target(target);
         };
         if args
             .get("dry_run")
@@ -701,26 +1059,20 @@ impl AiOrchestratorRuntimeSnapshot {
                     serde_json::Value::Null,
                     "write",
                 )
+                .with_target(target)
                 .with_verified(false);
         }
         let expected_hash = args
             .get("expected_hash")
+            .or_else(|| args.get("expectedHash"))
             .and_then(serde_json::Value::as_str)
             .filter(|value| !value.trim().is_empty());
-
-        if resource == "ide" {
-            let Some(ide_file_system) = ide_file_system else {
-                return self.fail(
-                    "IDE capability is unavailable.",
-                    "runtime_capability_unavailable",
-                    "Rediscover the current IDE workspace before writing a file.",
-                    "write",
-                );
-            };
-            if let Ok(result) = ide_file_system
-                .node_agent_write_file(node_id.0.clone(), path, content, expected_hash)
-                .await
-            {
+        match self
+            .agent_fs
+            .node_agent_write_file(&node_id.0, path, content, expected_hash)
+            .await
+        {
+            Ok(result) => {
                 let data = serde_json::json!({
                     "path": path,
                     "size": result.size,
@@ -728,211 +1080,186 @@ impl AiOrchestratorRuntimeSnapshot {
                     "hash": result.hash,
                     "contentHash": result.hash,
                     "atomicWrite": result.atomic,
-                    "source": "ide-surface-agent",
+                    "source": "node-agent",
                 });
-                return self.ok(
-                    format!("Wrote IDE file {path}."),
-                    serde_json::to_string_pretty(&data)
-                        .unwrap_or_else(|_| format!("{path} written.")),
+                return self
+                    .ok(
+                        format!("Wrote remote file {path}."),
+                        serde_json::to_string_pretty(&data)
+                            .unwrap_or_else(|_| format!("{path} written.")),
+                        data,
+                        "write",
+                    )
+                    .with_target(target);
+            }
+            Err(_) => {}
+        }
+        // Tauri's SFTP fallback receives only nodeId/path/content after the
+        // node-agent write path fails; expected_hash is a node-agent precondition.
+        let result = self.write_remote_file(&node_id, path, content, None).await;
+        match result {
+            Ok(data) => self
+                .ok(
+                    format!("Wrote remote file {path}."),
+                    serde_json::to_string_pretty(&data).unwrap_or_else(|_| format!("{path} written.")),
                     data,
                     "write",
-                );
-            }
-            return self.fail(
-                "IDE file write failed.",
-                "resource_disconnected",
-                "The current IDE file owner is unavailable. Rediscover it before retrying.",
-                "write",
-            );
-        }
-
-        let Some(sftp_owner) = sftp_owner else {
-            return self.fail(
-                "SFTP capability is unavailable.",
-                "runtime_capability_unavailable",
-                "Rediscover the current SFTP session before writing.",
-                "write",
-            );
-        };
-        let write_result = self
-            .write_remote_file(services, &sftp_owner, path, content, expected_hash)
-            .await;
-        if matches!(
-            &write_result,
-            Err(AiRemoteFileWriteError::Sftp(error)) if error.is_channel_recoverable()
-        ) {
-            // The failed generation is invalidated, but this call never reuses
-            // its approval against the replacement channel.
-            let _ = services
-                .node_router
-                .invalidate_and_reacquire_sftp(&sftp_owner.node_id)
-                .await;
-            return self.fail(
-                "SFTP session changed during the write.",
-                if post_user_approval {
-                    "runtime_state_changed_after_approval"
-                } else {
-                    "resource_disconnected"
-                },
-                ai_runtime_validation_recovery_message(post_user_approval),
-                "write",
-            );
-        }
-        match write_result {
-            Ok(data) => self.ok(
-                format!("Wrote remote file {path}."),
-                serde_json::to_string_pretty(&data)
-                    .unwrap_or_else(|_| format!("{path} written.")),
-                data,
-                "write",
-            ),
-            Err(AiRemoteFileWriteError::OwnerReplaced) => self.fail(
-                "SFTP session changed before the write.",
-                if post_user_approval {
-                    "runtime_state_changed_after_approval"
-                } else {
-                    "runtime_owner_replaced"
-                },
-                ai_runtime_validation_recovery_message(post_user_approval),
-                "write",
-            ),
-            Err(AiRemoteFileWriteError::ExpectedHashMismatch) => self.fail(
-                "Remote file changed before writing.",
-                "expected_hash_mismatch",
-                "File changed before writing. Read the current file before retrying.",
-                "write",
-            ),
-            Err(AiRemoteFileWriteError::ExpectedFileMissing { path }) => self.fail(
-                "Cannot verify write precondition.",
-                "expected_file_missing",
-                format!("Cannot verify write precondition for {path}: file does not exist."),
-                "write",
-            ),
-            Err(AiRemoteFileWriteError::ExistingFileNotText { path }) => self.fail(
-                "Cannot verify existing file.",
-                "existing_file_not_text",
-                format!("Cannot safely verify existing file {path}: it is not valid UTF-8 text."),
-                "write",
-            ),
-            Err(AiRemoteFileWriteError::Sftp(error)) => self.fail(
-                "Remote file write failed.",
-                "remote_file_write_failed",
-                error.to_string(),
-                "write",
-            ),
+                )
+                .with_target(target),
+            Err(AiRemoteFileWriteError::ExpectedHashMismatch { expected, current }) => self
+                .fail(
+                    "Remote file changed before writing.",
+                    "expected_hash_mismatch",
+                    format!("File changed before writing: expected hash {expected}, current hash {current}."),
+                    "write",
+                )
+                .with_target(target),
+            Err(AiRemoteFileWriteError::ExpectedFileMissing { path }) => self
+                .fail(
+                    "Cannot verify write precondition.",
+                    "expected_file_missing",
+                    format!("Cannot verify write precondition for {path}: file does not exist."),
+                    "write",
+                )
+                .with_target(target),
+            Err(AiRemoteFileWriteError::ExistingFileNotText { path }) => self
+                .fail(
+                    "Cannot verify existing file.",
+                    "existing_file_not_text",
+                    format!("Cannot safely verify existing file {path}: it is not valid UTF-8 text."),
+                    "write",
+                )
+                .with_target(target),
+            Err(AiRemoteFileWriteError::Other(error)) => self
+                .fail("Remote file write failed.", "remote_file_write_failed", error, "write")
+                .with_target(target),
+            Err(AiRemoteFileWriteError::Sftp(error)) => self
+                .fail(
+                    "Remote file write failed.",
+                    "remote_file_write_failed",
+                    error.to_string(),
+                    "write",
+                )
+                .with_target(target),
         }
     }
 
-    /// Starts a v2 SFTP transfer from an already validated concrete session.
-    pub(in crate::workspace) async fn transfer_live_resource(
+    pub(in crate::workspace) async fn transfer_resource(
         &self,
-        services: &AiLiveToolServices,
-        sftp_owner: crate::workspace::ai_runtime_context::AiSftpRuntimeOwner,
         args: &serde_json::Value,
-        post_user_approval: bool,
     ) -> AiActionResultLite {
+        let Some(target_id) = args.get("target_id").and_then(serde_json::Value::as_str) else {
+            return self.fail_missing_target_id("write");
+        };
+        let Some(target) = self
+            .targets
+            .iter()
+            .find(|target| target.id == target_id)
+            .cloned()
+        else {
+            return self.fail_target_not_found(target_id, "write");
+        };
+        if target_requires_live_state(&target) && target.state != "connected" {
+            return self
+                .fail(
+                    "Target is not ready.",
+                    "target_not_ready",
+                    format!(
+                        "{target_id} is {}; transfer_resource requires a connected target.",
+                        target.state
+                    ),
+                    "write",
+                )
+                .with_target(target.clone())
+                .with_next_actions(recovery_actions_for_target(&target));
+        }
         let direction = args
             .get("direction")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-        if !matches!(direction, "upload" | "download") {
-            return self.fail(
-                "Transfer direction is required.",
-                "missing_transfer_direction",
-                "direction must be upload or download.",
-                "write",
-            );
+            .unwrap_or("");
+        if direction != "upload" && direction != "download" {
+            return self
+                .fail(
+                    "Transfer direction is required.",
+                    "missing_transfer_direction",
+                    "direction must be upload or download.",
+                    "write",
+                )
+                .with_target(target);
         }
-        let Some(source_path) = args
+        if ai_target_is_serial_terminal(&target) {
+            return self.fail(
+                "Serial terminals do not expose SSH resources.",
+                "unsupported_serial_resource_target",
+                "Serial targets only support terminal observe/send/wait. They do not provide SFTP, remote files, or port forwarding.",
+                "write",
+            ).with_target(target);
+        }
+        let Some(node_id) = target
+            .refs
+            .get("nodeId")
+            .map(|value| NodeId::new(value.clone()))
+        else {
+            return self
+                .fail(
+                    "SFTP transfer requires an SSH/SFTP target.",
+                    "missing_node_id",
+                    "transfer_resource requires a target with nodeId.",
+                    "write",
+                )
+                .with_target(target);
+        };
+        let source_path = args
             .get("source_path")
             .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-        else {
-            return self.fail(
-                "Transfer paths are required.",
-                "missing_transfer_path",
-                "transfer_resource requires source_path and destination_path.",
-                "write",
-            );
-        };
-        let Some(destination_path) = args
+            .unwrap_or("");
+        let destination_path = args
             .get("destination_path")
             .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-        else {
-            return self.fail(
-                "Transfer paths are required.",
-                "missing_transfer_path",
-                "transfer_resource requires source_path and destination_path.",
-                "write",
-            );
-        };
+            .unwrap_or("");
         let transfer_id = uuid::Uuid::new_v4().to_string();
         let is_directory = ai_transfer_path_looks_directory(source_path)
             || ai_transfer_path_looks_directory(destination_path);
-        let owner_session = match services
-            .node_router
-            .acquire_existing_sftp_generation(
-                &sftp_owner.node_id,
-                &sftp_owner.connection_id,
-                sftp_owner.session_generation,
-            )
-            .await
-        {
-            Ok(session) => session,
-            Err(_) => {
-                return self.fail(
-                    "SFTP session changed before transfer start.",
-                    if post_user_approval {
-                        "runtime_state_changed_after_approval"
-                    } else {
-                        "runtime_owner_replaced"
-                    },
-                    ai_runtime_validation_recovery_message(post_user_approval),
-                    "write",
-                );
-            }
-        };
-        match self
+        let result = self
             .run_sftp_transfer(
-                services,
-                &sftp_owner,
-                owner_session,
+                &node_id,
                 direction,
                 source_path,
                 destination_path,
                 &transfer_id,
                 is_directory,
             )
-            .await
-        {
-            Ok(data) => self.ok(
-                if is_directory {
-                    format!("Started {direction} directory transfer.")
-                } else {
-                    format!("Completed {direction} transfer.")
-                },
-                serde_json::to_string_pretty(&data)
-                    .unwrap_or_else(|_| format!("transfer_id={transfer_id}")),
-                data,
-                "write",
-            ),
-            Err(AiSftpTransferError::OwnerReplaced) => self.fail(
-                "SFTP session changed before transfer start.",
-                if post_user_approval {
-                    "runtime_state_changed_after_approval"
-                } else {
-                    "runtime_owner_replaced"
-                },
-                ai_runtime_validation_recovery_message(post_user_approval),
-                "write",
-            ),
-            Err(AiSftpTransferError::Operation(error)) => self.fail(
-                "SFTP transfer failed.",
-                "sftp_transfer_failed",
-                error,
-                "write",
-            ),
+            .await;
+        match result {
+            Ok(data) => self
+                .ok(
+                    if is_directory {
+                        format!("Started {direction} directory transfer.")
+                    } else {
+                        format!("Completed {direction} transfer.")
+                    },
+                    if is_directory {
+                        serde_json::to_string_pretty(&data)
+                            .unwrap_or_else(|_| format!("transfer_id={transfer_id}"))
+                    } else {
+                        format!("transfer_id={transfer_id}")
+                    },
+                    if is_directory {
+                        data
+                    } else {
+                        serde_json::json!({ "transferId": transfer_id })
+                    },
+                    "write",
+                )
+                .with_target(target),
+            Err(error) => self
+                .fail(
+                    "SFTP transfer failed.",
+                    "sftp_transfer_failed",
+                    error,
+                    "write",
+                )
+                .with_target(target),
         }
     }
 
@@ -941,6 +1268,11 @@ impl AiOrchestratorRuntimeSnapshot {
             .get("scope")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("targets");
+        let requested_target = args
+            .get("target_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|target_id| self.targets.iter().find(|target| target.id == target_id))
+            .cloned();
         let valid_scope = matches!(
             scope,
             "connections" | "transfers" | "settings" | "targets" | "health" | "active"
@@ -957,56 +1289,20 @@ impl AiOrchestratorRuntimeSnapshot {
                         "action": "get_state",
                         "args": { "scope": "targets" },
                         "reason": "Inspect valid target state instead."
-                    })]);
+                    })])
+                .with_optional_target(requested_target);
         }
-        let data = match scope {
-            "targets" => {
-                let view_targets = |view: &str| {
-                    self.targets
-                        .iter()
-                        .filter(|target| target_in_ai_view(target, view))
-                        .filter_map(|target| self.model_target_json(target))
-                        .collect::<Vec<_>>()
-                };
-                let connections = view_targets("connections");
-                let live_sessions = view_targets("live_sessions");
-                let app_surfaces = view_targets("app_surfaces");
-                let files = view_targets("files");
-                serde_json::json!({
-                    "views": {
-                        "connections": { "count": connections.len(), "targets": connections },
-                        "live_sessions": { "count": live_sessions.len(), "targets": live_sessions },
-                        "app_surfaces": { "count": app_surfaces.len(), "targets": app_surfaces },
-                        "files": { "count": files.len(), "targets": files },
-                        "all": { "count": self.targets.len() },
-                    },
-                })
-            }
-            "settings" => self.model_visible_settings.clone(),
-            "connections" => {
-                let model_targets = self
-                    .targets
-                    .iter()
-                    .filter(|target| target_in_ai_view(target, "connections"))
-                    .filter_map(|target| self.model_target_json(target))
-                    .collect::<Vec<_>>();
-                let counts = ai_connection_counts(&self.targets);
-                serde_json::json!({
-                    "total": counts.total,
-                    "counts": {
-                        "saved": counts.saved,
-                        "live": counts.live,
-                        "linkDown": counts.link_down,
-                        "error": counts.error,
-                    },
-                    "targets": model_targets,
-                })
-            }
-            "transfers" => self.transfers_state.clone(),
+        let mut data = match scope {
+            "targets" => ai_targets_state(&self.targets, &self.runtime_epoch),
+            "settings" => self.settings_summary.clone(),
+            "connections" => ai_connections_state(&self.targets, &self.runtime_epoch),
+            "transfers" => ai_transfers_state(&self.sftp_transfer_manager, &self.runtime_epoch),
             "health" => ai_health_state(self),
             "active" => serde_json::json!({
+                "runtimeEpoch": self.runtime_epoch,
                 "activeTab": self.active_tab.clone(),
                 "activeNode": self.active_node.clone(),
+                "activeSessionId": self.active_session_id.clone(),
                 "targets": self.targets.iter().filter(|target| {
                     target_matches_active_context(
                         target,
@@ -1014,7 +1310,7 @@ impl AiOrchestratorRuntimeSnapshot {
                         self.active_node_id.as_deref(),
                         self.active_session_id.as_deref(),
                     )
-                }).filter_map(|target| self.model_target_json(target)).collect::<Vec<_>>(),
+                }).map(compact_ai_target_json).collect::<Vec<_>>(),
             }),
             _ => unreachable!("scope was validated above"),
         };
@@ -1048,13 +1344,9 @@ impl AiOrchestratorRuntimeSnapshot {
             "active" => make_ai_state_version(
                 "active",
                 [
-                    self.active_tab.is_some().to_string(),
-                    self.active_node.is_some().to_string(),
-                    data.get("targets")
-                        .and_then(serde_json::Value::as_array)
-                        .map(Vec::len)
-                        .unwrap_or(0)
-                        .to_string(),
+                    self.active_tab_id.clone().unwrap_or_default(),
+                    self.active_node_id.clone().unwrap_or_default(),
+                    self.active_session_id.clone().unwrap_or_default(),
                 ],
             ),
             "connections" => make_ai_state_version(
@@ -1150,6 +1442,11 @@ impl AiOrchestratorRuntimeSnapshot {
             ),
             _ => unreachable!("scope was validated above"),
         };
+        if let Some(object) = data.as_object_mut() {
+            object
+                .entry("runtimeEpoch".to_string())
+                .or_insert_with(|| serde_json::json!(self.runtime_epoch));
+        }
         let result_targets = match scope {
             "targets" => self.targets.clone(),
             "connections" => self
@@ -1202,89 +1499,162 @@ impl AiOrchestratorRuntimeSnapshot {
             )
             .with_targets(result_targets)
             .with_state_version(state_version);
-        result
+        if matches!(scope, "settings" | "connections" | "transfers" | "health") {
+            result.with_optional_target(requested_target)
+        } else {
+            result
+        }
     }
 
+    pub(in crate::workspace) fn ui_thread_required_action(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> AiActionResultLite {
+        self.fail(
+            "Tool requires a native UI executor.",
+            "ui_thread_required",
+            format!("{tool_name} must be executed on the GPUI thread; the chat tool loop should dispatch it through ToolExecutionRequested."),
+            if matches!(tool_name, "send_terminal_input") { "interactive" } else { "write" },
+        )
+        .with_data(serde_json::json!({ "requestedArgs": args }))
+    }
 
     pub(in crate::workspace) async fn write_remote_file(
         &self,
-        services: &AiLiveToolServices,
-        owner: &crate::workspace::ai_runtime_context::AiSftpRuntimeOwner,
+        node_id: &NodeId,
         path: &str,
         content: &str,
         expected_hash: Option<&str>,
     ) -> Result<serde_json::Value, AiRemoteFileWriteError> {
-        // File content may contain credentials even when it is not itself a
-        // credential field, so the backend copy is wiped after the write.
-        let bytes = zeroize::Zeroizing::new(content.as_bytes().to_vec());
-        let shared = services
+        let bytes = content.as_bytes().to_vec();
+        let shared = self
             .node_router
-            .acquire_existing_sftp_generation(
-                &owner.node_id,
-                &owner.connection_id,
-                owner.session_generation,
-            )
+            .acquire_sftp(node_id)
             .await
-            .map_err(|_| AiRemoteFileWriteError::OwnerReplaced)?;
-        let sftp = shared.lock().await;
-        if let Some(expected) = expected_hash {
-            let current_bytes =
-                sftp.read_file_bytes(path)
-                    .await
-                    .map_err(|error| match error {
-                        oxideterm_ssh::SftpError::FileNotFound(_) => {
-                            AiRemoteFileWriteError::ExpectedFileMissing {
-                                path: path.to_string(),
+            .map_err(|error| AiRemoteFileWriteError::Other(error.to_string()))?;
+        let write_once = async {
+            let sftp = shared.lock().await;
+            if let Some(expected) = expected_hash {
+                let current_bytes =
+                    sftp.read_file_bytes(path)
+                        .await
+                        .map_err(|error| match error {
+                            oxideterm_ssh::SftpError::FileNotFound(_) => {
+                                AiRemoteFileWriteError::ExpectedFileMissing {
+                                    path: path.to_string(),
+                                }
                             }
-                        }
-                        other => AiRemoteFileWriteError::Sftp(other),
-                    })?;
-            let current_content = String::from_utf8(current_bytes).map_err(|_| {
-                AiRemoteFileWriteError::ExistingFileNotText {
-                    path: path.to_string(),
+                            other => AiRemoteFileWriteError::Sftp(other),
+                        })?;
+                let current_content = String::from_utf8(current_bytes).map_err(|_| {
+                    AiRemoteFileWriteError::ExistingFileNotText {
+                        path: path.to_string(),
+                    }
+                })?;
+                let current = ai_hash_text_content(&current_content, "utf-8");
+                if current != expected {
+                    return Err(AiRemoteFileWriteError::ExpectedHashMismatch {
+                        expected: expected.to_string(),
+                        current,
+                    });
                 }
-            })?;
-            let current = ai_hash_text_content(&current_content, "utf-8");
-            if current != expected {
-                return Err(AiRemoteFileWriteError::ExpectedHashMismatch);
             }
+            let write = sftp
+                .write_content(path, &bytes)
+                .await
+                .map_err(AiRemoteFileWriteError::Sftp)?;
+            let info = sftp
+                .stat(path)
+                .await
+                .map_err(AiRemoteFileWriteError::Sftp)?;
+            let hash = ai_hash_text_content(content, "utf-8");
+            Ok::<_, AiRemoteFileWriteError>(serde_json::json!({
+                "path": info.path,
+                "size": info.size,
+                "mtime": info.modified,
+                "hash": hash,
+                "contentHash": hash,
+                "atomicWrite": write.atomic_write,
+            }))
         }
-        let write = sftp
-            .write_content(path, &bytes)
-            .await
-            .map_err(AiRemoteFileWriteError::Sftp)?;
-        let info = sftp
-            .stat(path)
-            .await
-            .map_err(AiRemoteFileWriteError::Sftp)?;
-        let hash = ai_hash_text_content(content, "utf-8");
-        Ok(serde_json::json!({
-            "path": info.path,
-            "size": info.size,
-            "mtime": info.modified,
-            "hash": hash,
-            "contentHash": hash,
-            "atomicWrite": write.atomic_write,
-        }))
+        .await;
+        match write_once {
+            Ok(data) => Ok(data),
+            Err(AiRemoteFileWriteError::Sftp(error)) if error.is_channel_recoverable() => {
+                let rebuilt = self
+                    .node_router
+                    .invalidate_and_reacquire_sftp(node_id)
+                    .await
+                    .map_err(|route_error| {
+                        AiRemoteFileWriteError::Other(route_error.to_string())
+                    })?;
+                let sftp = rebuilt.lock().await;
+                if let Some(expected) = expected_hash {
+                    let current_bytes =
+                        sftp.read_file_bytes(path)
+                            .await
+                            .map_err(|error| match error {
+                                oxideterm_ssh::SftpError::FileNotFound(_) => {
+                                    AiRemoteFileWriteError::ExpectedFileMissing {
+                                        path: path.to_string(),
+                                    }
+                                }
+                                other => AiRemoteFileWriteError::Sftp(other),
+                            })?;
+                    let current_content = String::from_utf8(current_bytes).map_err(|_| {
+                        AiRemoteFileWriteError::ExistingFileNotText {
+                            path: path.to_string(),
+                        }
+                    })?;
+                    let current = ai_hash_text_content(&current_content, "utf-8");
+                    if current != expected {
+                        return Err(AiRemoteFileWriteError::ExpectedHashMismatch {
+                            expected: expected.to_string(),
+                            current,
+                        });
+                    }
+                }
+                let write = sftp
+                    .write_content(path, &bytes)
+                    .await
+                    .map_err(|retry_error| {
+                        AiRemoteFileWriteError::Other(retry_error.to_string())
+                    })?;
+                let info = sftp
+                    .stat(path)
+                    .await
+                    .map_err(|error| AiRemoteFileWriteError::Other(error.to_string()))?;
+                let hash = ai_hash_text_content(content, "utf-8");
+                Ok(serde_json::json!({
+                    "path": info.path,
+                    "size": info.size,
+                    "mtime": info.modified,
+                    "hash": hash,
+                    "contentHash": hash,
+                    "atomicWrite": write.atomic_write,
+                }))
+            }
+            Err(AiRemoteFileWriteError::Sftp(error)) => {
+                Err(AiRemoteFileWriteError::Other(error.to_string()))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub(in crate::workspace) async fn run_sftp_transfer(
         &self,
-        services: &AiLiveToolServices,
-        owner: &crate::workspace::ai_runtime_context::AiSftpRuntimeOwner,
-        owner_session: std::sync::Arc<tokio::sync::Mutex<oxideterm_ssh::SftpSession>>,
+        node_id: &NodeId,
         direction: &str,
         source_path: &str,
         destination_path: &str,
         transfer_id: &str,
         is_directory: bool,
-    ) -> Result<serde_json::Value, AiSftpTransferError> {
+    ) -> Result<serde_json::Value, String> {
         if is_directory {
             return self
                 .start_sftp_directory_transfer(
-                    services,
-                    owner,
-                    owner_session,
+                    node_id,
                     direction,
                     source_path,
                     destination_path,
@@ -1292,30 +1662,28 @@ impl AiOrchestratorRuntimeSnapshot {
                 )
                 .await;
         }
-        // The exact shared session validated by the capability is retained for
-        // the transfer start; a reconnect cannot silently substitute a channel.
-        let sftp = owner_session.lock().await;
-        let manager = Some(services.sftp_transfer_manager.clone());
+        let sftp = self
+            .node_router
+            .acquire_transfer_sftp(node_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let manager = Some(self.sftp_transfer_manager.clone());
         let item_count = match (direction, is_directory) {
             ("upload", false) => {
                 let bytes = sftp
                     .upload_file(source_path, destination_path, transfer_id, None, manager)
                     .await
-                    .map_err(|error| AiSftpTransferError::Operation(error.to_string()))?;
+                    .map_err(|error| error.to_string())?;
                 serde_json::json!({ "bytes": bytes })
             }
             ("download", false) => {
                 let bytes = sftp
                     .download_file(source_path, destination_path, transfer_id, None, manager)
                     .await
-                    .map_err(|error| AiSftpTransferError::Operation(error.to_string()))?;
+                    .map_err(|error| error.to_string())?;
                 serde_json::json!({ "bytes": bytes })
             }
-            _ => {
-                return Err(AiSftpTransferError::Operation(
-                    "direction must be upload or download.".to_string(),
-                ));
-            }
+            _ => return Err("direction must be upload or download.".to_string()),
         };
         Ok(serde_json::json!({
             "transferId": transfer_id,
@@ -1329,14 +1697,12 @@ impl AiOrchestratorRuntimeSnapshot {
 
     pub(in crate::workspace) async fn start_sftp_directory_transfer(
         &self,
-        services: &AiLiveToolServices,
-        owner: &crate::workspace::ai_runtime_context::AiSftpRuntimeOwner,
-        owner_session: std::sync::Arc<tokio::sync::Mutex<oxideterm_ssh::SftpSession>>,
+        node_id: &NodeId,
         direction: &str,
         source_path: &str,
         destination_path: &str,
         transfer_id: &str,
-    ) -> Result<serde_json::Value, AiSftpTransferError> {
+    ) -> Result<serde_json::Value, String> {
         let (local_path, remote_path, direction_enum) = match direction {
             "upload" => (
                 source_path,
@@ -1348,21 +1714,14 @@ impl AiOrchestratorRuntimeSnapshot {
                 source_path,
                 BackgroundTransferDirection::Download,
             ),
-            _ => {
-                return Err(AiSftpTransferError::Operation(
-                    "direction must be upload or download.".to_string(),
-                ));
-            }
+            _ => return Err("direction must be upload or download.".to_string()),
         };
-        let resolved = services
+        let resolved = self
             .node_router
-            .resolve_connection(&owner.node_id)
+            .resolve_connection(node_id)
             .await
-            .map_err(|_| AiSftpTransferError::OwnerReplaced)?;
-        if resolved.connection_id != owner.connection_id {
-            return Err(AiSftpTransferError::OwnerReplaced);
-        }
-        let tar_capabilities = services
+            .map_err(|error| error.to_string())?;
+        let tar_capabilities = self
             .sftp_transfer_manager
             .tar_capabilities(&resolved.connection_id, &resolved.handle)
             .await;
@@ -1373,7 +1732,7 @@ impl AiOrchestratorRuntimeSnapshot {
         };
         let snapshot = BackgroundTransferSnapshot::new(
             transfer_id.to_string(),
-            owner.node_id.0.clone(),
+            node_id.0.clone(),
             ai_transfer_name(local_path, remote_path),
             local_path.to_string(),
             remote_path.to_string(),
@@ -1383,13 +1742,13 @@ impl AiOrchestratorRuntimeSnapshot {
             0,
             0,
         );
-        services
-            .sftp_transfer_manager
+        self.sftp_transfer_manager
             .register_background_transfer(snapshot.clone());
 
-        let manager = services.sftp_transfer_manager.clone();
-        let runtime = services.backend_runtime.clone();
-        let connection_handle = resolved.handle;
+        let router = self.node_router.clone();
+        let manager = self.sftp_transfer_manager.clone();
+        let runtime = self.backend_runtime.clone();
+        let node_id = node_id.clone();
         let transfer_id_for_task = transfer_id.to_string();
         let direction_for_task = direction.to_string();
         let local_path_for_task = local_path.to_string();
@@ -1414,33 +1773,44 @@ impl AiOrchestratorRuntimeSnapshot {
 
                 if strategy_for_task == TransferStrategy::DirectoryTar {
                     if direction_for_task == "upload" {
+                        let shared = router
+                            .acquire_sftp(&node_id)
+                            .await
+                            .map_err(|error| error.to_string())?;
                         {
-                            let sftp = owner_session.lock().await;
+                            let sftp = shared.lock().await;
                             for prefix in ai_remote_directory_prefixes(&remote_path_for_task) {
                                 let _ = sftp.mkdir(&prefix).await;
                             }
                         }
                     }
-                    if tar_capabilities.supports_tar {
+                    let resolved = router
+                        .resolve_connection(&node_id)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let capabilities = manager
+                        .tar_capabilities(&resolved.connection_id, &resolved.handle)
+                        .await;
+                    if capabilities.supports_tar {
                         let tar_result = match direction_for_task.as_str() {
                             "upload" => tar_upload_directory(
-                                &connection_handle,
+                                &resolved.handle,
                                 &local_path_for_task,
                                 &remote_path_for_task,
                                 &transfer_id_for_task,
                                 None,
                                 Some(manager.clone()),
-                                Some(tar_capabilities.compression),
+                                Some(capabilities.compression),
                             )
                             .await,
                             "download" => tar_download_directory(
-                                &connection_handle,
+                                &resolved.handle,
                                 &remote_path_for_task,
                                 &local_path_for_task,
                                 &transfer_id_for_task,
                                 None,
                                 Some(manager.clone()),
-                                Some(tar_capabilities.compression),
+                                Some(capabilities.compression),
                             )
                             .await,
                             _ => unreachable!(),
@@ -1452,7 +1822,10 @@ impl AiOrchestratorRuntimeSnapshot {
                                     &transfer_id_for_task,
                                     TransferStrategy::DirectoryRecursive,
                                 );
-                                let sftp = owner_session.lock().await;
+                                let sftp = router
+                                    .acquire_transfer_sftp(&node_id)
+                                    .await
+                                    .map_err(|route_error| route_error.to_string())?;
                                 let fallback = match direction_for_task.as_str() {
                                     "upload" => {
                                         sftp.upload_dir(
@@ -1495,7 +1868,10 @@ impl AiOrchestratorRuntimeSnapshot {
                     &transfer_id_for_task,
                     TransferStrategy::DirectoryRecursive,
                 );
-                let sftp = owner_session.lock().await;
+                let sftp = router
+                    .acquire_transfer_sftp(&node_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
                 match direction_for_task.as_str() {
                     "upload" => {
                         sftp.upload_dir(
@@ -1605,7 +1981,38 @@ impl AiOrchestratorRuntimeSnapshot {
         }
     }
 
+    pub(in crate::workspace) fn fail_missing_target_id(
+        &self,
+        risk: &'static str,
+    ) -> AiActionResultLite {
+        self.fail(
+            "target_id is required.",
+            "missing_target_id",
+            "This task tool requires an explicit target_id.",
+            risk,
+        )
+        .with_next_actions(vec![serde_json::json!({
+            "action": "list_targets",
+            "reason": "Find the correct target before acting."
+        })])
+    }
 
+    pub(in crate::workspace) fn fail_target_not_found(
+        &self,
+        target_id: &str,
+        risk: &'static str,
+    ) -> AiActionResultLite {
+        self.fail(
+            "Target not found.",
+            "target_not_found",
+            format!("Target not found: {target_id}"),
+            risk,
+        )
+        .with_next_actions(vec![serde_json::json!({
+            "action": "list_targets",
+            "reason": "Refresh available targets before continuing."
+        })])
+    }
 
     pub(in crate::workspace) fn to_executed_tool_result(
         &self,
@@ -1614,40 +2021,35 @@ impl AiOrchestratorRuntimeSnapshot {
         result: AiActionResultLite,
         duration_ms: u128,
     ) -> AiExecutedToolResult {
-        let safe_summary = ai_model_safe_runtime_text(&result.summary);
-        let safe_output = ai_model_safe_runtime_text(&result.output);
-        let safe_error = result
-            .error_message
-            .as_deref()
-            .map(ai_model_safe_runtime_text);
-        let (safe_data, data_truncated) = ai_model_safe_runtime_value_with_limits(&result.data);
-        let (output, raw_output, output_preview, truncated) = prepare_ai_tool_output(&safe_output);
+        let (output, raw_output, output_preview, truncated) =
+            prepare_ai_tool_output(&result.output);
         let targets = result
             .target
             .iter()
             .chain(result.targets.iter())
-            .filter_map(|target| self.model_tool_result_target_json(target))
+            .map(tool_result_target_json)
             .collect::<Vec<_>>();
         let next_actions = result
             .next_actions
             .iter()
             .filter_map(ai_next_action_json)
-            .map(|action| ai_model_safe_runtime_value(&action))
             .collect::<Vec<_>>();
-        let waiting_for_input = safe_data
+        let waiting_for_input = result
+            .data
             .get("waitingForInput")
             .and_then(serde_json::Value::as_bool);
-        let data_is_internal_waiting_hint = safe_data
+        let data_is_internal_waiting_hint = result
+            .data
             .as_object()
             .is_some_and(|object| object.len() == 1 && object.contains_key("waitingForInput"));
         let mut envelope = serde_json::Map::new();
         envelope.insert("ok".to_string(), serde_json::json!(result.ok));
-        envelope.insert("summary".to_string(), serde_json::json!(safe_summary));
+        envelope.insert("summary".to_string(), serde_json::json!(result.summary));
         envelope.insert("output".to_string(), serde_json::json!(output));
         // Tauri omits `data` when an action did not provide it. Preserve that
         // shape so models do not learn data=null as a meaningful result.
-        if !safe_data.is_null() && !data_is_internal_waiting_hint {
-            envelope.insert("data".to_string(), safe_data);
+        if !result.data.is_null() && !data_is_internal_waiting_hint {
+            envelope.insert("data".to_string(), result.data);
         }
         if let Some(raw_output) = raw_output {
             envelope.insert("rawOutput".to_string(), serde_json::json!(raw_output));
@@ -1658,7 +2060,7 @@ impl AiOrchestratorRuntimeSnapshot {
                 "Full output exceeded the UI retention limit; showing a head/tail preview. Use a narrower command such as grep, tail -n, or find ... | head for exact data."
             ]));
         }
-        if let Some(message) = safe_error.as_ref() {
+        if let Some(message) = result.error_message.as_ref() {
             envelope.insert(
                 "error".to_string(),
                 serde_json::json!({
@@ -1678,13 +2080,7 @@ impl AiOrchestratorRuntimeSnapshot {
         if !result.observations.is_empty() {
             envelope.insert(
                 "observations".to_string(),
-                serde_json::json!(
-                    result
-                        .observations
-                        .iter()
-                        .map(|observation| ai_model_safe_runtime_text(observation))
-                        .collect::<Vec<_>>()
-                ),
+                serde_json::json!(result.observations),
             );
         }
         if let Some(waiting_for_input) = waiting_for_input {
@@ -1706,15 +2102,16 @@ impl AiOrchestratorRuntimeSnapshot {
             meta.insert("capability".to_string(), serde_json::json!(capability));
         }
         if let Some(target) = result.target.as_ref() {
-            if let Some(handle) = self.runtime_handles.get(&target.id) {
-                meta.insert("handleId".to_string(), serde_json::json!(handle.handle_id));
-            }
+            meta.insert("targetId".to_string(), serde_json::json!(target.id));
         }
         meta.insert("truncated".to_string(), serde_json::json!(truncated));
         meta.insert(
-            "dataTruncated".to_string(),
-            serde_json::json!(data_truncated),
+            "runtimeEpoch".to_string(),
+            serde_json::json!(self.runtime_epoch),
         );
+        if let Some(state_version) = result.state_version {
+            meta.insert("stateVersion".to_string(), serde_json::json!(state_version));
+        }
         envelope.insert("meta".to_string(), serde_json::Value::Object(meta));
         let envelope = serde_json::Value::Object(envelope);
         AiExecutedToolResult {
@@ -1722,300 +2119,11 @@ impl AiOrchestratorRuntimeSnapshot {
             tool_name,
             success: result.ok,
             output,
-            error: safe_error,
+            error: result.error_message,
             duration_ms,
             envelope,
         }
     }
-}
-
-const AI_INTERNAL_RUNTIME_FIELD_NAMES: &[&str] = &[
-    "targetid",
-    "nodeid",
-    "sessionid",
-    "tabid",
-    "paneid",
-    "runtimeepoch",
-    "registryepoch",
-    "ownerkey",
-    "ownergeneration",
-    "refs",
-];
-const AI_MODEL_RESULT_DATA_MAX_CHARS: usize = 24_000;
-const AI_MODEL_RESULT_DATA_MAX_NODES: usize = 512;
-const AI_MODEL_RESULT_DATA_MAX_DEPTH: usize = 16;
-const AI_MODEL_RESULT_STRING_MAX_CHARS: usize = 12_000;
-
-fn ai_model_safe_runtime_value(value: &serde_json::Value) -> serde_json::Value {
-    ai_model_safe_runtime_value_with_limits(value).0
-}
-
-fn ai_model_safe_runtime_value_with_limits(
-    value: &serde_json::Value,
-) -> (serde_json::Value, bool) {
-    let mut remaining_chars = AI_MODEL_RESULT_DATA_MAX_CHARS;
-    let mut remaining_nodes = AI_MODEL_RESULT_DATA_MAX_NODES;
-    project_ai_model_runtime_value(
-        value,
-        AI_MODEL_RESULT_DATA_MAX_DEPTH,
-        &mut remaining_chars,
-        &mut remaining_nodes,
-    )
-}
-
-/// Applies identifier redaction and one aggregate size budget before structured
-/// tool results cross into the model-visible envelope.
-fn project_ai_model_runtime_value(
-    value: &serde_json::Value,
-    remaining_depth: usize,
-    remaining_chars: &mut usize,
-    remaining_nodes: &mut usize,
-) -> (serde_json::Value, bool) {
-    if remaining_depth == 0 || *remaining_nodes == 0 {
-        return (serde_json::Value::Null, true);
-    }
-    *remaining_nodes -= 1;
-    match value {
-        serde_json::Value::Object(object) => {
-            let mut projected = serde_json::Map::new();
-            let mut truncated = false;
-            for (key, value) in object {
-                if ai_internal_runtime_field_name(key) {
-                    continue;
-                }
-                if *remaining_nodes == 0 || key.chars().count() > *remaining_chars {
-                    truncated = true;
-                    break;
-                }
-                *remaining_chars = remaining_chars.saturating_sub(key.chars().count());
-                let (value, child_truncated) = project_ai_model_runtime_value(
-                    value,
-                    remaining_depth - 1,
-                    remaining_chars,
-                    remaining_nodes,
-                );
-                projected.insert(key.clone(), value);
-                truncated |= child_truncated;
-            }
-            (serde_json::Value::Object(projected), truncated)
-        }
-        serde_json::Value::Array(values) => {
-            let mut projected = Vec::new();
-            let mut truncated = false;
-            for value in values {
-                if *remaining_nodes == 0 {
-                    truncated = true;
-                    break;
-                }
-                let (value, child_truncated) = project_ai_model_runtime_value(
-                    value,
-                    remaining_depth - 1,
-                    remaining_chars,
-                    remaining_nodes,
-                );
-                projected.push(value);
-                truncated |= child_truncated;
-            }
-            (serde_json::Value::Array(projected), truncated)
-        }
-        serde_json::Value::String(value) => {
-            let sanitized = ai_model_safe_runtime_text(value);
-            let char_count = sanitized.chars().count();
-            let retained_chars = char_count
-                .min(AI_MODEL_RESULT_STRING_MAX_CHARS)
-                .min(*remaining_chars);
-            let projected = sanitized.chars().take(retained_chars).collect::<String>();
-            *remaining_chars = remaining_chars.saturating_sub(retained_chars);
-            (
-                serde_json::Value::String(projected),
-                retained_chars < char_count,
-            )
-        }
-        other => (other.clone(), false),
-    }
-}
-
-fn ai_model_safe_runtime_text(value: &str) -> String {
-    let mut sanitized = oxideterm_ai::sanitize_for_ai(value);
-    for prefix in [
-        "saved-connection:",
-        "ssh-node:",
-        "terminal-session:",
-        "sftp-session:",
-        "ide-workspace:",
-        "app-surface:",
-        "local-shell:",
-        "settings:",
-        "rag-index:",
-    ] {
-        sanitized = redact_runtime_target_prefix(&sanitized, prefix);
-    }
-    sanitized
-}
-
-fn ai_internal_runtime_field_name(key: &str) -> bool {
-    let normalized = key
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .flat_map(char::to_lowercase)
-        .collect::<String>();
-    AI_INTERNAL_RUNTIME_FIELD_NAMES.contains(&normalized.as_str())
-}
-
-fn redact_runtime_target_prefix(value: &str, prefix: &str) -> String {
-    let mut redacted = String::with_capacity(value.len());
-    let mut remainder = value;
-    while let Some(index) = remainder.find(prefix) {
-        let (before, matched) = remainder.split_at(index);
-        redacted.push_str(before);
-        let suffix = &matched[prefix.len()..];
-        let identifier_length = suffix
-            .chars()
-            .take_while(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
-            .map(char::len_utf8)
-            .sum::<usize>();
-        if identifier_length == 0 {
-            redacted.push_str(prefix);
-            remainder = suffix;
-            continue;
-        }
-        redacted.push_str("[runtime target]");
-        remainder = &suffix[identifier_length..];
-    }
-    redacted.push_str(remainder);
-    redacted
-}
-
-impl AiOrchestratorRuntimeSnapshot {
-    /// Produces the model-facing form of a target without exposing a terminal's
-    /// reusable session id or tab-local location.
-    pub(in crate::workspace) fn model_target_json(
-        &self,
-        target: &AiOrchestratorTarget,
-    ) -> Option<serde_json::Value> {
-        if let Some(resource_ref) = ai_stable_resource_ref_for_target(target) {
-            return Some(serde_json::json!({
-                "authority": {
-                    "kind": "stable_resource",
-                    "resource_ref": resource_ref,
-                },
-                "kind": target.kind,
-                "label": ai_model_safe_runtime_text(&target.label),
-                "state": target.state,
-                "capabilities": target.capabilities,
-            }));
-        }
-        if !matches!(
-            target.kind.as_str(),
-            "terminal-session"
-                | "local-shell"
-                | "ssh-node"
-                | "sftp-session"
-                | "ide-workspace"
-                | "app-surface"
-        ) {
-            // Raw node identifiers are not model authorities. Live targets
-            // appear only when their real owner adapters issued a handle.
-            return None;
-        }
-        let handle = self.runtime_handles.get(&target.id)?;
-        Some(serde_json::json!({
-            "authority": {
-                "kind": "runtime_handle",
-                "handle_id": handle.handle_id,
-            },
-            "kind": target.kind,
-            "label": ai_model_safe_runtime_text(&target.label),
-            "state": target.state,
-            "capabilities": handle.capabilities,
-        }))
-    }
-
-    fn model_tool_result_target_json(
-        &self,
-        target: &AiOrchestratorTarget,
-    ) -> Option<serde_json::Value> {
-        if let Some(resource_ref) = ai_stable_resource_ref_for_target(target) {
-            return Some(serde_json::json!({
-                "authority": {
-                    "kind": "stable_resource",
-                    "resource_ref": resource_ref,
-                },
-                "kind": target.kind,
-                "label": ai_model_safe_runtime_text(&target.label),
-                "capabilities": target.capabilities,
-            }));
-        }
-        if !matches!(
-            target.kind.as_str(),
-            "terminal-session"
-                | "local-shell"
-                | "ssh-node"
-                | "sftp-session"
-                | "ide-workspace"
-                | "app-surface"
-        ) {
-            return None;
-        }
-        let handle = self.runtime_handles.get(&target.id)?;
-        Some(serde_json::json!({
-            "authority": {
-                "kind": "runtime_handle",
-                "handle_id": handle.handle_id,
-            },
-            "kind": target.kind,
-            "label": ai_model_safe_runtime_text(&target.label),
-            "capabilities": handle.capabilities,
-        }))
-    }
-}
-
-fn ai_stable_resource_ref_for_target(
-    target: &AiOrchestratorTarget,
-) -> Option<oxideterm_ai::StableResourceRef> {
-    let (kind, id) = match target.kind.as_str() {
-        "saved-connection" => (
-            oxideterm_ai::StableResourceKind::SavedConnection,
-            target.refs.get("connectionId")?.clone(),
-        ),
-        "settings" => (oxideterm_ai::StableResourceKind::SettingsScope, "app".to_string()),
-        "rag-index" => (oxideterm_ai::StableResourceKind::RagIndex, "default".to_string()),
-        _ => return None,
-    };
-    oxideterm_ai::StableResourceRef::new(
-        kind,
-        id,
-        Some(ai_model_safe_runtime_text(&target.label)),
-    )
-    .ok()
-}
-
-/// Application surfaces are durable navigation destinations, not live tab identities.
-pub(in crate::workspace) fn ai_app_surface_stable_resources(
-) -> Vec<oxideterm_ai::StableResourceRef> {
-    const SURFACES: &[(&str, &str)] = &[
-        ("settings", "Settings"),
-        ("connection_manager", "Connection manager"),
-        ("connection_pool", "Connection pool"),
-        ("connection_monitor", "Connection monitor"),
-        ("sftp", "SFTP"),
-        ("ide", "IDE"),
-        ("file_manager", "File manager"),
-        ("local_terminal", "Local terminal"),
-        ("terminal", "Terminal"),
-    ];
-
-    SURFACES
-        .iter()
-        .filter_map(|(id, label)| {
-            oxideterm_ai::StableResourceRef::new(
-                oxideterm_ai::StableResourceKind::AppSurface,
-                (*id).to_string(),
-                Some((*label).to_string()),
-            )
-            .ok()
-        })
-        .collect()
 }
 
 pub(in crate::workspace) fn ai_transfer_path_looks_directory(path: &str) -> bool {
@@ -2024,6 +2132,18 @@ pub(in crate::workspace) fn ai_transfer_path_looks_directory(path: &str) -> bool
     path.ends_with('/') || path.ends_with('\\')
 }
 
+pub(in crate::workspace) fn ai_target_is_serial_terminal(target: &AiOrchestratorTarget) -> bool {
+    target
+        .metadata
+        .get("terminalTransport")
+        .and_then(serde_json::Value::as_str)
+        == Some("serial")
+        || target
+            .metadata
+            .get("terminalType")
+            .and_then(serde_json::Value::as_str)
+            == Some("serial")
+}
 
 pub(in crate::workspace) fn make_ai_state_version(
     scope: &str,
@@ -2042,27 +2162,16 @@ pub(in crate::workspace) fn make_ai_state_version(
 }
 
 pub(in crate::workspace) async fn execute_ai_tool(
-    services: &AiModelBackendServices,
-    ui_tx: &AiStreamDeliverySender,
+    snapshot: &AiOrchestratorRuntimeSnapshot,
+    ui_tx: &std::sync::mpsc::Sender<AiStreamDelivery>,
     generation: u64,
-    tool_session_id: &ToolSessionId,
     conversation_id: &str,
     assistant_id: &str,
     tool_call_id: String,
     tool_name: String,
     args: serde_json::Value,
-    post_user_approval: bool,
-    dangerous_command_approved: bool,
 ) -> AiExecutedToolResult {
-    if ai_rejects_legacy_live_target_argument(&tool_name, &args) {
-        return rejected_ai_tool_result(
-            tool_call_id,
-            tool_name,
-            "runtime_capability_unavailable",
-            "This live resource must be rediscovered through the current v2 runtime context.",
-        );
-    }
-    if ai_tool_requires_ui_thread(&tool_name, &args) {
+    if ai_tool_requires_ui_thread(snapshot, &tool_name, &args) {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         if send_ai_stream_delivery(
             ui_tx,
@@ -2070,12 +2179,9 @@ pub(in crate::workspace) async fn execute_ai_tool(
             conversation_id,
             assistant_id,
             AiStreamDeliveryEvent::ToolExecutionRequested {
-                tool_session_id: tool_session_id.clone(),
                 tool_call_id: tool_call_id.clone(),
                 name: tool_name.clone(),
                 args,
-                post_user_approval,
-                dangerous_command_approved,
                 sender,
             },
         )
@@ -2098,60 +2204,5 @@ pub(in crate::workspace) async fn execute_ai_tool(
         });
     }
 
-    services.execute_tool(tool_call_id, tool_name, args).await
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(in crate::workspace) async fn preflight_ai_tool(
-    ui_tx: &AiStreamDeliverySender,
-    generation: u64,
-    tool_session_id: &ToolSessionId,
-    conversation_id: &str,
-    assistant_id: &str,
-    tool_call_id: String,
-    tool_name: String,
-    args: serde_json::Value,
-) -> Option<AiExecutedToolResult> {
-    if ai_rejects_legacy_live_target_argument(&tool_name, &args) {
-        return Some(rejected_ai_tool_result(
-            tool_call_id,
-            tool_name,
-            "runtime_capability_unavailable",
-            "This live resource must be rediscovered through the current v2 runtime context.",
-        ));
-    }
-    if !ai_tool_requires_ui_thread(&tool_name, &args) {
-        return None;
-    }
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    if send_ai_stream_delivery(
-        ui_tx,
-        generation,
-        conversation_id,
-        assistant_id,
-        AiStreamDeliveryEvent::ToolPreflightRequested {
-            tool_session_id: tool_session_id.clone(),
-            tool_call_id: tool_call_id.clone(),
-            name: tool_name.clone(),
-            args,
-            sender,
-        },
-    )
-    .is_err()
-    {
-        return Some(rejected_ai_tool_result(
-            tool_call_id,
-            tool_name,
-            "ui_delivery_failed",
-            "The native UI executor is no longer available.",
-        ));
-    }
-    receiver.await.unwrap_or_else(|_| {
-        Some(rejected_ai_tool_result(
-            tool_call_id,
-            tool_name,
-            "ui_executor_cancelled",
-            "The native UI executor cancelled the tool preflight.",
-        ))
-    })
+    snapshot.execute_tool(tool_call_id, tool_name, args).await
 }

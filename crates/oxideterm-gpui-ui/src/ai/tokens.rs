@@ -76,7 +76,6 @@ pub enum AiMessageRole {
 pub enum AiToolStatus {
     Pending,
     PendingApproval,
-    PendingSelection,
     Approved,
     Running,
     Completed,
@@ -194,7 +193,7 @@ mod tests {
 pub(super) fn status_tone(status: AiToolStatus) -> AiTone {
     match status {
         AiToolStatus::Pending => AiTone::Yellow,
-        AiToolStatus::PendingApproval | AiToolStatus::PendingSelection => AiTone::Amber,
+        AiToolStatus::PendingApproval => AiTone::Amber,
         AiToolStatus::Approved | AiToolStatus::Running => AiTone::Accent,
         AiToolStatus::Completed => AiTone::Green,
         AiToolStatus::Error => AiTone::Red,

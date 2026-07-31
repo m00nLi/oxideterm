@@ -3,8 +3,8 @@ use super::*;
 impl WorkspaceApp {
     pub(super) fn render_oxide_import_result_summary(
         &self,
-        result: Arc<OxideImportResultView>,
-        preview: Option<Arc<ImportPreview>>,
+        result: OxideImportResultView,
+        preview: Option<ImportPreview>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let has_error = !result.errors.is_empty();
@@ -282,7 +282,6 @@ impl WorkspaceApp {
     pub(super) fn render_oxide_import_result_footer(&self, cx: &mut Context<Self>) -> AnyElement {
         let focused_action = self
             .session_manager
-            .read(cx)
             .oxide_import_dialog
             .as_ref()
             .and_then(|dialog| dialog.focused_footer_action);
@@ -300,11 +299,9 @@ impl WorkspaceApp {
                 false,
                 None,
                 |this, _event, _window, cx| {
-                    this.session_manager.update(cx, |manager, cx| {
-                        manager.oxide_import_dialog = None;
-                        manager.focused_input = None;
-                        cx.notify();
-                    });
+                    this.session_manager.oxide_import_dialog = None;
+                    this.session_manager.focused_input = None;
+                    cx.notify();
                     cx.stop_propagation();
                 },
                 cx,
@@ -312,33 +309,13 @@ impl WorkspaceApp {
             .into_any_element()
     }
 
-    pub(super) fn render_oxide_import_footer(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some((
-            has_preview,
-            busy,
-            has_selected_content,
-            password_is_empty,
-            focused_footer_action,
-        )) = ({
-            self.session_manager
-                .read(cx)
-                .oxide_import_dialog
-                .as_ref()
-                .map(|dialog| {
-                    (
-                        dialog.preview.is_some(),
-                        dialog.busy,
-                        oxide_import_has_selected_content(dialog),
-                        dialog.password.is_empty(),
-                        dialog.focused_footer_action,
-                    )
-                })
-        })
-        else {
-            return div().into_any_element();
-        };
-        if has_preview {
-            let primary_disabled = busy || !has_selected_content;
+    pub(super) fn render_oxide_import_footer(
+        &self,
+        dialog: &OxideImportDialogState,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if dialog.preview.is_some() {
+            let primary_disabled = dialog.busy || !oxide_import_has_selected_content(dialog);
             div()
                 .flex()
                 .items_center()
@@ -349,30 +326,28 @@ impl WorkspaceApp {
                     "返回".to_string(),
                     ButtonVariant::Outline,
                     OxideDialogFooterAction::Secondary,
-                    focused_footer_action,
-                    busy,
+                    dialog.focused_footer_action,
+                    dialog.busy,
                     None,
                     |this, _event, _window, cx| {
-                        this.session_manager.update(cx, |manager, cx| {
-                            if let Some(dialog) = manager.oxide_import_dialog.as_mut() {
-                                dialog.preview = None;
-                                dialog.result_summary = None;
-                            }
-                            cx.notify();
-                        });
+                        if let Some(dialog) = this.session_manager.oxide_import_dialog.as_mut() {
+                            dialog.preview = None;
+                            dialog.result_summary = None;
+                        }
+                        cx.notify();
                         cx.stop_propagation();
                     },
                     cx,
                 ))
                 .child(self.render_oxide_footer_click_action(
-                    if busy {
+                    if dialog.busy {
                         "导入中...".to_string()
                     } else {
                         "确认导入".to_string()
                     },
                     ButtonVariant::Default,
                     OxideDialogFooterAction::Primary,
-                    focused_footer_action,
+                    dialog.focused_footer_action,
                     primary_disabled,
                     None,
                     |this, _event, _window, cx| {
@@ -383,7 +358,7 @@ impl WorkspaceApp {
                 ))
                 .into_any_element()
         } else {
-            let primary_disabled = busy || password_is_empty;
+            let primary_disabled = dialog.busy || dialog.password.is_empty();
             div()
                 .flex()
                 .items_center()
@@ -394,8 +369,8 @@ impl WorkspaceApp {
                     "重新选择文件".to_string(),
                     ButtonVariant::Outline,
                     OxideDialogFooterAction::Secondary,
-                    focused_footer_action,
-                    busy,
+                    dialog.focused_footer_action,
+                    dialog.busy,
                     None,
                     |this, _event, _window, cx| {
                         this.select_oxide_import_file(cx);
@@ -407,28 +382,26 @@ impl WorkspaceApp {
                     "取消".to_string(),
                     ButtonVariant::Outline,
                     OxideDialogFooterAction::Cancel,
-                    focused_footer_action,
-                    busy,
+                    dialog.focused_footer_action,
+                    dialog.busy,
                     None,
                     |this, _event, _window, cx| {
-                        this.session_manager.update(cx, |manager, cx| {
-                            manager.oxide_import_dialog = None;
-                            manager.focused_input = None;
-                            cx.notify();
-                        });
+                        this.session_manager.oxide_import_dialog = None;
+                        this.session_manager.focused_input = None;
+                        cx.notify();
                         cx.stop_propagation();
                     },
                     cx,
                 ))
                 .child(self.render_oxide_footer_click_action(
-                    if busy {
+                    if dialog.busy {
                         "加载中...".to_string()
                     } else {
                         "预览".to_string()
                     },
                     ButtonVariant::Default,
                     OxideDialogFooterAction::Primary,
-                    focused_footer_action,
+                    dialog.focused_footer_action,
                     primary_disabled,
                     None,
                     |this, _event, _window, cx| {

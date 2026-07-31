@@ -14,29 +14,27 @@ pub(crate) async fn fetch_provider_models_payload(
     let provider_type = provider.provider_type.as_str();
     match provider_type {
         "anthropic" => {
-            let api_key =
-                api_key_required_ref(provider_type, api_key.map(|api_key| api_key.as_str()))?;
+            let api_key = api_key_required_ref(provider_type, api_key)?;
             // The key is owned by Zeroizing until the request is built. Reqwest
             // must copy it into an HTTP header to match Tauri's provider API
             // request path, and native never persists this value in settings.
             let body = send_text(
                 client
                     .get(provider_models_url(provider_type, &provider.base_url)?)
-                    .header("x-api-key", api_key)
+                    .header("x-api-key", api_key.as_str())
                     .header("anthropic-version", ANTHROPIC_VERSION),
             )
             .await?;
             parse_provider_json(&body, "Anthropic model list")
         }
         "gemini" => {
-            let api_key =
-                api_key_required_ref(provider_type, api_key.map(|api_key| api_key.as_str()))?;
+            let api_key = api_key_required_ref(provider_type, api_key)?;
             // Keep the API key out of our own URL strings; reqwest owns the
             // query parameter only for the outgoing request.
             let body = send_text(
                 client
                     .get(gemini_models_url(&provider.base_url)?)
-                    .query(&[("key", api_key)]),
+                    .query(&[("key", api_key.as_str())]),
             )
             .await?;
             parse_provider_json(&body, "Gemini model list")
@@ -189,8 +187,8 @@ fn parse_openai_compatible_error(body: &str) -> Option<String> {
 
 pub(crate) fn api_key_required_ref<'a>(
     provider_type: &str,
-    api_key: Option<&'a str>,
-) -> Result<&'a str> {
+    api_key: Option<&'a Zeroizing<String>>,
+) -> Result<&'a Zeroizing<String>> {
     api_key
         .filter(|key| !key.trim().is_empty())
         .ok_or_else(|| anyhow!("missing API key for {provider_type}"))
@@ -211,36 +209,11 @@ fn provider_models_url(provider_type: &str, base_url: &str) -> Result<String> {
 }
 
 fn gemini_models_url(base_url: &str) -> Result<String> {
-    Ok(format!("{}/models", gemini_api_base_url(base_url)?))
-}
-
-pub(crate) fn gemini_api_base_url(base_url: &str) -> Result<String> {
     let base_url = base_url.trim().trim_end_matches('/');
     if base_url.is_empty() {
         return Err(anyhow!("provider base URL is empty"));
     }
-    // Gemini settings may contain either the service root or an already
-    // versioned API root. Normalize both without duplicating the version.
-    let last_segment = base_url.rsplit('/').next().unwrap_or_default();
-    if is_gemini_api_version(last_segment) {
-        Ok(base_url.to_string())
-    } else {
-        Ok(format!("{base_url}/v1beta"))
-    }
-}
-
-fn is_gemini_api_version(segment: &str) -> bool {
-    let Some(version) = segment.strip_prefix('v') else {
-        return false;
-    };
-    let digit_count = version
-        .chars()
-        .take_while(|character| character.is_ascii_digit())
-        .count();
-    digit_count > 0
-        && version[digit_count..]
-            .chars()
-            .all(|character| character.is_ascii_alphabetic())
+    Ok(format!("{base_url}/v1beta/models"))
 }
 
 pub(crate) fn url_encode_component(value: &str) -> String {
@@ -258,26 +231,6 @@ pub(crate) fn url_encode_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn gemini_api_base_accepts_service_and_versioned_roots() {
-        assert_eq!(
-            gemini_api_base_url("https://generativelanguage.googleapis.com").unwrap(),
-            "https://generativelanguage.googleapis.com/v1beta"
-        );
-        assert_eq!(
-            gemini_api_base_url("https://generativelanguage.googleapis.com/v1beta/").unwrap(),
-            "https://generativelanguage.googleapis.com/v1beta"
-        );
-        assert_eq!(
-            gemini_api_base_url("https://proxy.example.test/gemini/v1").unwrap(),
-            "https://proxy.example.test/gemini/v1"
-        );
-        assert_eq!(
-            gemini_models_url("https://generativelanguage.googleapis.com/v1beta").unwrap(),
-            "https://generativelanguage.googleapis.com/v1beta/models"
-        );
-    }
 
     #[test]
     fn openai_compatible_error_detail_matches_tauri_priority() {

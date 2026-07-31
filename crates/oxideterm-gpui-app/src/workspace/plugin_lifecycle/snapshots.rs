@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, SecondsFormat, Utc};
 use oxideterm_notification_center::{EventCategory, EventLogEntry, EventSeverity};
 use oxideterm_ssh::{
-    ConnectionConsumer, ConnectionInfo, ConnectionState, NodeMetadataSnapshot, NodeReadiness,
+    ConnectionConsumer, ConnectionInfo, ConnectionState, NodeReadiness, NodeTreeSnapshotNode,
 };
 use serde_json::{Map, Value, json};
 
@@ -63,7 +63,7 @@ fn native_plugin_connection_terminal_ids(consumers: &[ConnectionConsumer]) -> Ve
 }
 
 pub(super) fn native_plugin_session_tree_from_nodes(
-    mut nodes: Vec<NodeMetadataSnapshot>,
+    mut nodes: Vec<NodeTreeSnapshotNode>,
     titles: &HashMap<String, String>,
     terminal_ids_by_node: &HashMap<String, Vec<String>>,
 ) -> Vec<Value> {
@@ -75,7 +75,7 @@ pub(super) fn native_plugin_session_tree_from_nodes(
 }
 
 fn native_plugin_session_node_snapshot(
-    node: NodeMetadataSnapshot,
+    node: NodeTreeSnapshotNode,
     titles: &HashMap<String, String>,
     terminal_ids_by_node: &HashMap<String, Vec<String>>,
 ) -> Value {
@@ -91,22 +91,18 @@ fn native_plugin_session_node_snapshot(
         .unwrap_or_default();
     terminal_ids.sort();
     terminal_ids.dedup();
-    let connection_state = native_plugin_session_connection_state(
-        &node.readiness,
-        node.error.as_deref(),
-        terminal_ids.len(),
-    );
+    let connection_state = native_plugin_session_connection_state(&node.state, terminal_ids.len());
     let label = titles
         .get(&node_id)
         .filter(|title| !title.trim().is_empty())
         .cloned()
-        .unwrap_or_else(|| format!("{}@{}", node.username, node.host));
+        .unwrap_or_else(|| format!("{}@{}", node.config.username, node.config.host));
     let mut value = json!({
         "id": node_id,
         "label": label,
-        "host": node.host,
-        "port": node.port,
-        "username": node.username,
+        "host": node.config.host,
+        "port": node.config.port,
+        "username": node.config.username,
         "parentId": node.parent_id.map(|id| id.0),
         "childIds": node.children_ids.into_iter().map(|id| id.0).collect::<Vec<_>>(),
         "connectionState": connection_state,
@@ -114,24 +110,20 @@ fn native_plugin_session_node_snapshot(
         "terminalIds": terminal_ids,
         "sftpSessionId": node.sftp_session_id,
     });
-    if let (Some(error), Value::Object(fields)) = (node.error, &mut value) {
-        fields.insert(
-            "errorMessage".to_string(),
-            json!(oxideterm_ai::sanitize_for_ai(&error)),
-        );
+    if let (Some(error), Value::Object(fields)) = (node.state.error, &mut value) {
+        fields.insert("errorMessage".to_string(), json!(error));
     }
     value
 }
 
 pub(super) fn native_plugin_session_connection_state(
-    readiness: &NodeReadiness,
-    error: Option<&str>,
+    state: &oxideterm_ssh::NodeState,
     terminal_count: usize,
 ) -> &'static str {
-    if error == Some("Link down") {
+    if state.error.as_deref() == Some("Link down") {
         return "link-down";
     }
-    match readiness {
+    match state.readiness {
         NodeReadiness::Ready => {
             if terminal_count > 0 {
                 "active"

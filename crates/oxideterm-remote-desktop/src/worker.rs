@@ -1,7 +1,7 @@
 // Copyright (C) 2026 AnalyseDeCircuit
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{io::BufReader, sync::mpsc, thread, time::Duration};
+use std::{io::BufReader, sync::mpsc, thread};
 
 use crate::{
     RemoteDesktopConnectionProfile, RemoteDesktopFakeBackend, RemoteDesktopFrameDeliverySlot,
@@ -10,14 +10,6 @@ use crate::{
     RemoteDesktopSessionOptions, RemoteDesktopSize, is_remote_desktop_frame_event, read_event_line,
 };
 use crate::{helper_process, request_writer};
-
-const HELPER_CLOSE_GRACE_PERIOD: Duration = Duration::from_secs(2);
-const HELPER_LIVENESS_CHECK_INTERVAL: Duration = Duration::from_millis(250);
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct RemoteDesktopReaderOutcome {
-    terminal_delivery_sent: bool,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RemoteDesktopWorkerId {
@@ -56,7 +48,7 @@ pub struct RemoteDesktopWorkerConfig {
     pub worker_id: RemoteDesktopWorkerId,
     pub profile: RemoteDesktopConnectionProfile,
     pub provider: RemoteDesktopProviderManifest,
-    pub password_available: bool,
+    pub password: Option<RemoteDesktopSecret>,
     pub initial_size: RemoteDesktopSize,
     pub scale_factor: Option<u32>,
     pub monitor_layout: RemoteDesktopMonitorLayout,
@@ -68,29 +60,13 @@ pub fn run_remote_desktop_worker(
     request_rx: mpsc::Receiver<RemoteDesktopHelperRequest>,
     delivery_tx: mpsc::Sender<RemoteDesktopWorkerDelivery>,
 ) {
-    run_remote_desktop_worker_with_close_grace(
-        config,
-        frame_slot,
-        request_rx,
-        delivery_tx,
-        HELPER_CLOSE_GRACE_PERIOD,
-    );
-}
-
-fn run_remote_desktop_worker_with_close_grace(
-    config: RemoteDesktopWorkerConfig,
-    frame_slot: RemoteDesktopFrameDeliverySlot,
-    request_rx: mpsc::Receiver<RemoteDesktopHelperRequest>,
-    delivery_tx: mpsc::Sender<RemoteDesktopWorkerDelivery>,
-    close_grace_period: Duration,
-) {
     match helper_process::spawn_remote_desktop_helper(&config.provider) {
         Ok(mut helper) => {
             let stdout = helper.child.stdout.take();
             let connect = initial_connect_request(
                 &config.profile,
                 &config.provider,
-                config.password_available,
+                config.password,
                 config.initial_size,
                 config.scale_factor,
                 config.monitor_layout,
@@ -130,59 +106,23 @@ fn run_remote_desktop_worker_with_close_grace(
                     .ok()
             });
 
-            let mut exit_status = None;
-            let mut pending_transport_failure = None;
-            loop {
-                match helper.child.try_wait() {
-                    Ok(Some(status)) => {
-                        exit_status = Some(status);
-                        break;
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        pending_transport_failure = Some(error.to_string());
-                        break;
-                    }
-                }
-
-                match request_writer::write_remote_desktop_request_batch(
-                    &mut helper.stdin,
-                    &request_rx,
-                    HELPER_LIVENESS_CHECK_INTERVAL,
-                ) {
-                    Ok(request_writer::RemoteDesktopRequestBatchOutcome::Continue) => {}
-                    Ok(request_writer::RemoteDesktopRequestBatchOutcome::ShutdownRequested) => {
-                        break;
-                    }
-                    Err(error) => {
-                        pending_transport_failure = Some(error.to_string());
-                        break;
-                    }
-                }
+            if let Err(error) =
+                request_writer::write_remote_desktop_requests(&mut helper.stdin, request_rx)
+            {
+                send_delivery(
+                    &delivery_tx,
+                    RemoteDesktopWorkerDelivery::TransportFailed {
+                        worker_id: config.worker_id.clone(),
+                        message: error.to_string(),
+                    },
+                );
             }
             drop(helper.stdin);
-            // Close is cooperative first. A helper that ignores the protocol is
-            // killed and reaped only after the session-scoped grace period.
-            let exit_code = exit_status
-                .or_else(|| {
-                    helper_process::wait_for_remote_desktop_helper_exit(
-                        &mut helper.child,
-                        close_grace_period,
-                        HELPER_LIVENESS_CHECK_INTERVAL,
-                    )
-                })
-                .and_then(|status| status.code());
-            // The reader owns helper-reported termination semantics. Join it before deciding
-            // whether a writer-side pipe error is the only available failure reason.
-            let reader_outcome = reader_thread
-                .and_then(|reader_thread| reader_thread.join().ok())
-                .unwrap_or_default();
-            deliver_pending_transport_failure(
-                &delivery_tx,
-                &config.worker_id,
-                pending_transport_failure,
-                reader_outcome,
-            );
+            let exit_code = helper.child.wait().ok().and_then(|status| status.code());
+            if let Some(reader_thread) = reader_thread {
+                // Preserve every event emitted before process termination.
+                let _ = reader_thread.join();
+            }
             send_delivery(
                 &delivery_tx,
                 RemoteDesktopWorkerDelivery::Event {
@@ -231,11 +171,15 @@ pub fn connect_request(
 pub fn initial_connect_request(
     profile: &RemoteDesktopConnectionProfile,
     provider: &RemoteDesktopProviderManifest,
-    password_available: bool,
+    password: Option<RemoteDesktopSecret>,
     initial_size: RemoteDesktopSize,
     scale_factor: Option<u32>,
     monitor_layout: RemoteDesktopMonitorLayout,
 ) -> RemoteDesktopHelperRequest {
+    let password_available = password.as_ref().is_some_and(|secret| !secret.is_empty());
+    // The password copy owned by worker startup is dropped here; helpers only
+    // receive the non-sensitive availability hint until Authenticate.
+    drop(password);
     let session_options = effective_session_options(profile.session_options, provider);
     let monitor_layout = if session_options.display.use_all_monitors {
         monitor_layout
@@ -287,64 +231,26 @@ fn read_remote_desktop_events(
     stdout: impl std::io::Read,
     delivery_tx: mpsc::Sender<RemoteDesktopWorkerDelivery>,
     frame_slot: RemoteDesktopFrameDeliverySlot,
-) -> RemoteDesktopReaderOutcome {
+) {
     let mut reader = BufReader::new(stdout);
-    let mut outcome = RemoteDesktopReaderOutcome::default();
     loop {
         match read_event_line(&mut reader) {
             Ok(Some(event)) => {
-                if is_terminal_helper_event(&event) {
-                    outcome.terminal_delivery_sent = true;
-                }
                 deliver_worker_event(&worker_id, event, &delivery_tx, &frame_slot);
             }
             Ok(None) => break,
             Err(error) => {
-                if !outcome.terminal_delivery_sent {
-                    send_delivery(
-                        &delivery_tx,
-                        RemoteDesktopWorkerDelivery::TransportFailed {
-                            worker_id,
-                            message: error.to_string(),
-                        },
-                    );
-                    outcome.terminal_delivery_sent = true;
-                }
+                send_delivery(
+                    &delivery_tx,
+                    RemoteDesktopWorkerDelivery::TransportFailed {
+                        worker_id,
+                        message: error.to_string(),
+                    },
+                );
                 break;
             }
         }
     }
-    outcome
-}
-
-fn is_terminal_helper_event(event: &RemoteDesktopHelperEvent) -> bool {
-    matches!(
-        event,
-        RemoteDesktopHelperEvent::ConnectionFailure { .. }
-            | RemoteDesktopHelperEvent::Disconnected { .. }
-            | RemoteDesktopHelperEvent::Terminated { .. }
-    )
-}
-
-fn deliver_pending_transport_failure(
-    delivery_tx: &mpsc::Sender<RemoteDesktopWorkerDelivery>,
-    worker_id: &RemoteDesktopWorkerId,
-    pending_message: Option<String>,
-    reader_outcome: RemoteDesktopReaderOutcome,
-) {
-    let Some(message) = pending_message else {
-        return;
-    };
-    if reader_outcome.terminal_delivery_sent {
-        return;
-    }
-    send_delivery(
-        delivery_tx,
-        RemoteDesktopWorkerDelivery::TransportFailed {
-            worker_id: worker_id.clone(),
-            message,
-        },
-    );
 }
 
 fn deliver_worker_event(
@@ -476,7 +382,7 @@ mod tests {
         let request = initial_connect_request(
             &vnc_profile,
             &builtin_provider_manifest(RemoteDesktopProtocol::Vnc),
-            true,
+            Some(RemoteDesktopSecret::from("wire-secret")),
             RemoteDesktopSize {
                 width: 1280,
                 height: 720,
@@ -533,123 +439,5 @@ mod tests {
         assert!(effective.audio.playback);
         assert!(!effective.audio.capture);
         assert!(effective.display.use_all_monitors);
-    }
-
-    #[test]
-    fn helper_protocol_failure_suppresses_later_reader_transport_error() {
-        let worker_id = RemoteDesktopWorkerId::new(RemoteDesktopSessionId::new(), 41);
-        let event = RemoteDesktopHelperEvent::ConnectionFailure {
-            message: "ClearCodec decode failed".to_string(),
-            category: Some(crate::RemoteDesktopErrorCategory::Protocol),
-        };
-        let input = format!(
-            "{}\nnot-valid-json\n",
-            serde_json::to_string(&event).unwrap()
-        );
-        let (delivery_tx, delivery_rx) = mpsc::channel();
-
-        let outcome = read_remote_desktop_events(
-            worker_id,
-            input.as_bytes(),
-            delivery_tx,
-            RemoteDesktopFrameDeliverySlot::new(),
-        );
-
-        assert!(outcome.terminal_delivery_sent);
-        let deliveries = delivery_rx.try_iter().collect::<Vec<_>>();
-        assert_eq!(deliveries.len(), 1);
-        assert!(matches!(
-            &deliveries[0],
-            RemoteDesktopWorkerDelivery::Event {
-                event: RemoteDesktopHelperEvent::ConnectionFailure {
-                    category: Some(crate::RemoteDesktopErrorCategory::Protocol),
-                    ..
-                },
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn pending_transport_failure_is_delivered_without_helper_terminal_reason() {
-        let worker_id = RemoteDesktopWorkerId::new(RemoteDesktopSessionId::new(), 42);
-        let (delivery_tx, delivery_rx) = mpsc::channel();
-
-        deliver_pending_transport_failure(
-            &delivery_tx,
-            &worker_id,
-            Some("helper pipe closed".to_string()),
-            RemoteDesktopReaderOutcome::default(),
-        );
-
-        assert!(matches!(
-            delivery_rx.recv().unwrap(),
-            RemoteDesktopWorkerDelivery::TransportFailed { message, .. }
-                if message == "helper pipe closed"
-        ));
-    }
-
-    #[test]
-    fn helper_terminal_reason_suppresses_pending_transport_failure() {
-        let worker_id = RemoteDesktopWorkerId::new(RemoteDesktopSessionId::new(), 43);
-        let (delivery_tx, delivery_rx) = mpsc::channel();
-
-        deliver_pending_transport_failure(
-            &delivery_tx,
-            &worker_id,
-            Some("os error 232".to_string()),
-            RemoteDesktopReaderOutcome {
-                terminal_delivery_sent: true,
-            },
-        );
-
-        assert!(delivery_rx.try_recv().is_err());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn close_kills_and_reaps_a_helper_that_ignores_the_protocol() {
-        let mut provider = builtin_provider_manifest(RemoteDesktopProtocol::Rdp);
-        provider.entry.command = "sh".to_string();
-        provider.entry.args = vec![
-            "-c".to_string(),
-            "IFS= read -r _line; exec sleep 3".to_string(),
-        ];
-        provider.entry.working_dir = None;
-        let config = RemoteDesktopWorkerConfig {
-            worker_id: RemoteDesktopWorkerId::new(RemoteDesktopSessionId::new(), 7),
-            profile: profile(),
-            provider,
-            password_available: false,
-            initial_size: RemoteDesktopSize {
-                width: 1280,
-                height: 720,
-            },
-            scale_factor: None,
-            monitor_layout: RemoteDesktopMonitorLayout::default(),
-        };
-        let (request_tx, request_rx) = mpsc::channel();
-        request_tx.send(RemoteDesktopHelperRequest::Close).unwrap();
-        let (delivery_tx, delivery_rx) = mpsc::channel();
-        let started_at = std::time::Instant::now();
-
-        run_remote_desktop_worker_with_close_grace(
-            config,
-            RemoteDesktopFrameDeliverySlot::new(),
-            request_rx,
-            delivery_tx,
-            Duration::from_millis(20),
-        );
-
-        assert!(started_at.elapsed() < Duration::from_secs(1));
-        assert!(delivery_rx.try_iter().any(|delivery| {
-            matches!(
-                delivery,
-                RemoteDesktopWorkerDelivery::Event {
-                    event: RemoteDesktopHelperEvent::Terminated { .. },
-                    ..
-                }
-            )
-        }));
     }
 }
