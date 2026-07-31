@@ -67,6 +67,8 @@ pub use session_tree_plan::{
     NativeSessionTreeConnectAction, NativeSessionTreeConnectChallenge,
     NativeSessionTreeConnectEndpoint, NativeSessionTreeConnectPlan, NativeSessionTreeConnectStep,
 };
+pub(crate) use transport::DedicatedMonitorConnection;
+pub(crate) use transport::DedicatedSftpConnection;
 pub use transport::{
     BoxedSshForwardStream, KeyboardInteractivePrompt, KeyboardInteractivePromptRequest,
     KeyboardInteractiveResponses, ManagedKeyResolver, RemoteForwardHandler, RemoteForwardedTcpIp,
@@ -74,8 +76,6 @@ pub use transport::{
     SshPtyHandle, SshShellChannel, SshTransportClient, SshTransportCommand, SshTransportError,
     X11ForwardHandler, X11ForwardedChannel,
 };
-pub(crate) use transport::DedicatedSftpConnection;
-pub(crate) use transport::DedicatedMonitorConnection;
 pub use upstream_proxy::{
     UpstreamProxyAuth, UpstreamProxyConfig, UpstreamProxyError, UpstreamProxyProtocol,
     dial_initial_tcp, parse_http_proxy_value, parse_socks5_proxy_value, probe_upstream_proxy_route,

@@ -322,7 +322,7 @@ impl WorkspaceApp {
                 }
             });
         })
-            .detach();
+        .detach();
     }
 
     fn detached_tab_return_visible_index(&self, screen_x: f32) -> Option<usize> {
@@ -494,7 +494,7 @@ impl WorkspaceApp {
                     &self.tokens,
                     oxideterm_gpui_ui::motion::MotionDuration::Overlay,
                 ))
-                    .with_easing(oxideterm_gpui_ui::motion::ease_in_out_cubic),
+                .with_easing(oxideterm_gpui_ui::motion::ease_in_out_cubic),
                 move |surface, progress| {
                     let surface = surface.opacity(1.0 - progress);
                     if !spatial {
@@ -645,7 +645,7 @@ impl WorkspaceApp {
                         &self.tokens,
                         760,
                     ))
-                        .repeat(),
+                    .repeat(),
                     |preview, delta| {
                         let pulse = if delta < 0.5 {
                             delta * 2.0
@@ -749,7 +749,7 @@ impl WorkspaceApp {
                         &self.tokens,
                         760,
                     ))
-                        .repeat(),
+                    .repeat(),
                     |preview, delta| {
                         let pulse = if delta < 0.5 {
                             delta * 2.0
@@ -807,18 +807,18 @@ impl WorkspaceApp {
                         false,
                         false,
                     )
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _event, window, cx| {
-                                this.close_tab_context_menu();
-                                if detached {
-                                    this.return_detached_tab_to_main(menu.tab_id, cx);
-                                } else {
-                                    this.detach_tab_to_window(menu.tab_id, None, window, cx);
-                                }
-                                cx.stop_propagation();
-                            }),
-                        ),
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _event, window, cx| {
+                            this.close_tab_context_menu();
+                            if detached {
+                                this.return_detached_tab_to_main(menu.tab_id, cx);
+                            } else {
+                                this.detach_tab_to_window(menu.tab_id, None, window, cx);
+                            }
+                            cx.stop_propagation();
+                        }),
+                    ),
                 )
                 .child(context_menu_separator(&self.tokens))
                 .child(
@@ -829,34 +829,33 @@ impl WorkspaceApp {
                         false,
                         false,
                     )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.close_tab_context_menu();
+                            this.begin_tab_rename(menu.tab_id, cx);
+                            cx.stop_propagation();
+                        }),
+                    ),
+                )
+                .when(has_custom_title, |builder| {
+                    builder.child(
+                        context_menu_item(
+                            &self.tokens,
+                            self.i18n.t("tabbar.reset_title"),
+                            ContextMenuItemKind::Plain,
+                            false,
+                            false,
+                        )
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _event, _window, cx| {
                                 this.close_tab_context_menu();
-                                this.begin_tab_rename(menu.tab_id, cx);
+                                this.reset_tab_title(menu.tab_id, cx);
                                 cx.stop_propagation();
                             }),
                         ),
-                )
-                .when(has_custom_title, |builder| {
-                    builder
-                        .child(
-                            context_menu_item(
-                                &self.tokens,
-                                self.i18n.t("tabbar.reset_title"),
-                                ContextMenuItemKind::Plain,
-                                false,
-                                false,
-                            )
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _event, _window, cx| {
-                                        this.close_tab_context_menu();
-                                        this.reset_tab_title(menu.tab_id, cx);
-                                        cx.stop_propagation();
-                                    }),
-                                ),
-                        )
+                    )
                 })
                 .child(context_menu_separator(&self.tokens))
                 .child(
@@ -867,14 +866,14 @@ impl WorkspaceApp {
                         false,
                         false,
                     )
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _event, window, cx| {
-                                this.close_tab_context_menu();
-                                this.close_tab_by_id(menu.tab_id, window, cx);
-                                cx.stop_propagation();
-                            }),
-                        ),
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _event, window, cx| {
+                            this.close_tab_context_menu();
+                            this.close_tab_by_id(menu.tab_id, window, cx);
+                            cx.stop_propagation();
+                        }),
+                    ),
                 ),
         );
         let menu_body = overlay_content_boundary(menu_body);
@@ -888,10 +887,10 @@ impl WorkspaceApp {
                         .position_mode(AnchoredPositionMode::Window)
                         .child(menu_body),
                 )
-                    .with_priority(oxideterm_gpui_ui::modal::TAURI_POPOVER_LAYER_PRIORITY),
+                .with_priority(oxideterm_gpui_ui::modal::TAURI_POPOVER_LAYER_PRIORITY),
                 cx,
             )
-                .into_any_element(),
+            .into_any_element(),
         )
     }
 

@@ -41,9 +41,7 @@ pub fn persisted_settings_input_value(
         SettingsInput::TerminalKeepaliveInterval => {
             settings.terminal.keepalive.interval_secs.to_string()
         }
-        SettingsInput::TerminalKeepaliveString => {
-            settings.terminal.keepalive.send_string.clone()
-        }
+        SettingsInput::TerminalKeepaliveString => settings.terminal.keepalive.send_string.clone(),
         SettingsInput::IdeFontSize => settings
             .ide
             .font_size
@@ -295,8 +293,7 @@ pub fn apply_persisted_settings_input_draft(
             .into(),
         SettingsInput::TerminalKeepaliveInterval => parse_i64(draft)
             .map(|value| {
-                settings.terminal.keepalive.interval_secs =
-                    value.clamp(0, 3600) as u32;
+                settings.terminal.keepalive.interval_secs = value.clamp(0, 3600) as u32;
             })
             .into(),
         SettingsInput::TerminalKeepaliveString => {

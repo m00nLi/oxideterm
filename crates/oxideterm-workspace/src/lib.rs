@@ -360,14 +360,14 @@ impl PaneNode {
         match self {
             Self::Leaf { .. } => false,
             Self::Group { id, children, .. }
-            if *id == group_id && next_sizes.len() == children.len() =>
-                {
-                    let sizes = balanced_sizes(next_sizes, children.len());
-                    for (child, size) in children.iter_mut().zip(sizes) {
-                        child.size = size;
-                    }
-                    true
+                if *id == group_id && next_sizes.len() == children.len() =>
+            {
+                let sizes = balanced_sizes(next_sizes, children.len());
+                for (child, size) in children.iter_mut().zip(sizes) {
+                    child.size = size;
                 }
+                true
+            }
             Self::Group { children, .. } => children
                 .iter_mut()
                 .any(|child| child.node.update_group_sizes(group_id, next_sizes)),
@@ -671,10 +671,16 @@ mod tests {
         let mut tab = sample_i18n_tab("Settings");
         tab.set_custom_title(Some("My Settings".to_string()));
         // The i18n source survives so sync_tab_titles can re-translate.
-        assert_eq!(tab.title_source, TabTitleSource::I18nKey("sidebar.panels.settings"));
+        assert_eq!(
+            tab.title_source,
+            TabTitleSource::I18nKey("sidebar.panels.settings")
+        );
         // Reset back to the derived title.
         tab.set_custom_title(None);
         assert!(tab.custom_title.is_none());
-        assert_eq!(tab.title_source, TabTitleSource::I18nKey("sidebar.panels.settings"));
+        assert_eq!(
+            tab.title_source,
+            TabTitleSource::I18nKey("sidebar.panels.settings")
+        );
     }
 }

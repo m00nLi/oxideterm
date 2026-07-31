@@ -1210,17 +1210,17 @@ impl WorkspaceApp {
                     self.card_separator(),
                     {
                         let control = self.number_input(
-                        SettingsInput::TerminalKeepaliveString,
-                        settings.terminal.keepalive.send_string.clone(),
-                        200.0,
-                        cx,
-                    );
+                            SettingsInput::TerminalKeepaliveString,
+                            settings.terminal.keepalive.send_string.clone(),
+                            200.0,
+                            cx,
+                        );
                         self.setting_row(
-                        "ssh.form.keepalive_send_string",
-                        "ssh.form.keepalive_send_string_hint",
-                        control,
-                        cx,
-                    )
+                            "ssh.form.keepalive_send_string",
+                            "ssh.form.keepalive_send_string_hint",
+                            control,
+                            cx,
+                        )
                     },
                 ],
             ),

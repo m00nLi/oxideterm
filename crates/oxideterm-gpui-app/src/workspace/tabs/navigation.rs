@@ -378,15 +378,19 @@ impl WorkspaceApp {
             let _ = forwarding_registry.remove(&forwarding_session_id).await;
         });
 
-       let endpoint_session = self.terminal_endpoint_sessions.remove(&session_id);
+        let endpoint_session = self.terminal_endpoint_sessions.remove(&session_id);
         // Prune the custom terminal label and clear inline-rename state so
         // stale ids don't swallow input or leak memory.
         self.terminal_labels.remove(&session_id);
-        if self.terminal_rename_dialog.as_ref().is_some_and(|(id, _)| id.0 == session_id.0) {
+        if self
+            .terminal_rename_dialog
+            .as_ref()
+            .is_some_and(|(id, _)| id.0 == session_id.0)
+        {
             self.terminal_rename_dialog = None;
         }
-       let Some(node_id) = self.terminal_ssh_nodes.remove(&session_id) else {
-           return;
+        let Some(node_id) = self.terminal_ssh_nodes.remove(&session_id) else {
+            return;
         };
         // Tauri terminal close only removes the terminal/session mapping.
         // Do not health-probe here: a closed shell channel is not evidence
@@ -911,19 +915,23 @@ impl WorkspaceApp {
         let old_active_tab_id = self.main_window_tabs.active_tab_id;
         let removed_was_active = self.tabs.get(index).map(|tab| tab.id) == old_active_tab_id;
         let exiting_visual = self.tab_exit_visual(index);
-       let tab = self.tabs.remove(index);
-       self.detached_tabs.remove(&tab.id);
-       self.detached_tab_windows.remove(&tab.id);
+        let tab = self.tabs.remove(index);
+        self.detached_tabs.remove(&tab.id);
+        self.detached_tab_windows.remove(&tab.id);
         // Clear inline-rename state if the closed tab was being renamed,
         // otherwise the orphaned id would swallow all keyboard input.
-        if self.tab_rename_dialog.as_ref().is_some_and(|(id, _, _, _)| id.0 == tab.id.0) {
-           self.tab_rename_dialog_offset = Point::new(px(0.0), px(0.0));
-           self.tab_rename_dialog_drag = None;
-           self.tab_rename_text_drag = None;
-           self.tab_rename_input_bounds = None;
-           self.tab_rename_dialog = None;
+        if self
+            .tab_rename_dialog
+            .as_ref()
+            .is_some_and(|(id, _, _, _)| id.0 == tab.id.0)
+        {
+            self.tab_rename_dialog_offset = Point::new(px(0.0), px(0.0));
+            self.tab_rename_dialog_drag = None;
+            self.tab_rename_text_drag = None;
+            self.tab_rename_input_bounds = None;
+            self.tab_rename_dialog = None;
         }
-       if self
+        if self
             .main_window_tabs
             .context_menu
             .is_some_and(|menu| menu.tab_id == tab.id)
@@ -1328,10 +1336,10 @@ impl WorkspaceApp {
         // renamed tabs keep their name across language switches.
         let title = match &tab.custom_title {
             Some(custom) => custom.clone(),
-           None => match tab.title_source {
-               TabTitleSource::Static => tab.title.clone(),
-               TabTitleSource::I18nKey(key) => self.i18n.t(key),
-           },
+            None => match tab.title_source {
+                TabTitleSource::Static => tab.title.clone(),
+                TabTitleSource::I18nKey(key) => self.i18n.t(key),
+            },
         };
         if matches!(tab.kind, TabKind::LocalTerminal | TabKind::SshTerminal) {
             let pane_count = tab.root_pane.as_ref().map_or(1, PaneNode::pane_count);

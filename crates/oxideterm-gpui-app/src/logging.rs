@@ -7,8 +7,8 @@ use std::{
 use anyhow::{Context as _, Result};
 use oxideterm_settings::PersistedSettings;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use tracing_subscriber::layer::Layer;
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 const LOG_FILE_NAME: &str = "oxideterm-native.log";
 const LEGACY_LOG_FILE_PREFIX: &str = "oxideterm-native.";
@@ -143,16 +143,13 @@ pub(crate) fn init_file_logging(
 
     // Also log to stderr when OXIDETERM_STDERR_LOG is set, so logs are
     // visible even if the process crashes before file logs flush.
-    let subscriber = subscriber.with(
-        should_log_to_stderr()
-            .then(|| {
-                fmt::layer()
-                    .with_writer(std::io::stderr)
-                    .with_ansi(true)
-                    .with_target(true)
-                    .boxed()
-            }),
-    );
+    let subscriber = subscriber.with(should_log_to_stderr().then(|| {
+        fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_ansi(true)
+            .with_target(true)
+            .boxed()
+    }));
 
     // Tests or embedding hosts may already have installed a global subscriber.
     // In that case OxideTerm should keep running and simply skip its file sink.

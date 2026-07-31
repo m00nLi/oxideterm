@@ -162,7 +162,7 @@ impl Render for WorkspaceApp {
         }
         if self.needs_active_pane_focus
             && self.active_tab().is_some_and(|tab| {
-            !matches!(
+                !matches!(
                     tab.kind,
                     TabKind::Settings
                         | TabKind::SessionManager
@@ -179,7 +179,7 @@ impl Render for WorkspaceApp {
                         | TabKind::CloudSync
                         | TabKind::RemoteDesktop
                 )
-        })
+            })
             && !self.search.visible
             && self.new_connection_form.is_none()
             && let Some(pane) = self.active_pane()
@@ -271,16 +271,16 @@ impl Render for WorkspaceApp {
             })
             .track_focus(&self.focus_handle)
             .key_context("Workspace")
-           .on_mouse_down(
-               MouseButton::Left,
-               cx.listener(|this, _event: &MouseDownEvent, _window, cx| {
-                   // Popovers inside the command bar stop propagation. Any
-                   // remaining workspace click is outside those overlays and
-                   // should dismiss them without stealing the original click.
-                   this.close_terminal_command_overlays(cx);
-               }),
-           )
-           .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseDownEvent, _window, cx| {
+                    // Popovers inside the command bar stop propagation. Any
+                    // remaining workspace click is outside those overlays and
+                    // should dismiss them without stealing the original click.
+                    this.close_terminal_command_overlays(cx);
+                }),
+            )
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 // A modal close confirmation owns Enter/Escape even when the
                 // terminal or an IME target retained focus behind the dialog.
                 if this.main_window_tabs.close_confirm.is_some()
@@ -435,10 +435,10 @@ impl Render for WorkspaceApp {
                 } else if !this.command_palette.open
                     && this.settings_page.keybinding_recording_action_id.is_none()
                     && crate::keybindings::keystroke_matches_action(
-                    &event.keystroke,
-                    "app.commandPalette",
-                    &this.settings_store.settings().keybindings.overrides,
-                )
+                        &event.keystroke,
+                        "app.commandPalette",
+                        &this.settings_store.settings().keybindings.overrides,
+                    )
                 {
                     this.open_command_palette(cx);
                     window.prevent_default();
@@ -553,8 +553,8 @@ impl Render for WorkspaceApp {
                     cx.stop_propagation();
                 } else if this.ai_sidebar_visible()
                     && (this.ai.chat.input_focused
-                    || this.ai.chat.footer_focus.is_some()
-                    || this.ai.models.selector_search_focused)
+                        || this.ai.chat.footer_focus.is_some()
+                        || this.ai.models.selector_search_focused)
                 {
                     let _ = this.handle_ai_sidebar_key(event, cx);
                     window.prevent_default();
@@ -953,7 +953,7 @@ impl Render for WorkspaceApp {
                             window.set_window_cursor_style(CursorStyle::ResizeColumn);
                         },
                     )
-                        .absolute(),
+                    .absolute(),
                 )
             })
             .when(
@@ -1321,8 +1321,8 @@ impl WorkspaceApp {
                         ),
                 ),
         )
-            .with_priority(oxideterm_gpui_ui::modal::TAURI_POPOVER_LAYER_PRIORITY)
-            .into_any_element()
+        .with_priority(oxideterm_gpui_ui::modal::TAURI_POPOVER_LAYER_PRIORITY)
+        .into_any_element()
     }
 
     pub(in crate::workspace) fn render_zen_mode_hint(&self) -> AnyElement {
@@ -1407,8 +1407,8 @@ impl WorkspaceApp {
             overlay,
             oxideterm_gpui_ui::motion::MotionDuration::Control,
         ))
-            .with_priority(oxideterm_gpui_ui::modal::TAURI_TOOLTIP_LAYER_PRIORITY)
-            .into_any_element()
+        .with_priority(oxideterm_gpui_ui::modal::TAURI_TOOLTIP_LAYER_PRIORITY)
+        .into_any_element()
     }
 }
 
@@ -1476,7 +1476,7 @@ impl WorkspaceApp {
                 cx.notify();
             });
         })
-            .detach();
+        .detach();
     }
 
     pub(in crate::workspace) fn clear_workspace_tooltip_state(&mut self, id: &str) -> bool {
@@ -1523,8 +1523,8 @@ impl WorkspaceApp {
                 .position_mode(AnchoredPositionMode::Window)
                 .child(tooltip_content(&self.tokens, tooltip.label, None)),
         )
-            .with_priority(oxideterm_gpui_ui::modal::TAURI_TOOLTIP_LAYER_PRIORITY)
-            .into_any_element()
+        .with_priority(oxideterm_gpui_ui::modal::TAURI_TOOLTIP_LAYER_PRIORITY)
+        .into_any_element()
     }
 
     pub(in crate::workspace) fn next_workspace_toast_id(&mut self) -> u64 {
@@ -1566,7 +1566,7 @@ impl WorkspaceApp {
                 cx.notify();
             });
         })
-            .detach();
+        .detach();
         true
     }
 
@@ -1603,7 +1603,7 @@ impl WorkspaceApp {
                 }
             });
         })
-            .detach();
+        .detach();
         true
     }
 
@@ -1640,7 +1640,7 @@ impl WorkspaceApp {
                 }
             });
         })
-            .detach();
+        .detach();
         true
     }
 
@@ -1708,7 +1708,7 @@ impl WorkspaceApp {
                         .filter(|toast| {
                             toast.expires_at <= now
                                 && toast.presence.phase()
-                                == oxideterm_gpui_ui::motion::ExitPhase::Visible
+                                    == oxideterm_gpui_ui::motion::ExitPhase::Visible
                         })
                         .map(|toast| toast.id)
                         .collect::<Vec<_>>();
@@ -1721,7 +1721,7 @@ impl WorkspaceApp {
                         .filter(|(_, toast)| {
                             toast.expires_at <= now
                                 && toast.presence.phase()
-                                == oxideterm_gpui_ui::motion::ExitPhase::Visible
+                                    == oxideterm_gpui_ui::motion::ExitPhase::Visible
                         })
                         .map(|(key, _)| key.clone())
                         .collect::<Vec<_>>();
@@ -1731,7 +1731,7 @@ impl WorkspaceApp {
                     cx.notify();
                 });
             })
-                .detach();
+            .detach();
         }
     }
 
@@ -1743,9 +1743,9 @@ impl WorkspaceApp {
         if self.workspace_toasts.is_empty()
             && self.plugin_progress_toasts.is_empty()
             && !self
-            .connection_trace_toasts
-            .values()
-            .any(|trace| trace.displayed.is_some())
+                .connection_trace_toasts
+                .values()
+                .any(|trace| trace.displayed.is_some())
             && update_notification.is_none()
         {
             return None;
@@ -1892,7 +1892,7 @@ impl WorkspaceApp {
                                 cx.notify();
                             });
                         })
-                            .detach();
+                        .detach();
                     } else {
                         trace.flush_generation = trace.flush_generation.wrapping_add(1);
                         let generation = trace.flush_generation;
@@ -1904,7 +1904,7 @@ impl WorkspaceApp {
                                 cx.notify();
                             });
                         })
-                            .detach();
+                        .detach();
                     }
                 }
                 ConnectionTraceStatus::Ready => {
@@ -1927,7 +1927,7 @@ impl WorkspaceApp {
                                 cx.notify();
                             });
                         })
-                            .detach();
+                        .detach();
                     } else {
                         self.connection_trace_toasts.remove(&attempt_id);
                     }
@@ -1949,7 +1949,7 @@ impl WorkspaceApp {
                             cx.notify();
                         });
                     })
-                        .detach();
+                    .detach();
                     changed = true;
                 }
                 ConnectionTraceStatus::Cancelled => {

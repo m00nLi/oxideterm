@@ -1,18 +1,18 @@
 use super::*;
-use std::ops::Range;
 use gpui::{ClipboardItem, Font, TextRun};
 use oxideterm_editor_core::utf16::{
     next_utf16_boundary, previous_utf16_boundary, replace_utf16, utf16_offset_for_byte_index,
     utf16_slice, word_range_for_utf16_offset,
 };
 use oxideterm_gpui_ui::modal::{
-    dialog_backdrop, dialog_description, dialog_header, dialog_title, modal_body,
-    modal_container, modal_footer,
+    dialog_backdrop, dialog_description, dialog_header, dialog_title, modal_body, modal_container,
+    modal_footer,
 };
 use oxideterm_gpui_ui::text_input::{
     TextInputAnchorId, TextInputView, text_input, text_input_anchor_probe,
 };
 use oxideterm_gpui_ui::typography::tauri_ui_font_family;
+use std::ops::Range;
 
 /// Stable anchor id for the tab-rename text input.  Chosen well above the
 /// highest WorkspaceImeTarget id (3_000 + n) to avoid collisions.
@@ -56,9 +56,7 @@ impl WorkspaceApp {
                 }
                 "c" => {
                     if let Some(range) = sel {
-                        cx.write_to_clipboard(ClipboardItem::new_string(utf16_slice(
-                            draft, range,
-                        )));
+                        cx.write_to_clipboard(ClipboardItem::new_string(utf16_slice(draft, range)));
                     }
                     return true;
                 }
@@ -66,7 +64,8 @@ impl WorkspaceApp {
                     if let Some(range) = sel {
                         let start = range.start;
                         cx.write_to_clipboard(ClipboardItem::new_string(utf16_slice(
-                            draft, range.clone(),
+                            draft,
+                            range.clone(),
                         )));
                         replace_utf16(draft, Some(range), "");
                         *anchor = start;
@@ -76,10 +75,7 @@ impl WorkspaceApp {
                     return true;
                 }
                 "v" => {
-                   if let Some(text) = cx
-                       .read_from_clipboard()
-                       .and_then(|item| item.text())
-                   {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                         let text = text.replace(['\n', '\r'], " ");
                         let insert_len = text.encode_utf16().count();
                         let insert_pos = sel.as_ref().map_or(0, |r| r.start);
@@ -209,12 +205,7 @@ impl WorkspaceApp {
     /// Compute the UTF-16 cursor offset for a mouse click inside the rename
     /// text input.  Shapes the draft text with the same UI font/size the
     /// `text_input` component renders so hit-testing matches the painted glyphs.
-    fn tab_rename_cursor_for_x(
-        &self,
-        draft: &str,
-        click_x: Pixels,
-        window: &mut Window,
-    ) -> usize {
+    fn tab_rename_cursor_for_x(&self, draft: &str, click_x: Pixels, window: &mut Window) -> usize {
         let text_len_utf16 = draft.encode_utf16().count();
         if text_len_utf16 == 0 {
             return 0;
@@ -260,11 +251,7 @@ impl WorkspaceApp {
     }
 
     /// Open the tab rename dialog.
-    pub(in crate::workspace) fn begin_tab_rename(
-        &mut self,
-        tab_id: TabId,
-        cx: &mut Context<Self>,
-    ) {
+    pub(in crate::workspace) fn begin_tab_rename(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         let Some(tab) = self.tab_by_id(tab_id) else {
             return;
         };
@@ -310,11 +297,7 @@ impl WorkspaceApp {
         cx.notify();
     }
 
-    pub(in crate::workspace) fn reset_tab_title(
-        &mut self,
-        tab_id: TabId,
-        cx: &mut Context<Self>,
-    ) {
+    pub(in crate::workspace) fn reset_tab_title(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         if let Some(tab) = self.tab_mut_by_id(tab_id) {
             tab.set_custom_title(None);
             cx.notify();
@@ -395,26 +378,20 @@ impl WorkspaceApp {
             }),
         );
 
-        let probed_input = text_input_anchor_probe(
-            TextInputAnchorId(TAB_RENAME_ANCHOR_ID),
-            input,
-            {
+        let probed_input =
+            text_input_anchor_probe(TextInputAnchorId(TAB_RENAME_ANCHOR_ID), input, {
                 let entity = cx.entity();
                 move |anchor, _window, cx: &mut gpui::App| {
                     let _ = entity.update(cx, |this, _cx| {
                         this.tab_rename_input_bounds = Some(anchor.bounds);
                     });
                 }
-            },
-        );
+            });
 
         let dialog = modal_container(&self.tokens)
             .child(
                 dialog_header(&self.tokens)
-                    .child(dialog_title(
-                        &self.tokens,
-                        self.i18n.t("tabbar.rename_tab"),
-                    ))
+                    .child(dialog_title(&self.tokens, self.i18n.t("tabbar.rename_tab")))
                     .child(dialog_description(&self.tokens, String::new()))
                     .cursor(CursorStyle::OpenHand)
                     .on_mouse_down(
@@ -427,11 +404,7 @@ impl WorkspaceApp {
                         }),
                     ),
             )
-            .child(
-                modal_body(&self.tokens)
-                    .py(px(12.0))
-                    .child(probed_input),
-            )
+            .child(modal_body(&self.tokens).py(px(12.0)).child(probed_input))
             .child(
                 modal_footer(&self.tokens)
                     .child(
@@ -468,8 +441,8 @@ impl WorkspaceApp {
         // closes via the confirm/cancel buttons.  Mouse-move/up still drive
         // the header drag and text selection drag while the button is held.
         let backdrop = dialog_backdrop()
-            .on_mouse_move(cx.listener(
-                move |this, event: &MouseMoveEvent, window, cx| {
+            .on_mouse_move(
+                cx.listener(move |this, event: &MouseMoveEvent, window, cx| {
                     // --- Header drag ---
                     if let Some((mouse_start, offset_start)) = this.tab_rename_dialog_drag {
                         this.tab_rename_dialog_offset = Point::new(
@@ -492,8 +465,8 @@ impl WorkspaceApp {
                         }
                         cx.notify();
                     }
-                },
-            ))
+                }),
+            )
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, _event, _window, cx| {

@@ -1,4 +1,4 @@
-use oxideterm_ssh::{SshConfig, SshTransportClient, SshTransportCommand, SshPtyHandle};
+use oxideterm_ssh::{SshConfig, SshPtyHandle, SshTransportClient, SshTransportCommand};
 use std::time::Duration;
 use zeroize::Zeroizing;
 
@@ -32,7 +32,10 @@ async fn main() {
     eprintln!("=== Connecting ===");
 
     let pty_handle = client.connect_shell().await.expect("connect_shell failed");
-    eprintln!("=== Shell connected, session: {} ===", pty_handle.session_id);
+    eprintln!(
+        "=== Shell connected, session: {} ===",
+        pty_handle.session_id
+    );
 
     // SshPtyHandle implements Drop, so we can't move fields out.
     // Use ManuallyDrop to take ownership of fields.
@@ -50,8 +53,11 @@ async fn main() {
                 if start.elapsed() < Duration::from_secs(5) {
                     let s = String::from_utf8_lossy(&chunk);
                     let preview: String = s.chars().take(60).collect();
-                    eprintln!("=== Output at {:?}: {}", start.elapsed(),
-                        preview.replace('\n', "\\n").replace('\r', "\\r"));
+                    eprintln!(
+                        "=== Output at {:?}: {}",
+                        start.elapsed(),
+                        preview.replace('\n', "\\n").replace('\r', "\\r")
+                    );
                 }
             }
             Err(_) => {}

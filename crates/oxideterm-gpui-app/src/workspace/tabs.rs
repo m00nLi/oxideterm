@@ -8,8 +8,8 @@ mod helpers;
 mod navigation;
 mod nodes;
 mod nodes_reconnect_helpers;
-mod render;
 mod rename;
+mod render;
 mod state;
 
 // The main tab strip keeps a thin visual thumb while exposing a larger drag target.

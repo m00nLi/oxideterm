@@ -845,7 +845,7 @@ impl WorkspaceApp {
             .terminal_labels
             .get(&session_id)
             .cloned()
- .unwrap_or_default();
+            .unwrap_or_default();
         self.terminal_rename_dialog = Some((session_id, draft));
         cx.notify();
     }
@@ -882,8 +882,8 @@ impl WorkspaceApp {
         if self.terminal_rename_dialog.is_none() {
             return false;
         }
-       let key = event.keystroke.key.as_str();
-       let modifiers = &event.keystroke.modifiers;
+        let key = event.keystroke.key.as_str();
+        let modifiers = &event.keystroke.modifiers;
         // Consume all keys while renaming so nothing leaks to the terminal.
         if modifiers.platform || modifiers.control {
             return true;
@@ -902,12 +902,16 @@ impl WorkspaceApp {
                 cx.notify();
                 true
             }
-            "tab" | "arrowleft" | "arrowright" | "arrowup" | "arrowdown"
-            | "home" | "end" | "delete" => true,
+            "tab" | "arrowleft" | "arrowright" | "arrowup" | "arrowdown" | "home" | "end"
+            | "delete" => true,
             _ => {
                 if let Some(text) = event.keystroke.key_char.as_deref() {
                     if !text.is_empty() && !text.chars().any(char::is_control) {
-                        self.terminal_rename_dialog.as_mut().unwrap().1.push_str(text);
+                        self.terminal_rename_dialog
+                            .as_mut()
+                            .unwrap()
+                            .1
+                            .push_str(text);
                         cx.notify();
                         return true;
                     }
@@ -919,7 +923,9 @@ impl WorkspaceApp {
 
     /// Whether the given terminal session is currently being renamed inline.
     pub(in crate::workspace) fn is_renaming_terminal(&self, session_id: TerminalSessionId) -> bool {
-        self.terminal_rename_dialog.as_ref().is_some_and(|(id, _)| id.0 == session_id.0)
+        self.terminal_rename_dialog
+            .as_ref()
+            .is_some_and(|(id, _)| id.0 == session_id.0)
     }
 
     pub(in crate::workspace) fn render_active_session_focus_terminal(
@@ -970,7 +976,7 @@ impl WorkspaceApp {
                     .flex_1()
                     .truncate()
                     .text_size(px(SESSION_TREE_META_TEXT_SIZE))
-                   .child(if self.is_renaming_terminal(session_id) {
+                    .child(if self.is_renaming_terminal(session_id) {
                         div()
                             .flex_1()
                             .min_w(px(0.0))
@@ -980,8 +986,14 @@ impl WorkspaceApp {
                             .child(oxideterm_gpui_ui::text_input::text_input(
                                 &self.tokens,
                                 oxideterm_gpui_ui::text_input::TextInputView {
-                                    value: &self.terminal_rename_dialog.as_ref().map(|(_, d)| d.as_str()).unwrap_or(""),
-                                    placeholder: self.i18n.t("sessions.focused_list.rename_terminal"),
+                                    value: &self
+                                        .terminal_rename_dialog
+                                        .as_ref()
+                                        .map(|(_, d)| d.as_str())
+                                        .unwrap_or(""),
+                                    placeholder: self
+                                        .i18n
+                                        .t("sessions.focused_list.rename_terminal"),
                                     focused: true,
                                     caret_visible: self.new_connection_caret_visible,
                                     secret: false,
@@ -991,10 +1003,10 @@ impl WorkspaceApp {
                                 },
                             ))
                             .into_any_element()
-                   } else {
-                       self.render_row_safe_selectable_display_text_in_group(
-                           crate::workspace::selectable_text::selectable_text_id(
-                               "session-focus-terminal",
+                    } else {
+                        self.render_row_safe_selectable_display_text_in_group(
+                            crate::workspace::selectable_text::selectable_text_id(
+                                "session-focus-terminal",
                                 session_id,
                             ),
                             "session-focus-terminal-cell",
@@ -1751,10 +1763,14 @@ impl WorkspaceApp {
                                 .child(oxideterm_gpui_ui::text_input::text_input(
                                     &self.tokens,
                                     oxideterm_gpui_ui::text_input::TextInputView {
-                                        value: &self.terminal_rename_dialog.as_ref().map(|(_, d)| d.as_str()).unwrap_or(""),
-                                        placeholder: self.i18n.t(
-                                            "sessions.focused_list.rename_terminal",
-                                        ),
+                                        value: &self
+                                            .terminal_rename_dialog
+                                            .as_ref()
+                                            .map(|(_, d)| d.as_str())
+                                            .unwrap_or(""),
+                                        placeholder: self
+                                            .i18n
+                                            .t("sessions.focused_list.rename_terminal"),
                                         focused: true,
                                         caret_visible: self.new_connection_caret_visible,
                                         secret: false,
@@ -1764,10 +1780,10 @@ impl WorkspaceApp {
                                     },
                                 ))
                                 .into_any_element()
-                       } else {
-                           self.render_row_safe_selectable_display_text_in_group(
-                               crate::workspace::selectable_text::selectable_text_id(
-                                   "session-sidebar-terminal",
+                        } else {
+                            self.render_row_safe_selectable_display_text_in_group(
+                                crate::workspace::selectable_text::selectable_text_id(
+                                    "session-sidebar-terminal",
                                     session_id,
                                 ),
                                 "session-sidebar-terminal-cell",
@@ -1820,11 +1836,7 @@ impl WorkspaceApp {
                             .rounded(px(self.tokens.radii.md))
                             .opacity(0.0)
                             .hover(|button| button.opacity(1.0))
-                            .child(Self::render_lucide_icon(
-                                LucideIcon::X,
-                                12.0,
-                                text_color,
-                            ))
+                            .child(Self::render_lucide_icon(LucideIcon::X, 12.0, text_color))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _event, window, cx| {
@@ -2006,21 +2018,19 @@ impl WorkspaceApp {
             .child(
                 oxideterm_gpui_ui::modal::modal_body(&self.tokens)
                     .py(px(12.0))
-                    .child(
-                        oxideterm_gpui_ui::text_input::text_input(
-                            &self.tokens,
-                            oxideterm_gpui_ui::text_input::TextInputView {
-                                value: draft,
-                                placeholder: self.i18n.t("sessions.focused_list.rename_terminal"),
-                                focused: true,
-                                caret_visible: self.new_connection_caret_visible,
-                                secret: false,
-                                selected_all: false,
-                                selected_range: None,
-                                marked_text: None,
-                            },
-                        ),
-                    ),
+                    .child(oxideterm_gpui_ui::text_input::text_input(
+                        &self.tokens,
+                        oxideterm_gpui_ui::text_input::TextInputView {
+                            value: draft,
+                            placeholder: self.i18n.t("sessions.focused_list.rename_terminal"),
+                            focused: true,
+                            caret_visible: self.new_connection_caret_visible,
+                            secret: false,
+                            selected_all: false,
+                            selected_range: None,
+                            marked_text: None,
+                        },
+                    )),
             )
             .child(
                 oxideterm_gpui_ui::modal::modal_footer(&self.tokens)

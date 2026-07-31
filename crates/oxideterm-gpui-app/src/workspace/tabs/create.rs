@@ -602,11 +602,11 @@ impl WorkspaceApp {
             session_id,
         );
         if starting_node_connection {
-                self.begin_connection_trace_for_node(
-                    &node_id,
-                    trace_plan.as_ref(),
-                    trace_parent_id.as_ref(),
-                );
+            self.begin_connection_trace_for_node(
+                &node_id,
+                trace_plan.as_ref(),
+                trace_parent_id.as_ref(),
+            );
         }
         let preferences = self.prepare_terminal_preferences_for_tab_kind(&TabKind::SshTerminal, cx);
         let consumer = ConnectionConsumer::Terminal(session_id.0.to_string());
@@ -633,10 +633,19 @@ impl WorkspaceApp {
                 {
                     let ka = &self.settings_store.settings().terminal.keepalive;
                     let ka_data = oxideterm_settings::parse_keepalive_string(&ka.send_string);
-                if ka_data.is_empty() { 0 } else { ka.interval_secs.max(1) }
+                    if ka_data.is_empty() {
+                        0
+                    } else {
+                        ka.interval_secs.max(1)
+                    }
                 },
                 oxideterm_settings::parse_keepalive_string(
-                    &self.settings_store.settings().terminal.keepalive.send_string,
+                    &self
+                        .settings_store
+                        .settings()
+                        .terminal
+                        .keepalive
+                        .send_string,
                 ),
             );
         let shared_session = TerminalPane::ssh_shared_session(session_config, &preferences);
