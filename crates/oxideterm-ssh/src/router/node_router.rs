@@ -354,11 +354,15 @@ impl NodeRouter {
     ) -> Result<Arc<Mutex<SftpSession>>, RouteError> {
         // 1. Check cache for a live dedicated connection.
         if let Some(entry) = self.dedicated_sftp.get(node_id) {
-            if !entry.connection.is_closed().await {
-                return Ok(Arc::clone(&entry.session));
-            }
-            // Connection is dead — drop the cache entry and recreate.
+            // Clone out of the guard before awaiting to avoid holding a
+            // DashMap shard read-lock across an .await point.
+            let connection = entry.connection.clone();
+            let session = Arc::clone(&entry.session);
             drop(entry);
+            if !connection.is_closed().await {
+                return Ok(session);
+            }
+            // Connection is dead — remove the cache entry and recreate.
             self.dedicated_sftp.remove(node_id);
         }
 
