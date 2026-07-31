@@ -64,12 +64,13 @@ impl WorkspaceApp {
                 }
                 "x" => {
                     if let Some(range) = sel {
+                        let start = range.start;
                         cx.write_to_clipboard(ClipboardItem::new_string(utf16_slice(
                             draft, range.clone(),
                         )));
                         replace_utf16(draft, Some(range), "");
-                        *anchor = 0;
-                        *cursor = 0;
+                        *anchor = start;
+                        *cursor = start;
                         cx.notify();
                     }
                     return true;
