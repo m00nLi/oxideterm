@@ -25,6 +25,7 @@ impl WorkspaceApp {
                     id: tab_id,
                     kind: TabKind::NotificationCenter,
                     title: self.i18n.t("sidebar.panels.notifications"),
+                    custom_title: None,
                     title_source: TabTitleSource::I18nKey("sidebar.panels.notifications"),
                     root_pane: None,
                     active_pane_id: None,

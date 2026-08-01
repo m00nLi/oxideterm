@@ -579,6 +579,7 @@ impl WorkspaceApp {
                     id: tab_id,
                     kind: TabKind::Sftp,
                     title,
+                    custom_title: None,
                     title_source: TabTitleSource::Static,
                     root_pane: None,
                     active_pane_id: None,

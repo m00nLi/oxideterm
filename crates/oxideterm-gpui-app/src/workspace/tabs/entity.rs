@@ -208,7 +208,7 @@ impl WorkspaceTabHostEntity {
             .and_then(|index| self.tabs.get(index))
     }
 
-    fn tab_mut_by_id(&mut self, tab_id: TabId) -> Option<&mut Tab> {
+    pub(in crate::workspace) fn tab_mut_by_id(&mut self, tab_id: TabId) -> Option<&mut Tab> {
         let index = self.tab_index_by_id(tab_id)?;
         self.tabs.get_mut(index)
     }
@@ -1154,6 +1154,7 @@ mod tests {
             id: tab_id,
             kind: TabKind::LocalTerminal,
             title: format!("tab-{}", tab_id.0),
+            custom_title: None,
             title_source: TabTitleSource::Static,
             active_pane_id: root_pane.as_ref().map(PaneNode::first_pane_id),
             root_pane,

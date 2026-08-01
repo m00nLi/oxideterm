@@ -298,6 +298,14 @@ impl WorkspaceApp {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 // The top rendered blocking portal owns every key before
                 // background IME, terminal, and shortcut routing can observe it.
+                // Inline tab rename owns keyboard focus while active: it must
+                // capture text input before the terminal/command-bar dispatch
+                // chain so keystrokes edit the draft instead of the terminal.
+                if this.handle_tab_rename_key(event, cx) {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.capture_active_window_modal_key(event, window, cx) {
                     window.prevent_default();
                     cx.stop_propagation();
@@ -967,6 +975,9 @@ impl WorkspaceApp {
             )
             .when(cloud_sync_confirm_open, |root| {
                 root.child(self.render_cloud_sync_confirm_dialog(cx))
+            })
+            .when_some(self.render_tab_rename_dialog(cx), |root, dialog| {
+                root.child(dialog)
             })
             .when(
                 matches!(

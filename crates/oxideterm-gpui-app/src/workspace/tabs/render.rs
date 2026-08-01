@@ -103,7 +103,14 @@ impl WorkspaceApp {
                         .reconnect_active_progress(node_id)
                 });
                 let icon = tab_kind_icon(self, &tab.kind, cx);
-                let tab_text = self.tab_display_title(tab);
+                let pane_count = tab.root_pane.as_ref().map_or(1, PaneNode::pane_count);
+                let base_title = self.tab_display_title(tab);
+                let tab_text = self.format_tab_title_with_seq(
+                    &base_title,
+                    &tab.kind,
+                    pane_count,
+                    tab_index + 1,
+                );
                 (
                     tab_index,
                     tab_id,

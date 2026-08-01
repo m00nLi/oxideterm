@@ -8,6 +8,7 @@ mod helpers;
 mod navigation;
 mod nodes;
 mod nodes_reconnect_helpers;
+mod rename;
 mod render;
 mod state;
 

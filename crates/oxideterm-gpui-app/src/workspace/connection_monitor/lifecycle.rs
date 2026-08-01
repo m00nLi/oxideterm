@@ -225,6 +225,7 @@ impl WorkspaceApp {
                     id: tab_id,
                     kind: TabKind::Runtime,
                     title: self.i18n.t("sidebar.panels.runtime"),
+                    custom_title: None,
                     title_source: TabTitleSource::I18nKey("sidebar.panels.runtime"),
                     root_pane: None,
                     active_pane_id: None,

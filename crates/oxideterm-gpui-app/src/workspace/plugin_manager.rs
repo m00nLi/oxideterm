@@ -195,6 +195,7 @@ impl WorkspaceApp {
                     id: tab_id,
                     kind: TabKind::PluginManager,
                     title: self.i18n.t("plugin.manager_title"),
+                    custom_title: None,
                     title_source: TabTitleSource::I18nKey("plugin.manager_title"),
                     root_pane: None,
                     active_pane_id: None,

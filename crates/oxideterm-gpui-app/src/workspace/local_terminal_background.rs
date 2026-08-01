@@ -180,6 +180,7 @@ impl WorkspaceApp {
                 id: tab_id,
                 kind: TabKind::LocalTerminal,
                 title: title.clone(),
+                custom_title: None,
                 title_source: TabTitleSource::Static,
                 root_pane: Some(PaneNode::leaf(pane_id, detached.session_id)),
                 active_pane_id: Some(pane_id),

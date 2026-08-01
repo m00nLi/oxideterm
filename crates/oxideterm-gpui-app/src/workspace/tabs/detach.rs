@@ -942,6 +942,24 @@ impl WorkspaceApp {
                 .child(
                     context_menu_item(
                         &self.tokens,
+                        self.i18n.t("tabbar.rename_tab"),
+                        ContextMenuItemKind::Plain,
+                        false,
+                        false,
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.close_tab_context_menu();
+                            this.begin_tab_rename(menu.tab_id, cx);
+                            cx.stop_propagation();
+                        }),
+                    ),
+                )
+                .child(context_menu_separator(&self.tokens))
+                .child(
+                    context_menu_item(
+                        &self.tokens,
                         if detached {
                             self.i18n.t("tabbar.return_to_main_window")
                         } else {
