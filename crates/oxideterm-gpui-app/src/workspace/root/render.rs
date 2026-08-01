@@ -111,6 +111,14 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let active_ime_target = self.active_ime_target(cx);
+        // The tab-rename dialog uses input_caret for its caret but does not
+        // register a WorkspaceImeTarget. Drive the blink timer when it's open
+        // by syncing a target that ime_target_should_blink_caret accepts.
+        let active_ime_target = active_ime_target.or_else(|| {
+            self.tab_rename_dialog
+                .is_some()
+                .then(|| WorkspaceImeTarget::Search)
+        });
         self.workspace_input.update(cx, |input, cx| {
             input.sync_active_target(active_ime_target, cx);
         });
