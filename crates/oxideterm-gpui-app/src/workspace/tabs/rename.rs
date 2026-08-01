@@ -75,13 +75,14 @@ impl WorkspaceApp {
                     return true;
                 }
                 "v" => {
-                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                        let text = text.replace(['\n', '\r'], " ");
-                        let insert_len = text.encode_utf16().count();
-                        let insert_pos = sel.as_ref().map_or(0, |r| r.start);
-                        replace_utf16(draft, sel, &text);
-                        *anchor = insert_pos + insert_len;
-                        *cursor = *anchor;
+                   if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                       let text = text.replace(['\n', '\r'], " ");
+                       let insert_len = text.encode_utf16().count();
+                        let insert_pos = sel.as_ref().map_or(*cursor, |r| r.start);
+                        let range = sel.unwrap_or(*cursor..*cursor);
+                        replace_utf16(draft, Some(range), &text);
+                       *anchor = insert_pos + insert_len;
+                       *cursor = *anchor;
                         cx.notify();
                     }
                     return true;
@@ -187,12 +188,13 @@ impl WorkspaceApp {
             "tab" => true,
             _ => {
                 if let Some(text) = event.keystroke.key_char.as_deref() {
-                    if !text.is_empty() && !text.chars().any(char::is_control) {
-                        let insert_pos = sel.as_ref().map_or(*cursor, |r| r.start);
-                        let insert_len = text.encode_utf16().count();
-                        replace_utf16(draft, sel, text);
-                        *anchor = insert_pos + insert_len;
-                        *cursor = *anchor;
+                   if !text.is_empty() && !text.chars().any(char::is_control) {
+                       let insert_pos = sel.as_ref().map_or(*cursor, |r| r.start);
+                       let insert_len = text.encode_utf16().count();
+                        let range = sel.unwrap_or(*cursor..*cursor);
+                        replace_utf16(draft, Some(range), text);
+                       *anchor = insert_pos + insert_len;
+                       *cursor = *anchor;
                         cx.notify();
                         return true;
                     }
