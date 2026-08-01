@@ -20,6 +20,7 @@ impl DedicatedMonitorConnection {
         Self { pooled }
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn is_closed(&self) -> bool {
         self.pooled.is_closed().await
     }

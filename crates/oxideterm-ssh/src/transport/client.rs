@@ -1053,7 +1053,7 @@ impl SshTransportClient {
     /// the connection, checks `is_closed()` on each access, and recreates if
     /// stale. `NodeRouter::release_dedicated_sftp` drops the cached connection
     /// on node disconnect.
-    pub async fn connect_for_sftp(self) -> Result<DedicatedSftpConnection, SshTransportError> {
+    pub(crate) async fn connect_for_sftp(self) -> Result<DedicatedSftpConnection, SshTransportError> {
         let pooled = self.connect_authenticated_connection().await?;
         Ok(DedicatedSftpConnection::new(pooled))
     }

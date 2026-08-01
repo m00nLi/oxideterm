@@ -2005,9 +2005,9 @@ impl WorkspaceApp {
         &self,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let (session_id, draft) = self.terminal_rename_dialog.as_ref()?;
-        let theme = self.tokens.ui;
-        let can_confirm = !draft.trim().is_empty();
+        let (_session_id, draft) = self.terminal_rename_dialog.as_ref()?;
+        let _theme = self.tokens.ui;
+        let _can_confirm = !draft.trim().is_empty();
 
         let dialog = oxideterm_gpui_ui::modal::modal_container(&self.tokens)
             .child(oxideterm_gpui_ui::modal::modal_header(

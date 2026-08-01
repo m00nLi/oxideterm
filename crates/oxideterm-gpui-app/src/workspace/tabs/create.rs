@@ -538,7 +538,7 @@ impl WorkspaceApp {
     pub(in crate::workspace) fn create_ssh_terminal_tab_for_node(
         &mut self,
         post_connect_command: Option<String>,
-        mut config: SshConfig,
+        config: SshConfig,
         title: String,
         saved_connection_id: Option<String>,
         node_id: Option<NodeId>,
