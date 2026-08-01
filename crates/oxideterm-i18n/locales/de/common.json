@@ -1138,7 +1138,8 @@
     "send_to_background": "In den Hintergrund senden",
     "child_process_warning": "Dieses Terminal hat laufende Kindprozesse. Trotzdem schließen?",
     "rename_tab": "Tab umbenennen",
-    "rename_placeholder": "Tab-Namen eingeben"
+    "rename_placeholder": "Tab-Namen eingeben",
+    "reset_title": "Titel zurücksetzen"
   },
   "remote_desktop": {
     "rdp_preview_title": "RDP-Vorschau",

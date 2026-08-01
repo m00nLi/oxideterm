@@ -936,6 +936,9 @@ impl WorkspaceApp {
             TAB_CONTEXT_MENU_MARGIN,
         );
         let detached = self.tab_host.read(cx).is_detached(menu.tab_id);
+        let has_custom_title = self
+            .tab_by_id(menu.tab_id, cx)
+            .is_some_and(|tab| tab.custom_title.is_some());
         let menu_body = context_menu_event_boundary(
             context_menu_content(&self.tokens)
                 .w(px(TAB_CONTEXT_MENU_WIDTH))
@@ -956,6 +959,25 @@ impl WorkspaceApp {
                         }),
                     ),
                 )
+                .when(has_custom_title, |builder| {
+                    builder.child(
+                        context_menu_item(
+                            &self.tokens,
+                            self.i18n.t("tabbar.reset_title"),
+                            ContextMenuItemKind::Plain,
+                            false,
+                            false,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _event, _window, cx| {
+                                this.close_tab_context_menu();
+                                this.reset_tab_title(menu.tab_id, cx);
+                                cx.stop_propagation();
+                            }),
+                        ),
+                    )
+                })
                 .child(context_menu_separator(&self.tokens))
                 .child(
                     context_menu_item(

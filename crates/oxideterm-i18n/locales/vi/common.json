@@ -1138,7 +1138,8 @@
     "send_to_background": "Gửi vào nền",
     "child_process_warning": "Terminal này có các tiến trình con đang chạy. Vẫn đóng?",
     "rename_tab": "Đổi tên thẻ",
-    "rename_placeholder": "Nhập tên thẻ"
+    "rename_placeholder": "Nhập tên thẻ",
+    "reset_title": "Đặt lại tiêu đề"
   },
   "remote_desktop": {
     "rdp_preview_title": "Xem trước RDP",

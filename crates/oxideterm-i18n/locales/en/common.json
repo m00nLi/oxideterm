@@ -1138,7 +1138,8 @@
     "send_to_background": "Send to Background",
     "child_process_warning": "This terminal has running child processes. Close anyway?",
     "rename_tab": "Rename Tab",
-    "rename_placeholder": "Enter tab name"
+    "rename_placeholder": "Enter tab name",
+    "reset_title": "Reset Title"
   },
   "remote_desktop": {
     "rdp_preview_title": "RDP Preview",

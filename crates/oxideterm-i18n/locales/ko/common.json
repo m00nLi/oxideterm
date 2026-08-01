@@ -1138,7 +1138,8 @@
     "send_to_background": "백그라운드로 보내기",
     "child_process_warning": "이 터미널에 실행 중인 자식 프로세스가 있습니다. 그래도 닫으시겠습니까?",
     "rename_tab": "탭 이름 변경",
-    "rename_placeholder": "탭 이름 입력"
+    "rename_placeholder": "탭 이름 입력",
+    "reset_title": "제목 초기화"
   },
   "remote_desktop": {
     "rdp_preview_title": "RDP 미리보기",
