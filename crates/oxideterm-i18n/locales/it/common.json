@@ -1136,7 +1136,9 @@
     "confirm_close_tabs_to_right_title": "Chiudi le schede a destra",
     "confirm_close_tabs_to_right_desc": "Chiudere le {{count}} schede a destra? Le sessioni SSH attive verranno disconnesse.",
     "send_to_background": "Invia in background",
-    "child_process_warning": "Questo terminale ha processi figlio in esecuzione. Chiudere comunque?"
+    "child_process_warning": "Questo terminale ha processi figlio in esecuzione. Chiudere comunque?",
+    "rename_tab": "Rinomina scheda",
+    "rename_placeholder": "Inserisci nome scheda"
   },
   "remote_desktop": {
     "rdp_preview_title": "Anteprima RDP",

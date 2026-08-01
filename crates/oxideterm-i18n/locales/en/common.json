@@ -1136,7 +1136,9 @@
     "confirm_close_tabs_to_right_title": "Close Tabs to the Right",
     "confirm_close_tabs_to_right_desc": "Close {{count}} tabs to the right? Active SSH sessions will be disconnected.",
     "send_to_background": "Send to Background",
-    "child_process_warning": "This terminal has running child processes. Close anyway?"
+    "child_process_warning": "This terminal has running child processes. Close anyway?",
+    "rename_tab": "Rename Tab",
+    "rename_placeholder": "Enter tab name"
   },
   "remote_desktop": {
     "rdp_preview_title": "RDP Preview",

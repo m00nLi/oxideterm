@@ -1136,7 +1136,9 @@
     "confirm_close_tabs_to_right_title": "Đóng các tab bên phải",
     "confirm_close_tabs_to_right_desc": "Đóng {{count}} tab bên phải? Các phiên SSH đang hoạt động sẽ bị ngắt kết nối.",
     "send_to_background": "Gửi vào nền",
-    "child_process_warning": "Terminal này có các tiến trình con đang chạy. Vẫn đóng?"
+    "child_process_warning": "Terminal này có các tiến trình con đang chạy. Vẫn đóng?",
+    "rename_tab": "Đổi tên thẻ",
+    "rename_placeholder": "Nhập tên thẻ"
   },
   "remote_desktop": {
     "rdp_preview_title": "Xem trước RDP",

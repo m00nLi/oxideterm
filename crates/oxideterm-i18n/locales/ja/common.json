@@ -1136,7 +1136,9 @@
     "confirm_close_tabs_to_right_title": "右側のタブを閉じる",
     "confirm_close_tabs_to_right_desc": "右側の {{count}} 個のタブを閉じますか？アクティブな SSH セッションは切断されます。",
     "send_to_background": "バックグラウンドに送る",
-    "child_process_warning": "このターミナルには実行中の子プロセスがあります。それでも閉じますか？"
+    "child_process_warning": "このターミナルには実行中の子プロセスがあります。それでも閉じますか？",
+    "rename_tab": "タブの名前を変更",
+    "rename_placeholder": "タブ名を入力"
   },
   "remote_desktop": {
     "rdp_preview_title": "RDP プレビュー",

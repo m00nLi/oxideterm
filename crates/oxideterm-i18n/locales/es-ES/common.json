@@ -1136,7 +1136,9 @@
     "confirm_close_tabs_to_right_title": "Cerrar pestañas a la derecha",
     "confirm_close_tabs_to_right_desc": "¿Cerrar las {{count}} pestañas a la derecha? Las sesiones SSH activas se desconectarán.",
     "send_to_background": "Enviar al fondo",
-    "child_process_warning": "Este terminal tiene procesos hijos en ejecución. ¿Cerrar de todos modos?"
+    "child_process_warning": "Este terminal tiene procesos hijos en ejecución. ¿Cerrar de todos modos?",
+    "rename_tab": "Cambiar nombre de pestaña",
+    "rename_placeholder": "Introducir nombre de pestaña"
   },
   "remote_desktop": {
     "rdp_preview_title": "Vista previa RDP",
