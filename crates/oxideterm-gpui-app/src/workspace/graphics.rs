@@ -638,6 +638,7 @@ impl WorkspaceApp {
                     id: tab_id,
                     kind: TabKind::Graphics,
                     title: self.i18n.t("graphics.tab_title"),
+                    custom_title: None,
                     title_source: TabTitleSource::I18nKey("graphics.tab_title"),
                     root_pane: None,
                     active_pane_id: None,

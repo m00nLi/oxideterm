@@ -108,9 +108,32 @@ pub struct Tab {
     pub id: TabId,
     pub kind: TabKind,
     pub title: String,
+    pub custom_title: Option<String>,
     pub title_source: TabTitleSource,
     pub root_pane: Option<PaneNode>,
     pub active_pane_id: Option<PaneId>,
+}
+
+impl Tab {
+    pub fn display_title(&self) -> &str {
+        self.custom_title.as_deref().unwrap_or(&self.title)
+    }
+
+    pub fn set_custom_title(&mut self, title: Option<String>) {
+        match title {
+            Some(ref t) => {
+                let trimmed = t.trim();
+                if !trimmed.is_empty() && trimmed != self.title {
+                    self.custom_title = Some(trimmed.to_string());
+                } else {
+                    self.custom_title = None;
+                }
+            }
+            None => {
+                self.custom_title = None;
+            }
+        }
+    }
 }
 
 /// A split child keeps its layout share beside the node it sizes.
