@@ -402,7 +402,9 @@ impl NodeRouter {
 
     /// Release the dedicated SFTP connection for a node.
     ///
-    /// Called when the SFTP tab is closed or the node is removed.
+    /// Called when the node is disconnected.  The SFTP connection is a
+    /// node-level resource: closing the SFTP tab keeps it cached for reuse
+    /// (matching Tauri behavior), and it is only released on node teardown.
     /// The underlying SSH connection is dropped when all references are gone.
     pub fn release_dedicated_sftp(&self, node_id: &NodeId) {
         if let Some((_, _entry)) = self.dedicated_sftp.remove(node_id) {
