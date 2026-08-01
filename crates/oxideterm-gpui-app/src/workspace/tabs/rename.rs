@@ -384,15 +384,16 @@ impl WorkspaceApp {
             }),
         );
 
-        let probed_input =
-            text_input_anchor_probe(TextInputAnchorId(TAB_RENAME_ANCHOR_ID), input, {
-                let entity = cx.entity();
-                move |anchor, _window, cx: &mut gpui::App| {
-                    let _ = entity.update(cx, |this, _cx| {
-                        this.tab_rename_input_bounds = Some(anchor.bounds);
-                    });
-                }
-            });
+       let probed_input =
+           text_input_anchor_probe(TextInputAnchorId(TAB_RENAME_ANCHOR_ID), input, {
+               let entity = cx.entity();
+               move |anchor, _window, cx: &mut gpui::App| {
+                    let _ = entity.update(cx, |this, cx| {
+                       this.tab_rename_input_bounds = Some(anchor.bounds);
+                        cx.notify();
+                   });
+               }
+           });
 
         let dialog = modal_container(&self.tokens)
             .child(
