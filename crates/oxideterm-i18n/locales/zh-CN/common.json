@@ -1136,7 +1136,9 @@
     "confirm_close_tabs_to_right_title": "关闭右侧标签页",
     "confirm_close_tabs_to_right_desc": "关闭右侧的 {{count}} 个标签页？活动 SSH 会话将被断开。",
     "send_to_background": "移至后台",
-    "child_process_warning": "此终端有正在运行的子进程。确定要关闭吗？"
+    "child_process_warning": "此终端有正在运行的子进程。确定要关闭吗？",
+    "rename_tab": "重命名标签页",
+    "rename_placeholder": "输入标签页名称"
   },
   "remote_desktop": {
     "rdp_preview_title": "RDP 预览",

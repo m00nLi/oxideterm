@@ -1136,7 +1136,9 @@
     "confirm_close_tabs_to_right_title": "關閉右側標籤頁",
     "confirm_close_tabs_to_right_desc": "要關閉右側的 {{count}} 個標籤頁嗎？活動中的 SSH 工作階段將被中斷。",
     "send_to_background": "移至背景",
-    "child_process_warning": "此終端機有正在執行的子行程序。確定要關閉嗎？"
+    "child_process_warning": "此終端機有正在執行的子行程序。確定要關閉嗎？",
+    "rename_tab": "重新命名分頁",
+    "rename_placeholder": "輸入分頁名稱"
   },
   "remote_desktop": {
     "rdp_preview_title": "RDP 預覽",

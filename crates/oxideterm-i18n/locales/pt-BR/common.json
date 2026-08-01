@@ -1136,7 +1136,9 @@
     "confirm_close_tabs_to_right_title": "Fechar abas à direita",
     "confirm_close_tabs_to_right_desc": "Fechar as {{count}} abas à direita? As sessões SSH ativas serão desconectadas.",
     "send_to_background": "Enviar para segundo plano",
-    "child_process_warning": "Este terminal tem processos filhos em execução. Fechar mesmo assim?"
+    "child_process_warning": "Este terminal tem processos filhos em execução. Fechar mesmo assim?",
+    "rename_tab": "Renomear aba",
+    "rename_placeholder": "Digitar nome da aba"
   },
   "remote_desktop": {
     "rdp_preview_title": "Prévia RDP",
