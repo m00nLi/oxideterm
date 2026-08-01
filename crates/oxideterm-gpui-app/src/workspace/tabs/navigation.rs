@@ -1284,8 +1284,14 @@ impl WorkspaceApp {
     }
 
     pub(super) fn tab_visual_width(&self, tab: &Tab) -> f32 {
-        let metrics = self.tokens.metrics;
         let title = self.tab_display_title(tab);
+        self.tab_title_width(&title)
+    }
+
+    /// Compute the visual width of a fully formatted tab title string
+    /// (including sequence prefix and pane-count suffix).
+    pub(super) fn tab_title_width(&self, title: &str) -> f32 {
+        let metrics = self.tokens.metrics;
         let title_width = title
             .chars()
             .map(|ch| {
