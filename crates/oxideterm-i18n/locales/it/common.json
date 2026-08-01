@@ -1138,7 +1138,8 @@
     "send_to_background": "Invia in background",
     "child_process_warning": "Questo terminale ha processi figlio in esecuzione. Chiudere comunque?",
     "rename_tab": "Rinomina scheda",
-    "rename_placeholder": "Inserisci nome scheda"
+    "rename_placeholder": "Inserisci nome scheda",
+    "reset_title": "Reimposta titolo"
   },
   "remote_desktop": {
     "rdp_preview_title": "Anteprima RDP",

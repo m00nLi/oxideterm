@@ -1138,7 +1138,8 @@
     "send_to_background": "Enviar para segundo plano",
     "child_process_warning": "Este terminal tem processos filhos em execução. Fechar mesmo assim?",
     "rename_tab": "Renomear aba",
-    "rename_placeholder": "Digitar nome da aba"
+    "rename_placeholder": "Digitar nome da aba",
+    "reset_title": "Redefinir título"
   },
   "remote_desktop": {
     "rdp_preview_title": "Prévia RDP",

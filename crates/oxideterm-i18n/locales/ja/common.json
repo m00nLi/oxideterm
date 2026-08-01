@@ -1138,7 +1138,8 @@
     "send_to_background": "バックグラウンドに送る",
     "child_process_warning": "このターミナルには実行中の子プロセスがあります。それでも閉じますか？",
     "rename_tab": "タブの名前を変更",
-    "rename_placeholder": "タブ名を入力"
+    "rename_placeholder": "タブ名を入力",
+    "reset_title": "タイトルをリセット"
   },
   "remote_desktop": {
     "rdp_preview_title": "RDP プレビュー",

@@ -1138,7 +1138,8 @@
     "send_to_background": "Envoyer en arrière-plan",
     "child_process_warning": "Ce terminal a des processus enfants en cours d’exécution. Fermer quand même ?",
     "rename_tab": "Renommer l'onglet",
-    "rename_placeholder": "Saisir le nom de l'onglet"
+    "rename_placeholder": "Saisir le nom de l'onglet",
+    "reset_title": "Réinitialiser le titre"
   },
   "remote_desktop": {
     "rdp_preview_title": "Aperçu RDP",

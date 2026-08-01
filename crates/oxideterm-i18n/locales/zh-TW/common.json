@@ -1138,7 +1138,8 @@
     "send_to_background": "移至背景",
     "child_process_warning": "此終端機有正在執行的子行程序。確定要關閉嗎？",
     "rename_tab": "重新命名分頁",
-    "rename_placeholder": "輸入分頁名稱"
+    "rename_placeholder": "輸入分頁名稱",
+    "reset_title": "恢復預設標題"
   },
   "remote_desktop": {
     "rdp_preview_title": "RDP 預覽",
