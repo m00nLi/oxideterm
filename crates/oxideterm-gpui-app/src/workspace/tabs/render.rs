@@ -93,16 +93,8 @@ impl WorkspaceApp {
             .iter()
             .enumerate()
             .filter(|(_, tab)| !outside_main_tabs.contains(&tab.id))
-            .map(|(tab_index, tab)| {
-                let tab_id = tab.id;
-                let tab_width = self.tab_visual_width(tab);
-                let reconnect_node_id = self.reconnect_node_id_for_tab(tab, cx);
-                let reconnect_job = reconnect_node_id.as_ref().and_then(|node_id| {
-                    self.workspace_runtime
-                        .read(cx)
-                        .reconnect_active_progress(node_id)
-                });
-                let icon = tab_kind_icon(self, &tab.kind, cx);
+           .map(|(tab_index, tab)| {
+               let tab_id = tab.id;
                 let pane_count = tab.root_pane.as_ref().map_or(1, PaneNode::pane_count);
                 let base_title = self.tab_display_title(tab);
                 let tab_text = self.format_tab_title_with_seq(
@@ -111,6 +103,14 @@ impl WorkspaceApp {
                     pane_count,
                     tab_index + 1,
                 );
+                let tab_width = self.tab_title_width(&tab_text);
+                let reconnect_node_id = self.reconnect_node_id_for_tab(tab, cx);
+                let reconnect_job = reconnect_node_id.as_ref().and_then(|node_id| {
+                    self.workspace_runtime
+                        .read(cx)
+                        .reconnect_active_progress(node_id)
+                });
+                let icon = tab_kind_icon(self, &tab.kind, cx);
                 (
                     tab_index,
                     tab_id,
