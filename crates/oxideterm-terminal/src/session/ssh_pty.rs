@@ -71,6 +71,8 @@ impl SshPtySession {
             let consumer = config.consumer.take();
             let prompt_handler = config.prompt_handler.take();
             let managed_key_resolver = config.managed_key_resolver.take();
+            let keepalive_interval_secs = config.keepalive_interval_secs();
+            let keepalive_data = config.keepalive_data().to_vec();
             let (cols, rows) = if config.defer_pty_until_resize() {
                 (0, 0)
             } else {
@@ -79,18 +81,25 @@ impl SshPtySession {
             let connect_activity = activity.clone();
             runtime_handle.spawn(async move {
                 let result = match connection {
-                    Some(SshSessionConnection::New(mut ssh_config)) => {
-                        ssh_config.cols = cols;
-                        ssh_config.rows = rows;
-                        let mut client = SshTransportClient::new(ssh_config);
-                        if let Some(prompt_handler) = prompt_handler {
-                            client = client.with_prompt_handler(prompt_handler);
+                   Some(SshSessionConnection::New(mut ssh_config)) => {
+                       ssh_config.cols = cols;
+                       ssh_config.rows = rows;
+                        let skip_remote_env_detection = ssh_config.skip_remote_env_detection;
+                       let mut client = SshTransportClient::new(ssh_config);
+                       if let Some(prompt_handler) = prompt_handler {
+                           client = client.with_prompt_handler(prompt_handler);
+                       }
+                       if let Some(resolver) = managed_key_resolver {
+                           client = client.with_managed_key_resolver(resolver);
+                       }
+                        // Keepalive: send custom data through the shell channel
+                        // at idle intervals. Only enabled when both interval and
+                        // data are non-empty.
+                        if keepalive_interval_secs > 0 && !keepalive_data.is_empty() {
+                            client = client.with_keepalive(keepalive_interval_secs, keepalive_data);
                         }
-                        if let Some(resolver) = managed_key_resolver {
-                            client = client.with_managed_key_resolver(resolver);
-                        }
-                        match (registry, consumer) {
-                            (Some(registry), Some(consumer)) => {
+                       match (registry, consumer) {
+                            (Some(registry), Some(consumer)) if !skip_remote_env_detection => {
                                 client.connect_shell_with_registry(registry, consumer).await
                             }
                             _ => client.connect_shell().await,

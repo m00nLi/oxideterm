@@ -216,6 +216,9 @@ pub struct ConnectionOptions {
     pub agent_forwarding_socket: Option<String>,
     #[serde(default)]
     pub legacy_ssh_compatibility: bool,
+    /// Skip remote environment detection for single-channel SSH servers.
+    #[serde(default)]
+    pub skip_remote_env_detection: bool,
     /// Some SSH servers require a new authentication exchange for every terminal.
     #[serde(default, skip_serializing_if = "is_false")]
     pub dedicated_new_terminal_connection: bool,
