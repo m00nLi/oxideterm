@@ -1,8 +1,8 @@
 use super::*;
 use gpui::{ClipboardItem, Font, TextRun};
 use oxideterm_editor_core::utf16::{
-    next_utf16_boundary, previous_utf16_boundary, replace_utf16, utf16_offset_for_byte_index,
-    utf16_slice, word_range_for_utf16_offset,
+    byte_index_for_utf16, next_utf16_boundary, previous_utf16_boundary, replace_utf16,
+    utf16_offset_for_byte_index, utf16_slice, word_range_for_utf16_offset,
 };
 use oxideterm_gpui_ui::modal::{
     dialog_backdrop, dialog_description, dialog_header, dialog_title, modal_body, modal_container,
@@ -20,6 +20,65 @@ const TAB_RENAME_ANCHOR_ID: u64 = 4_000;
 
 /// Return the active selection range (sorted start..end), or None if the
 /// anchor and cursor are equal (pure caret, no selection).
+/// Character classification for word-boundary navigation (WindTerm-style).
+/// Alphanumeric and `_` form one class so that `user_name` is a single word.
+fn char_word_type(c: char) -> u8 {
+    if c.is_alphanumeric() || c == '_' {
+        0
+    } else if c.is_whitespace() {
+        1
+    } else {
+        2
+    }
+}
+
+/// Move left across one group of same-type characters.
+fn previous_word_boundary_local(text: &str, cursor: usize) -> usize {
+    if cursor == 0 {
+        return 0;
+    }
+    let byte_pos = byte_index_for_utf16(text, cursor);
+    let prefix = &text[..byte_pos];
+    let mut stop_byte = 0;
+    let mut start_type: Option<u8> = None;
+    for (byte_idx, ch) in prefix.char_indices().rev() {
+        let t = char_word_type(ch);
+        match start_type {
+            None => start_type = Some(t),
+            Some(st) if t != st => {
+                stop_byte = byte_idx + ch.len_utf8();
+                break;
+            }
+            _ => {}
+        }
+    }
+    utf16_offset_for_byte_index(text, stop_byte)
+}
+
+/// Move right across one group of same-type characters.
+fn next_word_boundary_local(text: &str, cursor: usize) -> usize {
+    let text_len = text.encode_utf16().count();
+    if cursor >= text_len {
+        return text_len;
+    }
+    let byte_pos = byte_index_for_utf16(text, cursor);
+    let suffix = &text[byte_pos..];
+    let mut stop_byte = text.len();
+    let mut start_type: Option<u8> = None;
+    for (rel_byte, ch) in suffix.char_indices() {
+        let t = char_word_type(ch);
+        match start_type {
+            None => start_type = Some(t),
+            Some(st) if t != st => {
+                stop_byte = byte_pos + rel_byte;
+                break;
+            }
+            _ => {}
+        }
+    }
+    utf16_offset_for_byte_index(text, stop_byte)
+}
+
 fn selection_range(anchor: usize, cursor: usize) -> Option<Range<usize>> {
     if anchor == cursor {
         None
@@ -85,9 +144,39 @@ impl WorkspaceApp {
                        *cursor = *anchor;
                         cx.notify();
                     }
+                   return true;
+               }
+                "backspace" => {
+                    let prev = previous_word_boundary_local(draft, *cursor);
+                    if prev < *cursor {
+                        replace_utf16(draft, Some(prev..*cursor), "");
+                        *anchor = prev;
+                        *cursor = prev;
+                        cx.notify();
+                    }
                     return true;
                 }
-                _ => return true,
+                "delete" => {
+                    let next = next_word_boundary_local(draft, *cursor);
+                    if next > *cursor {
+                        replace_utf16(draft, Some(*cursor..next), "");
+                        cx.notify();
+                    }
+                    return true;
+                }
+                "left" | "arrowleft" => {
+                    *cursor = previous_word_boundary_local(draft, *cursor);
+                    *anchor = *cursor;
+                    cx.notify();
+                    return true;
+                }
+                "right" | "arrowright" => {
+                    *cursor = next_word_boundary_local(draft, *cursor);
+                    *anchor = *cursor;
+                    cx.notify();
+                    return true;
+                }
+               _ => return true,
             }
         }
 
@@ -260,8 +349,11 @@ impl WorkspaceApp {
         // Use the bare title (without the gId prefix) so the user only edits
         // the tab name, not the global id portion.
         let draft = tab.display_title().to_string();
-        let cursor = draft.encode_utf16().count();
-        self.tab_rename_dialog = Some((tab_id, draft, cursor, cursor));
+        let text_len = draft.encode_utf16().count();
+        // Select all text on open (WindTerm behavior): anchor at 0, cursor at
+        // end so the user can immediately type to replace or press arrow to
+        // edit.
+        self.tab_rename_dialog = Some((tab_id, draft, 0, text_len));
         self.tab_rename_dialog_offset = Point::new(px(0.0), px(0.0));
         self.tab_rename_dialog_drag = None;
         self.tab_rename_text_drag = None;
