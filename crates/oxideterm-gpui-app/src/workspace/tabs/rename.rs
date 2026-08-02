@@ -608,3 +608,88 @@ impl WorkspaceApp {
         Some(backdrop.child(dialog_wrapper).into_any_element())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_range_none_when_anchor_equals_cursor() {
+        assert_eq!(selection_range(5, 5), None);
+        assert_eq!(selection_range(0, 0), None);
+    }
+
+    #[test]
+    fn selection_range_sorted_when_anchor_less_than_cursor() {
+        assert_eq!(selection_range(3, 7), Some(3..7));
+    }
+
+    #[test]
+    fn selection_range_sorted_when_anchor_greater_than_cursor() {
+        assert_eq!(selection_range(7, 3), Some(3..7));
+    }
+
+    #[test]
+    fn word_type_classifies_alphanumeric_and_underscore() {
+        assert_eq!(char_word_type('a'), 0);
+        assert_eq!(char_word_type('Z'), 0);
+        assert_eq!(char_word_type('9'), 0);
+        assert_eq!(char_word_type('_'), 0);
+    }
+
+    #[test]
+    fn word_type_classifies_whitespace_and_punctuation() {
+        assert_eq!(char_word_type(' '), 1);
+        assert_eq!(char_word_type('\t'), 1);
+        assert_eq!(char_word_type('@'), 2);
+        assert_eq!(char_word_type('.'), 2);
+        assert_eq!(char_word_type('-'), 2);
+    }
+
+    #[test]
+    fn previous_word_boundary_skips_same_type_group() {
+        let text = "user@192.168.1.0";
+        // cursor at end (16), previous char '0' is alnum → skip to '.'
+        assert_eq!(previous_word_boundary_local(text, 16), 15);
+        // cursor at 15, previous char '.' is punct → skip to '1'
+        assert_eq!(previous_word_boundary_local(text, 15), 14);
+        // cursor at 0 → stays
+        assert_eq!(previous_word_boundary_local(text, 0), 0);
+    }
+
+    #[test]
+    fn previous_word_boundary_treats_underscore_as_alnum() {
+        let text = "user_name";
+        // 'user_name' is one alnum group → skip to start
+        assert_eq!(previous_word_boundary_local(text, 9), 0);
+    }
+
+    #[test]
+    fn next_word_boundary_skips_same_type_group() {
+        let text = "user@192.168.1.0";
+        // cursor at 0, char 'u' is alnum → skip to '@'
+        assert_eq!(next_word_boundary_local(text, 0), 4);
+        // cursor at 4, char '@' is punct → skip to '1'
+        assert_eq!(next_word_boundary_local(text, 4), 5);
+        // cursor at end → stays
+        assert_eq!(next_word_boundary_local(text, 16), 16);
+    }
+
+    #[test]
+    fn next_word_boundary_treats_underscore_as_alnum() {
+        let text = "user_name";
+        assert_eq!(next_word_boundary_local(text, 0), 9);
+    }
+
+    #[test]
+    fn word_boundary_stops_at_type_change_with_emoji() {
+        // '🔒' occupies UTF-16 offsets 1..3 (surrogate pair).
+        let text = "a\u{1F512}b";
+        let text_len = text.encode_utf16().count();
+        assert_eq!(text_len, 4); // a(1) + 🔒(2) + b(1)
+        // From 'a' (offset 0, alnum), next boundary is '🔒' (offset 1, punct).
+        assert_eq!(next_word_boundary_local(text, 0), 1);
+        // From '🔒' (offset 1, punct), next boundary is 'b' (offset 3, alnum).
+        assert_eq!(next_word_boundary_local(text, 1), 3);
+    }
+}
