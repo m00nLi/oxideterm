@@ -542,11 +542,28 @@ impl WorkspaceApp {
         let backdrop = dialog_backdrop()
             .on_mouse_move(
                 cx.listener(move |this, event: &MouseMoveEvent, window, cx| {
-                    // --- Header drag ---
-                    if let Some((mouse_start, offset_start)) = this.tab_rename_dialog_drag {
+                   // --- Header drag ---
+                   if let Some((mouse_start, offset_start)) = this.tab_rename_dialog_drag {
+                        let viewport = window.viewport_size();
+                        let metrics = &this.tokens.metrics;
+                        // Dialog dimensions: width is modal_width; height is
+                        // header + body + footer.
+                        let dialog_w = metrics.modal_width;
+                        let dialog_h = metrics.modal_header_padding_y * 2.0
+                            + metrics.ui_text_sm
+                            + metrics.modal_body_padding * 2.0
+                            + 12.0 * 2.0
+                            + metrics.ui_control_height
+                            + metrics.modal_footer_height;
+                        // The dialog is centered, so offset 0 = centered.
+                        // Clamp so the dialog cannot leave the viewport.
+                        let max_x = ((f32::from(viewport.width) - dialog_w) / 2.0).max(0.0);
+                        let max_y = ((f32::from(viewport.height) - dialog_h) / 2.0).max(0.0);
                         this.tab_rename_dialog_offset = Point::new(
-                            offset_start.x + (event.position.x - mouse_start.x),
-                            offset_start.y + (event.position.y - mouse_start.y),
+                            (offset_start.x + (event.position.x - mouse_start.x))
+                                .clamp(px(-max_x), px(max_x)),
+                            (offset_start.y + (event.position.y - mouse_start.y))
+                                .clamp(px(-max_y), px(max_y)),
                         );
                         cx.notify();
                         return;
