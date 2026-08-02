@@ -108,7 +108,9 @@
       "managed_key_required": "Se requiere una clave SSH gestionada para la autenticación con clave gestionada.",
       "save": "Guardar",
       "save_and_connect": "Guardar y conectar",
-      "runtime_node_missing": "El nodo SSH en ejecución ya no está disponible"
+      "runtime_node_missing": "El nodo SSH en ejecución ya no está disponible",
+      "skip_remote_env_detection": "Omitir detección de entorno remoto",
+      "skip_remote_env_detection_hint": "Activar para servidores que desconectan al abrir un segundo canal SSH. La integración de shell y el seguimiento de directorio no estarán disponibles para esta conexión."
     },
     "auth": {
       "password": "Contraseña",
@@ -179,8 +181,5 @@
       "generic_title": "Error de conexión"
     }
   },
-  "form": {
-    "skip_remote_env_detection": "Omitir detección de entorno remoto",
-    "skip_remote_env_detection_hint": "Activar para servidores que desconectan al abrir un segundo canal SSH. La integración de shell y el seguimiento de directorio no estarán disponibles para esta conexión."
-  }
+  "form": {}
 }

@@ -108,7 +108,9 @@
       "managed_key_required": "託管金鑰認證需要選擇託管 SSH 金鑰。",
       "save": "儲存",
       "save_and_connect": "儲存並連線",
-      "runtime_node_missing": "執行中的 SSH 節點已不可用"
+      "runtime_node_missing": "執行中的 SSH 節點已不可用",
+      "skip_remote_env_detection": "跳過遠端環境偵測",
+      "skip_remote_env_detection_hint": "為在開啟第二個 SSH 通道時會斷開連線的伺服器啟用。此連線的 Shell 整合和目錄追蹤將不可用。"
     },
     "auth": {
       "password": "密碼",
@@ -247,8 +249,5 @@
       }
     }
   },
-  "form": {
-    "skip_remote_env_detection": "跳過遠端環境偵測",
-    "skip_remote_env_detection_hint": "為在開啟第二個 SSH 通道時會斷開連線的伺服器啟用。此連線的 Shell 整合和目錄追蹤將不可用。"
-  }
+  "form": {}
 }

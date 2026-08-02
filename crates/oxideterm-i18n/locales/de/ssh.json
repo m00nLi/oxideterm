@@ -108,7 +108,9 @@
       "managed_key_required": "Für die Authentifizierung mit verwaltetem Schlüssel ist ein verwalteter SSH-Schlüssel erforderlich.",
       "save": "Speichern",
       "save_and_connect": "Speichern und verbinden",
-      "runtime_node_missing": "Der laufende SSH-Knoten ist nicht mehr verfügbar"
+      "runtime_node_missing": "Der laufende SSH-Knoten ist nicht mehr verfügbar",
+      "skip_remote_env_detection": "Remote-Umgebungserkennung überspringen",
+      "skip_remote_env_detection_hint": "Für Server aktivieren, die die Verbindung beim Öffnen eines zweiten SSH-Kanals trennen. Shell-Integration und Verzeichnisverfolgung sind für diese Verbindung nicht verfügbar."
     },
     "auth": {
       "password": "Passwort",
@@ -179,8 +181,5 @@
       "generic_title": "Verbindung fehlgeschlagen"
     }
   },
-  "form": {
-    "skip_remote_env_detection": "Remote-Umgebungserkennung überspringen",
-    "skip_remote_env_detection_hint": "Für Server aktivieren, die die Verbindung beim Öffnen eines zweiten SSH-Kanals trennen. Shell-Integration und Verzeichnisverfolgung sind für diese Verbindung nicht verfügbar."
-  }
+  "form": {}
 }

@@ -108,7 +108,9 @@
       "managed_key_required": "Managed SSH key is required for managed-key authentication.",
       "save": "Save",
       "save_and_connect": "Save & Connect",
-      "runtime_node_missing": "Runtime SSH node is no longer available"
+      "runtime_node_missing": "Runtime SSH node is no longer available",
+      "skip_remote_env_detection": "Skip remote environment detection",
+      "skip_remote_env_detection_hint": "Enable for servers that disconnect when a second SSH channel is opened. Shell integration and directory tracking will be unavailable for this connection."
     },
     "auth": {
       "password": "Password",
@@ -247,8 +249,5 @@
       }
     }
   },
-  "form": {
-    "skip_remote_env_detection": "Skip remote environment detection",
-    "skip_remote_env_detection_hint": "Enable for servers that disconnect when a second SSH channel is opened. Shell integration and directory tracking will be unavailable for this connection."
-  }
+  "form": {}
 }

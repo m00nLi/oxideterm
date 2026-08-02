@@ -108,7 +108,9 @@
       "managed_key_required": "Uma chave SSH gerenciada é necessária para autenticação por chave gerenciada.",
       "save": "Salvar",
       "save_and_connect": "Salvar e conectar",
-      "runtime_node_missing": "O nó SSH em execução não está mais disponível"
+      "runtime_node_missing": "O nó SSH em execução não está mais disponível",
+      "skip_remote_env_detection": "Pular detecção de ambiente remoto",
+      "skip_remote_env_detection_hint": "Ativar para servidores que desconectam ao abrir um segundo canal SSH. A integração de shell e o rastreamento de diretório não estarão disponíveis para esta conexão."
     },
     "auth": {
       "password": "Senha",
@@ -179,8 +181,5 @@
       "generic_title": "Falha na conexão"
     }
   },
-  "form": {
-    "skip_remote_env_detection": "Pular detecção de ambiente remoto",
-    "skip_remote_env_detection_hint": "Ativar para servidores que desconectam ao abrir um segundo canal SSH. A integração de shell e o rastreamento de diretório não estarão disponíveis para esta conexão."
-  }
+  "form": {}
 }
