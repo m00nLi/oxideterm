@@ -332,7 +332,7 @@ impl WorkspaceApp {
                 caret_visible: self.input_caret.visible(),
                 secret: false,
                 selected_all: false,
-                selected_range: sel,
+                selected_range: sel.or(Some(cursor..cursor)),
                 marked_text: None,
             },
         )
