@@ -320,6 +320,8 @@ pub struct TerminalSettings {
     pub in_band_transfer: InBandTransferSettings,
     pub graphics: TerminalGraphicsSettings,
     pub unicode: TerminalUnicodeSettings,
+    #[serde(default)]
+    pub keepalive: TerminalKeepaliveSettings,
     #[serde(flatten)]
     pub extra: ExtraFields,
 }
@@ -376,6 +378,7 @@ impl Default for TerminalSettings {
             in_band_transfer: InBandTransferSettings::default(),
             graphics: TerminalGraphicsSettings::default(),
             unicode: TerminalUnicodeSettings::default(),
+            keepalive: TerminalKeepaliveSettings::default(),
             extra: ExtraFields::new(),
         }
     }
@@ -563,4 +566,62 @@ mod tests {
             assert_eq!(read(&settings), expected, "legacy {field} default");
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalKeepaliveSettings {
+    /// Keepalive interval in seconds. 0 = disabled.
+    #[serde(default)]
+    pub interval_secs: u32,
+    /// Custom string to send through the shell channel (e.g. "\\n").
+    /// Supports escape sequences: \\n \\r \\t \\0 \\\\
+    /// Empty string = use SSH keepalive@openssh.com instead of channel data.
+    #[serde(default)]
+    pub send_string: String,
+    #[serde(flatten)]
+    pub extra: ExtraFields,
+}
+
+impl Default for TerminalKeepaliveSettings {
+    fn default() -> Self {
+        Self {
+            interval_secs: 1800,
+            send_string: String::new(),
+            extra: ExtraFields::new(),
+        }
+    }
+}
+
+/// Parse a keepalive string with escape sequences into raw bytes.
+/// Supports: \n \r \t \0 \\ and \xHH
+pub fn parse_keepalive_string(s: &str) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => result.push(b'\n'),
+                Some('r') => result.push(b'\r'),
+                Some('t') => result.push(b'\t'),
+                Some('0') => result.push(0x00),
+                Some('\\') => result.push(b'\\'),
+                Some('x') => {
+                    let h1 = chars.next().and_then(|c| c.to_digit(16));
+                    let h2 = chars.next().and_then(|c| c.to_digit(16));
+                    if let (Some(h1), Some(h2)) = (h1, h2) {
+                        result.push((h1 * 16 + h2) as u8);
+                    }
+                }
+                Some(other) => {
+                    result.push(b'\\');
+                    result.push(other as u8);
+                }
+                None => result.push(b'\\'),
+            }
+        } else {
+            result.extend_from_slice(c.encode_utf8(&mut [0u8; 4]).as_bytes());
+        }
+    }
+    result
 }

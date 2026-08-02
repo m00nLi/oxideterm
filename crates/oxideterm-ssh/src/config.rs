@@ -76,6 +76,14 @@ pub struct SshConfig {
     pub x11_forwarding: Option<X11ForwardPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_connect_command: Option<String>,
+    /// Skip remote environment detection (exec channel probe).
+    ///
+    /// Some non-standard SSH servers violate RFC 4254 §5.1 by closing the TCP
+    /// connection when a second session channel is opened.  When this flag is
+    /// set, OxideTerm will not open an exec channel to detect the remote OS,
+    /// shell, or home directory after the visible terminal starts.
+    #[serde(default)]
+    pub skip_remote_env_detection: bool,
 }
 
 impl fmt::Debug for SshConfig {
@@ -107,6 +115,7 @@ impl fmt::Debug for SshConfig {
             .field("legacy_ssh_compatibility", &self.legacy_ssh_compatibility)
             .field("x11_forwarding", &self.x11_forwarding)
             .field("post_connect_command", &self.post_connect_command)
+            .field("skip_remote_env_detection", &self.skip_remote_env_detection)
             .finish()
     }
 }
@@ -478,6 +487,7 @@ impl Default for SshConfig {
             legacy_ssh_compatibility: false,
             x11_forwarding: None,
             post_connect_command: None,
+            skip_remote_env_detection: false,
         }
     }
 }
