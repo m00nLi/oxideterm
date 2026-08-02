@@ -3,6 +3,21 @@ pub struct NodeRouter {
     registry: SshConnectionRegistry,
     runtime: NodeRuntimeStore,
     emitter: NodeEventEmitter,
+    /// Dedicated SFTP connections for skip_remote_env_detection nodes.
+    /// Each entry holds an independent SSH connection with a single SFTP channel.
+    dedicated_sftp: DashMap<NodeId, DedicatedSftpEntry>,
+}
+
+#[derive(Clone)]
+struct DedicatedSftpEntry {
+    connection: DedicatedSftpConnection,
+    session: Arc<tokio::sync::Mutex<SftpSession>>,
+}
+
+impl std::fmt::Debug for DedicatedSftpEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DedicatedSftpEntry").finish_non_exhaustive()
+    }
 }
 
 impl NodeRouter {
@@ -24,6 +39,7 @@ impl NodeRouter {
             registry,
             runtime,
             emitter,
+            dedicated_sftp: DashMap::new(),
         }
     }
 
@@ -277,6 +293,9 @@ impl NodeRouter {
         if let Ok(event) = self.runtime.set_sftp_ready(node_id, false, None) {
             self.emitter.dispatch(&event);
         }
+        // Release any dedicated SFTP connection for this node to avoid
+        // leaking the underlying SSH transport and TCP socket.
+        self.release_dedicated_sftp(node_id);
         let event = self.runtime.disconnect_node(node_id, reason)?;
         self.emitter.dispatch(&event);
         Ok(event)
@@ -362,6 +381,13 @@ impl NodeRouter {
         &self,
         node_id: &NodeId,
     ) -> Result<Arc<Mutex<SftpSession>>, RouteError> {
+        // Check if this node uses skip_remote_env_detection — if so, SFTP
+        // needs a dedicated SSH connection instead of the registry's shared one.
+        if let Some(snapshot) = self.runtime.snapshot(node_id) {
+            if snapshot.config.skip_remote_env_detection {
+                return self.acquire_sftp_dedicated(node_id, &snapshot.config).await;
+            }
+        }
         let resolved = self
             .resolve_connection_wait(node_id, Duration::from_secs(15))
             .await?;
@@ -395,6 +421,72 @@ impl NodeRouter {
             self.emitter.dispatch(&owner_event);
         }
         Ok(session)
+    }
+
+    /// Acquire SFTP via a dedicated SSH connection for skip_remote_env_detection nodes.
+    ///
+    /// Creates an independent SSH connection with a single SFTP channel, cached
+    /// for reuse. The connection is recreated if it has been closed.
+    async fn acquire_sftp_dedicated(
+        &self,
+        node_id: &NodeId,
+        config: &SshConfig,
+    ) -> Result<Arc<Mutex<SftpSession>>, RouteError> {
+        // 1. Check cache for a live dedicated connection.
+        if let Some(entry) = self.dedicated_sftp.get(node_id) {
+            let connection = entry.connection.clone();
+            let session = Arc::clone(&entry.session);
+            drop(entry);
+            if !connection.is_closed().await {
+                return Ok(session);
+            }
+            self.dedicated_sftp.remove(node_id);
+        }
+
+        // 2. Create a new independent SSH connection.
+        let transport = SshTransportClient::new(config.clone());
+        let connection = transport
+            .connect_for_sftp()
+            .await
+            .map_err(|error| RouteError::ConnectionError(error.to_string()))?;
+
+        // 3. Create SFTP session on the dedicated connection.
+        let session_id = format!("dedicated-sftp-{}", node_id.0);
+        let sftp = SftpSession::new(connection.clone(), session_id)
+            .await
+            .map_err(|error| RouteError::ConnectionError(error.to_string()))?;
+        let session = Arc::new(Mutex::new(sftp));
+
+        // 4. Cache the connection and session.
+        self.dedicated_sftp.insert(
+            node_id.clone(),
+            DedicatedSftpEntry {
+                connection,
+                session: Arc::clone(&session),
+            },
+        );
+
+        // 5. Notify the node that SFTP is ready.
+        let cwd = {
+            let sftp = session.lock().await;
+            sftp.cwd().to_string()
+        };
+        let event = self.runtime.set_sftp_ready(node_id, true, Some(cwd))?;
+        self.emitter.dispatch(&event);
+
+        Ok(session)
+    }
+
+    /// Release the dedicated SFTP connection for a node.
+    ///
+    /// Called when the node is disconnected.  The SFTP connection is a
+    /// node-level resource: closing the SFTP tab keeps it cached for reuse
+    /// (matching Tauri behavior), and it is only released on node teardown.
+    /// The underlying SSH connection is dropped when all references are gone.
+    pub fn release_dedicated_sftp(&self, node_id: &NodeId) {
+        if let Some((_, _entry)) = self.dedicated_sftp.remove(node_id) {
+            tracing::debug!(node_id = %node_id.0, "Released dedicated SFTP connection");
+        }
     }
 
     /// Resolves the exact shared SFTP owner validated by an upper-layer
