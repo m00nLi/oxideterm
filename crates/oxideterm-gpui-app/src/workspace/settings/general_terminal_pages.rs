@@ -1161,6 +1161,34 @@ impl WorkspaceApp {
                 ],
             ),
             (TerminalSettingsPage::Highlight, 0) => self.highlight_rules_card(settings, cx),
+            (TerminalSettingsPage::Keepalive, 0) => self.settings_card(
+                "ssh.form.keepalive_send_string",
+                "ssh.form.keepalive_send_string_hint",
+                vec![
+                    self.number_row(
+                        "ssh.form.keepalive_interval",
+                        "ssh.form.keepalive_interval_hint",
+                        SettingsInput::TerminalKeepaliveInterval,
+                        settings.terminal.keepalive.interval_secs as i64,
+                        cx,
+                    ),
+                    self.card_separator(),
+                    {
+                        let control = self.number_input(
+                            SettingsInput::TerminalKeepaliveString,
+                            settings.terminal.keepalive.send_string.clone(),
+                            200.0,
+                            cx,
+                        );
+                        self.setting_row(
+                            "ssh.form.keepalive_send_string",
+                            "ssh.form.keepalive_send_string_hint",
+                            control,
+                            cx,
+                        )
+                    },
+                ],
+            ),
             _ => div().into_any_element(),
         }
     }

@@ -400,6 +400,13 @@ pub fn apply_persisted_settings_input_draft(
             settings.terminal.command_bar.focus_handoff_commands = commands;
             SettingsInputDraftApply::Applied
         }
+        SettingsInput::TerminalKeepaliveInterval => parse_i64(draft)
+            .map(|value| settings.terminal.keepalive.interval_secs = value.clamp(0, 86_400) as u32)
+            .into(),
+        SettingsInput::TerminalKeepaliveString => {
+            settings.terminal.keepalive.send_string = draft.to_string();
+            SettingsInputDraftApply::Applied
+        }
         SettingsInput::HighlightLabel(index) => edit_highlight_rule(settings, index, |rule| {
             rule.label = draft.trim().to_string()
         }),

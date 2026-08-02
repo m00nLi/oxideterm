@@ -1597,6 +1597,7 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "Máy tính từ xa"
+    "bg_tab_remote_desktop": "Máy tính từ xa",
+    "page_keepalive": "Keepalive"
   }
 }

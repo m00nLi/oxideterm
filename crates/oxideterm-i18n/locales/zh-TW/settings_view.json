@@ -1597,6 +1597,7 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "遠端桌面"
+    "bg_tab_remote_desktop": "遠端桌面",
+    "page_keepalive": "保活"
   }
 }

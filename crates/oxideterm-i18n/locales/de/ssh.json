@@ -110,7 +110,11 @@
       "save_and_connect": "Speichern und verbinden",
       "runtime_node_missing": "Der laufende SSH-Knoten ist nicht mehr verfügbar",
       "skip_remote_env_detection": "Remote-Umgebungserkennung überspringen",
-      "skip_remote_env_detection_hint": "Für Server aktivieren, die die Verbindung beim Öffnen eines zweiten SSH-Kanals trennen. Shell-Integration und Verzeichnisverfolgung sind für diese Verbindung nicht verfügbar."
+      "skip_remote_env_detection_hint": "Für Server aktivieren, die die Verbindung beim Öffnen eines zweiten SSH-Kanals trennen. Shell-Integration und Verzeichnisverfolgung sind für diese Verbindung nicht verfügbar.",
+      "keepalive_interval": "Keepalive-Intervall (Sekunden)",
+      "keepalive_interval_hint": "Intervall in Sekunden zwischen Keepalive-Datensendungen. 0 = deaktiviert.",
+      "keepalive_send_string": "Keepalive-Sendestring",
+      "keepalive_send_string_hint": "Benutzerdefinierter String, der in Leerlaufintervallen über den Shell-Kanal gesendet wird. Unterstützt Escape-Sequenzen: \\n \\r \\t \\0 \\\\. Leer = deaktiviert."
     },
     "auth": {
       "password": "Passwort",

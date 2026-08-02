@@ -110,7 +110,11 @@
       "save_and_connect": "Salva e connetti",
       "runtime_node_missing": "Il nodo SSH in esecuzione non è più disponibile",
       "skip_remote_env_detection": "Salta rilevamento ambiente remoto",
-      "skip_remote_env_detection_hint": "Abilita per server che si disconnettono all'apertura di un secondo canale SSH. L'integrazione shell e il tracciamento directory non saranno disponibili per questa connessione."
+      "skip_remote_env_detection_hint": "Abilita per server che si disconnettono all'apertura di un secondo canale SSH. L'integrazione shell e il tracciamento directory non saranno disponibili per questa connessione.",
+      "keepalive_interval": "Intervallo keepalive (secondi)",
+      "keepalive_interval_hint": "Intervallo in secondi tra invii di dati keepalive. 0 = disattivato.",
+      "keepalive_send_string": "Stringa di invio keepalive",
+      "keepalive_send_string_hint": "Stringa personalizzata inviata tramite il canale shell a intervalli di inattività. Supporta sequenze di escape: \\n \\r \\t \\0 \\\\. Vuoto = disattivato."
     },
     "auth": {
       "password": "Password",

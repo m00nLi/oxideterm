@@ -1597,6 +1597,7 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "リモートデスクトップ"
+    "bg_tab_remote_desktop": "リモートデスクトップ",
+    "page_keepalive": "キープアライブ"
   }
 }

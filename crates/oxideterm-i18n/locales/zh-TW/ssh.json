@@ -110,7 +110,11 @@
       "save_and_connect": "儲存並連線",
       "runtime_node_missing": "執行中的 SSH 節點已不可用",
       "skip_remote_env_detection": "跳過遠端環境偵測",
-      "skip_remote_env_detection_hint": "為在開啟第二個 SSH 通道時會斷開連線的伺服器啟用。此連線的 Shell 整合和目錄追蹤將不可用。"
+      "skip_remote_env_detection_hint": "為在開啟第二個 SSH 通道時會斷開連線的伺服器啟用。此連線的 Shell 整合和目錄追蹤將不可用。",
+      "keepalive_interval": "保活間隔（秒）",
+      "keepalive_interval_hint": "發送保活資料的間隔秒數。0 = 停用。",
+      "keepalive_send_string": "保活發送字串",
+      "keepalive_send_string_hint": "在空閒間隔透過 shell 通道發送的自訂字串。支援轉義序列：\\n \\r \\t \\0 \\\\。空 = 停用。"
     },
     "auth": {
       "password": "密碼",
