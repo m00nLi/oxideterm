@@ -105,7 +105,9 @@
       "managed_key_required": "托管密钥认证需要选择托管 SSH 密钥。",
       "save": "保存",
       "save_and_connect": "保存并连接",
-      "runtime_node_missing": "运行中的 SSH 节点已不可用"
+      "runtime_node_missing": "运行中的 SSH 节点已不可用",
+      "skip_remote_env_detection": "跳过远程环境检测",
+      "skip_remote_env_detection_hint": "为在打开第二个 SSH 通道时会断开连接的服务器启用。此连接的 Shell 集成和目录跟踪将不可用。"
     },
     "auth": {
       "password": "密码",
@@ -244,8 +246,5 @@
       }
     }
   },
-  "form": {
-    "skip_remote_env_detection": "跳过远程环境检测",
-    "skip_remote_env_detection_hint": "为在打开第二个 SSH 通道时会断开连接的服务器启用。此连接的 Shell 集成和目录跟踪将不可用。"
-  }
+  "form": {}
 }

@@ -105,7 +105,9 @@
       "managed_key_required": "Une clé SSH gérée est requise pour l'authentification par clé gérée.",
       "save": "Enregistrer",
       "save_and_connect": "Enregistrer et se connecter",
-      "runtime_node_missing": "Le nœud SSH en cours n’est plus disponible"
+      "runtime_node_missing": "Le nœud SSH en cours n’est plus disponible",
+      "skip_remote_env_detection": "Ignorer la détection d'environnement distant",
+      "skip_remote_env_detection_hint": "Activer pour les serveurs qui se déconnectent lors de l'ouverture d'un second canal SSH. L'intégration shell et le suivi de répertoire ne seront pas disponibles pour cette connexion."
     },
     "auth": {
       "password": "Mot de passe",
@@ -176,8 +178,5 @@
       "generic_title": "Échec de la connexion"
     }
   },
-  "form": {
-    "skip_remote_env_detection": "Ignorer la détection d'environnement distant",
-    "skip_remote_env_detection_hint": "Activer pour les serveurs qui se déconnectent lors de l'ouverture d'un second canal SSH. L'intégration shell et le suivi de répertoire ne seront pas disponibles pour cette connexion."
-  }
+  "form": {}
 }

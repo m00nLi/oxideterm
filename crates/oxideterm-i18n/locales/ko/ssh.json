@@ -105,7 +105,9 @@
       "managed_key_required": "관리형 키 인증에는 관리형 SSH 키가 필요합니다.",
       "save": "저장",
       "save_and_connect": "저장 후 연결",
-      "runtime_node_missing": "실행 중인 SSH 노드를 더 이상 사용할 수 없습니다"
+      "runtime_node_missing": "실행 중인 SSH 노드를 더 이상 사용할 수 없습니다",
+      "skip_remote_env_detection": "원격 환경 감지 건너뛰기",
+      "skip_remote_env_detection_hint": "두 번째 SSH 채널을 열 때 연결이 끊기는 서버에 대해 활성화합니다. 이 연결에서는 셸 통합 및 디렉터리 추적을 사용할 수 없습니다."
     },
     "auth": {
       "password": "비밀번호",
@@ -176,8 +178,5 @@
       "generic_title": "연결 실패"
     }
   },
-  "form": {
-    "skip_remote_env_detection": "원격 환경 감지 건너뛰기",
-    "skip_remote_env_detection_hint": "두 번째 SSH 채널을 열 때 연결이 끊기는 서버에 대해 활성화합니다. 이 연결에서는 셸 통합 및 디렉터리 추적을 사용할 수 없습니다."
-  }
+  "form": {}
 }
