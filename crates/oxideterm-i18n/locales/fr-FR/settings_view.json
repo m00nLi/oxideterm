@@ -477,7 +477,8 @@
       "page_awareness": "Perception et intégration",
       "page_transfer": "Transfert",
       "page_highlight": "Surlignage",
-      "page_local": "Local"
+      "page_local": "Local",
+      "page_keepalive": "Keepalive"
     },
     "appearance": {
       "title": "Apparence",
@@ -1539,7 +1540,6 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "Bureau distant",
-    "page_keepalive": "Keepalive"
+    "bg_tab_remote_desktop": "Bureau distant"
   }
 }

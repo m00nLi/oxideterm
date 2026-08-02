@@ -477,7 +477,8 @@
       "page_awareness": "Erkennung & Integration",
       "page_transfer": "Übertragung",
       "page_highlight": "Hervorhebung",
-      "page_local": "Lokal"
+      "page_local": "Lokal",
+      "page_keepalive": "Keepalive"
     },
     "appearance": {
       "title": "Erscheinungsbild",
@@ -1539,7 +1540,6 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "Remote-Desktop",
-    "page_keepalive": "Keepalive"
+    "bg_tab_remote_desktop": "Remote-Desktop"
   }
 }

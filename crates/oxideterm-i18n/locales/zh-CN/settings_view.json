@@ -477,7 +477,8 @@
       "page_awareness": "感知与集成",
       "page_transfer": "传输",
       "page_highlight": "高亮",
-      "page_local": "本地"
+      "page_local": "本地",
+      "page_keepalive": "保活"
     },
     "appearance": {
       "title": "外观",
@@ -1539,7 +1540,6 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "远程桌面",
-    "page_keepalive": "保活"
+    "bg_tab_remote_desktop": "远程桌面"
   }
 }

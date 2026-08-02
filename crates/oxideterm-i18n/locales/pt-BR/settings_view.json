@@ -477,7 +477,8 @@
       "page_awareness": "Percepção e integração",
       "page_transfer": "Transferência",
       "page_highlight": "Realce",
-      "page_local": "Local"
+      "page_local": "Local",
+      "page_keepalive": "Keepalive"
     },
     "appearance": {
       "title": "Aparência",
@@ -1539,7 +1540,6 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "Área de trabalho remota",
-    "page_keepalive": "Keepalive"
+    "bg_tab_remote_desktop": "Área de trabalho remota"
   }
 }

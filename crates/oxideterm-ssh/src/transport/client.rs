@@ -324,6 +324,8 @@ impl SshTransportClient {
         consumer: ConnectionConsumer,
         acquisition: ShellRegistryAcquisition,
     ) -> Result<SshPtyHandle, SshTransportError> {
+        let ka_interval = self.keepalive_interval_secs;
+        let ka_data = self.keepalive_data.clone();
         let connection = match acquisition {
             ShellRegistryAcquisition::Shared => {
                 registry.acquire(self.config.clone(), consumer.clone())
@@ -375,12 +377,14 @@ impl SshTransportClient {
             None,
             release_guard.release_tuple(),
             Some(connection.clone()),
+            ka_interval,
+            ka_data.clone(),
         )
         .await;
 
         match &result {
-            Ok(_) => {
-                let _ = registry.mark_state(&connection_id, ConnectionState::Active);
+           Ok(_) => {
+               let _ = registry.mark_state(&connection_id, ConnectionState::Active);
                 release_guard.disarm();
             }
             Err(error) => {
@@ -405,6 +409,8 @@ impl SshTransportClient {
         consumer: ConnectionConsumer,
         parent_connection_id: String,
     ) -> Result<SshPtyHandle, SshTransportError> {
+        let ka_interval = self.keepalive_interval_secs;
+        let ka_data = self.keepalive_data.clone();
         let connection = registry.acquire_dedicated(self.config.clone(), consumer.clone());
         let connection_id = connection.connection_id().to_string();
         // The parent consumer is tied to the dedicated child entry. Retiring
@@ -444,6 +450,8 @@ impl SshTransportClient {
             None,
             release_guard.release_tuple(),
             Some(connection),
+            ka_interval,
+            ka_data.clone(),
         )
         .await;
         match &result {
@@ -503,6 +511,8 @@ impl SshTransportClient {
             Some((cols, rows)),
             release_guard.release_tuple(),
             Some(connection),
+            0,
+            Vec::new(),
         )
         .await;
 
@@ -703,6 +713,8 @@ impl SshTransportClient {
             None,
             registry_release,
             None,
+            self.keepalive_interval_secs,
+            self.keepalive_data.clone(),
         )
         .await
     }
@@ -1106,6 +1118,8 @@ impl SshTransportClient {
         dimensions: Option<(u32, u32)>,
         registry_release: Option<(SshConnectionRegistry, String, ConnectionConsumer)>,
         ssh_connection: Option<SshConnectionHandle>,
+        keepalive_interval_secs: u32,
+        keepalive_data: Vec<u8>,
     ) -> Result<SshPtyHandle, SshTransportError> {
         let session_id = uuid::Uuid::new_v4().to_string();
         let (command_tx, mut command_rx) =
@@ -1273,7 +1287,23 @@ impl SshTransportClient {
             }
             loop {
                 let flush_deadline = output_batcher.flush_due();
+                let keepalive_fut = async {
+                    if keepalive_interval_secs > 0 && !keepalive_data.is_empty() {
+                        tokio::time::sleep(Duration::from_secs(keepalive_interval_secs as u64)).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                };
                 tokio::select! {
+                    _ = keepalive_fut => {
+                        if let Err(error) = channel.data(&keepalive_data[..]).await {
+                            mark_transport_lost(format!(
+                                "keepalive write failed: {error}"
+                            ))
+                            .await;
+                            break;
+                        }
+                    }
                     _ = async move {
                         if let Some(deadline) = flush_deadline {
                             sleep_until(deadline).await;

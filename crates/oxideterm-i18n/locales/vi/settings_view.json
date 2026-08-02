@@ -477,7 +477,8 @@
       "page_awareness": "Nhận biết và tích hợp",
       "page_transfer": "Truyền",
       "page_highlight": "Tô sáng",
-      "page_local": "Cục bộ"
+      "page_local": "Cục bộ",
+      "page_keepalive": "Keepalive"
     },
     "appearance": {
       "title": "Giao diện",
@@ -1539,7 +1540,6 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "Máy tính từ xa",
-    "page_keepalive": "Keepalive"
+    "bg_tab_remote_desktop": "Máy tính từ xa"
   }
 }
