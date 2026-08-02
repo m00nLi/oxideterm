@@ -1249,8 +1249,9 @@ impl WorkspaceApp {
     }
 
     pub(in crate::workspace) fn tab_display_title(&self, tab: &Tab) -> String {
-        // Prefix with the tab's global id. The sequential display number is
-        // applied at render time where the tab's position index is available.
+        // Return the base title without a sequence prefix. The sequential
+        // display number (e.g. "1.Local") is applied at render time in
+        // format_tab_title_with_seq where the tab's position index is known.
         // A user-set custom title wins over the static/i18n derived title so
         // renamed tabs keep their name across language switches.
         let title = match tab.title_source {
