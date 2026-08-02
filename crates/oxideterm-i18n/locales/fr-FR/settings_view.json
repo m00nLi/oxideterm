@@ -1539,6 +1539,7 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "Bureau distant"
+    "bg_tab_remote_desktop": "Bureau distant",
+    "page_keepalive": "Keepalive"
   }
 }

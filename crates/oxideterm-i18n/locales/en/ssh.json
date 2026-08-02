@@ -107,7 +107,11 @@
       "save_and_connect": "Save & Connect",
       "runtime_node_missing": "Runtime SSH node is no longer available",
       "skip_remote_env_detection": "Skip remote environment detection",
-      "skip_remote_env_detection_hint": "Enable for servers that disconnect when a second SSH channel is opened. Shell integration and directory tracking will be unavailable for this connection."
+      "skip_remote_env_detection_hint": "Enable for servers that disconnect when a second SSH channel is opened. Shell integration and directory tracking will be unavailable for this connection.",
+      "keepalive_interval": "Keepalive interval (seconds)",
+      "keepalive_interval_hint": "Interval in seconds between keepalive data sends. 0 = disabled.",
+      "keepalive_send_string": "Keepalive send string",
+      "keepalive_send_string_hint": "Custom string sent through the shell channel at idle intervals. Supports escape sequences: \\n \\r \\t \\0 \\\\. Empty = disabled."
     },
     "auth": {
       "password": "Password",

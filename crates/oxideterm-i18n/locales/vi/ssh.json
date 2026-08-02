@@ -107,7 +107,11 @@
       "save_and_connect": "Lưu và kết nối",
       "runtime_node_missing": "Nút SSH đang chạy không còn khả dụng",
       "skip_remote_env_detection": "Bỏ qua phát hiện môi trường từ xa",
-      "skip_remote_env_detection_hint": "Kích hoạt cho các máy chủ ngắt kết nối khi mở kênh SSH thứ hai. Tích hợp shell và theo dõi thư mục sẽ không khả dụng cho kết nối này."
+      "skip_remote_env_detection_hint": "Kích hoạt cho các máy chủ ngắt kết nối khi mở kênh SSH thứ hai. Tích hợp shell và theo dõi thư mục sẽ không khả dụng cho kết nối này.",
+      "keepalive_interval": "Khoảng thời gian keepalive (giây)",
+      "keepalive_interval_hint": "Khoảng thời gian giữa các lần gửi dữ liệu keepalive (giây). 0 = tắt.",
+      "keepalive_send_string": "Chuỗi gửi keepalive",
+      "keepalive_send_string_hint": "Chuỗi tùy chỉnh được gửi qua kênh shell ở các khoảng thời gian nhàn rỗi. Hỗ trợ chuỗi thoát: \\n \\r \\t \\0 \\\\. Trống = tắt."
     },
     "auth": {
       "password": "Mật khẩu",

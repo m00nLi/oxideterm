@@ -107,7 +107,11 @@
       "save_and_connect": "保存して接続",
       "runtime_node_missing": "実行中の SSH ノードは利用できません",
       "skip_remote_env_detection": "リモート環境検出をスキップ",
-      "skip_remote_env_detection_hint": "2 番目の SSH チャネルを開いたときに切断するサーバーに対して有効にします。この接続ではシェル統合とディレクトリ追跡は使用できません。"
+      "skip_remote_env_detection_hint": "2 番目の SSH チャネルを開いたときに切断するサーバーに対して有効にします。この接続ではシェル統合とディレクトリ追跡は使用できません。",
+      "keepalive_interval": "キープアライブ間隔（秒）",
+      "keepalive_interval_hint": "キープアライブデータ送信の間隔（秒）。0 = 無効。",
+      "keepalive_send_string": "キープアライブ送信文字列",
+      "keepalive_send_string_hint": "アイドル間隔で shell チャネル経由で送信されるカスタム文字列。エスケープシーケンス対応：\\n \\r \\t \\0 \\\\。空 = 無効。"
     },
     "auth": {
       "password": "パスワード",

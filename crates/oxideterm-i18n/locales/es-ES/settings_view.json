@@ -1539,6 +1539,7 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "Escritorio remoto"
+    "bg_tab_remote_desktop": "Escritorio remoto",
+    "page_keepalive": "Keepalive"
   }
 }

@@ -52,6 +52,7 @@ pub enum TerminalSettingsPage {
     Awareness,
     Transfer,
     Highlight,
+    Keepalive,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -156,6 +157,8 @@ pub enum SettingsInput {
     InBandTransferMaxTotalBytes,
     TerminalCommandBarFocusHandoff,
     TerminalCommandSpecsJson,
+    TerminalKeepaliveInterval,
+    TerminalKeepaliveString,
     KeybindingSearch,
     CustomThemeName,
     CustomThemeTerminalColor(usize),
@@ -250,6 +253,7 @@ impl TerminalSettingsPage {
             Self::Awareness,
             Self::Transfer,
             Self::Highlight,
+            Self::Keepalive,
         ]
     }
 
@@ -262,6 +266,7 @@ impl TerminalSettingsPage {
             Self::Awareness => "settings_view.terminal.page_awareness",
             Self::Transfer => "settings_view.terminal.page_transfer",
             Self::Highlight => "settings_view.terminal.page_highlight",
+            Self::Keepalive => "settings_view.terminal.page_keepalive",
         }
     }
 }
@@ -508,6 +513,8 @@ impl SettingsInput {
             Self::InBandTransferMaxTotalBytes => 15,
             Self::TerminalCommandBarFocusHandoff => 16,
             Self::TerminalCommandSpecsJson => 17,
+            Self::TerminalKeepaliveInterval => 21,
+            Self::TerminalKeepaliveString => 22,
             Self::KeybindingSearch => 18,
             Self::CustomThemeName => 10_000,
             Self::CustomThemeTerminalColor(index) => 10_100 + index as u64,

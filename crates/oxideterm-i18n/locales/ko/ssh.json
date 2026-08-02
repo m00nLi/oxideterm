@@ -107,7 +107,11 @@
       "save_and_connect": "저장 후 연결",
       "runtime_node_missing": "실행 중인 SSH 노드를 더 이상 사용할 수 없습니다",
       "skip_remote_env_detection": "원격 환경 감지 건너뛰기",
-      "skip_remote_env_detection_hint": "두 번째 SSH 채널을 열 때 연결이 끊기는 서버에 대해 활성화합니다. 이 연결에서는 셸 통합 및 디렉터리 추적을 사용할 수 없습니다."
+      "skip_remote_env_detection_hint": "두 번째 SSH 채널을 열 때 연결이 끊기는 서버에 대해 활성화합니다. 이 연결에서는 셸 통합 및 디렉터리 추적을 사용할 수 없습니다.",
+      "keepalive_interval": "킵얼라이브 간격 (초)",
+      "keepalive_interval_hint": "킵얼라이브 데이터 전송 간격 (초). 0 = 비활성화.",
+      "keepalive_send_string": "킵얼라이브 전송 문자열",
+      "keepalive_send_string_hint": "유휴 간격으로 shell 채널을 통해 전송되는 사용자 지정 문자열. 이스케이프 시퀀스 지원: \\n \\r \\t \\0 \\\\. 빈 값 = 비활성화."
     },
     "auth": {
       "password": "비밀번호",

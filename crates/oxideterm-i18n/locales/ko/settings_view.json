@@ -1539,6 +1539,7 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "원격 데스크톱"
+    "bg_tab_remote_desktop": "원격 데스크톱",
+    "page_keepalive": "킵얼라이브"
   }
 }

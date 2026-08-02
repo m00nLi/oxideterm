@@ -1539,6 +1539,7 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "远程桌面"
+    "bg_tab_remote_desktop": "远程桌面",
+    "page_keepalive": "保活"
   }
 }

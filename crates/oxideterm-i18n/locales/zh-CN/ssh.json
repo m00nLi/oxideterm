@@ -107,7 +107,11 @@
       "save_and_connect": "保存并连接",
       "runtime_node_missing": "运行中的 SSH 节点已不可用",
       "skip_remote_env_detection": "跳过远程环境检测",
-      "skip_remote_env_detection_hint": "为在打开第二个 SSH 通道时会断开连接的服务器启用。此连接的 Shell 集成和目录跟踪将不可用。"
+      "skip_remote_env_detection_hint": "为在打开第二个 SSH 通道时会断开连接的服务器启用。此连接的 Shell 集成和目录跟踪将不可用。",
+      "keepalive_interval": "保活间隔（秒）",
+      "keepalive_interval_hint": "发送保活数据的间隔秒数。0 = 禁用。",
+      "keepalive_send_string": "保活发送字符串",
+      "keepalive_send_string_hint": "在空闲间隔通过 shell 通道发送的自定义字符串。支持转义序列：\\n \\r \\t \\0 \\\\。空 = 禁用。"
     },
     "auth": {
       "password": "密码",
