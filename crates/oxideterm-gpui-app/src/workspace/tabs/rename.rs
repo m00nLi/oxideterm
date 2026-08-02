@@ -276,18 +276,19 @@ impl WorkspaceApp {
             }
             "tab" => true,
             _ => {
-                if let Some(text) = event.keystroke.key_char.as_deref() {
-                   if !text.is_empty() && !text.chars().any(char::is_control) {
+                if let Some(text) = event.keystroke.key_char.as_deref()
+                    && !text.is_empty()
+                    && !text.chars().any(char::is_control)
+                {
                        let insert_pos = sel.as_ref().map_or(*cursor, |r| r.start);
                        let insert_len = text.encode_utf16().count();
-                        let range = sel.unwrap_or(*cursor..*cursor);
-                        replace_utf16(draft, Some(range), text);
-                       *anchor = insert_pos + insert_len;
-                       *cursor = *anchor;
-                        cx.notify();
-                        return true;
-                    }
-                }
+                       let range = sel.unwrap_or(*cursor..*cursor);
+                       replace_utf16(draft, Some(range), text);
+                      *anchor = insert_pos + insert_len;
+                      *cursor = *anchor;
+                       cx.notify();
+                       return true;
+                   }
                 false
             }
         }
@@ -479,12 +480,12 @@ impl WorkspaceApp {
        let probed_input =
            text_input_anchor_probe(TextInputAnchorId(TAB_RENAME_ANCHOR_ID), input, {
                let entity = cx.entity();
-               move |anchor, _window, cx: &mut gpui::App| {
-                    let _ = entity.update(cx, |this, cx| {
+              move |anchor, _window, cx: &mut gpui::App| {
+                   entity.update(cx, |this, cx| {
                        this.tab_rename_input_bounds = Some(anchor.bounds);
-                        cx.notify();
-                   });
-               }
+                       cx.notify();
+                  });
+              }
            });
 
         let dialog = modal_container(&self.tokens)
