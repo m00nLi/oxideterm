@@ -257,7 +257,15 @@ impl SshTransportClient {
             config,
             prompt_handler: None,
             managed_key_resolver: None,
+            keepalive_interval_secs: 0,
+            keepalive_data: Vec::new(),
         }
+    }
+
+    pub fn with_keepalive(mut self, interval_secs: u32, data: Vec<u8>) -> Self {
+        self.keepalive_interval_secs = interval_secs;
+        self.keepalive_data = data;
+        self
     }
 
     pub fn with_prompt_handler(mut self, prompt_handler: Arc<dyn SshPromptHandler>) -> Self {
@@ -1355,6 +1363,30 @@ impl SshTransportClient {
 
     pub async fn test_connection(self) -> Result<(), SshTransportError> {
         self.connect_authenticated_connection().await.map(|_| ())
+    }
+
+    /// Establish an independent SSH connection with a single SFTP channel.
+    /// Used by `skip_remote_env_detection` servers where each SSH connection
+    /// can only have one channel — SFTP works on an independent connection
+    /// to avoid affecting the terminal's shell channel.
+    pub(crate) async fn connect_for_sftp(
+        self,
+    ) -> Result<DedicatedSftpConnection, SshTransportError> {
+        let pooled = self.connect_authenticated_connection().await?;
+        Ok(DedicatedSftpConnection::new(pooled))
+    }
+
+    /// Establish an independent SSH connection for resource monitoring.
+    /// Used by skip_remote_env_detection nodes to avoid opening a second
+    /// channel on the shared registry connection. Returns a type-erased
+    /// `ResourceSampler` so callers don't need to depend on the internal
+    /// `DedicatedMonitorConnection` type.
+    pub(crate) async fn connect_for_monitor(
+        self,
+    ) -> Result<std::sync::Arc<dyn oxideterm_connection_monitor::ResourceSampler>, SshTransportError>
+    {
+        let pooled = self.connect_authenticated_connection().await?;
+        Ok(std::sync::Arc::new(DedicatedMonitorConnection::new(pooled)))
     }
 }
 

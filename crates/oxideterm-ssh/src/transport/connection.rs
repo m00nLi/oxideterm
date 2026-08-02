@@ -1,4 +1,4 @@
-struct PooledSshConnection {
+pub(crate) struct PooledSshConnection {
     target: client::Handle<NativeClientHandler>,
     _jump_handles: Vec<client::Handle<NativeClientHandler>>,
     remote_forward_handler: RemoteForwardHandlerSlot,
