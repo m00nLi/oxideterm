@@ -77,6 +77,7 @@ pub use transport::{
     SshPtyHandle, SshSecretCommandOutput, SshShellChannel, SshTransportClient, SshTransportCommand,
     SshTransportError, X11ForwardHandler, X11ForwardedChannel,
 };
+pub(crate) use transport::{DedicatedMonitorConnection, DedicatedSftpConnection};
 pub use upstream_proxy::{
     UpstreamProxyAuth, UpstreamProxyConfig, UpstreamProxyError, UpstreamProxyProtocol,
     dial_initial_tcp, parse_http_proxy_value, parse_socks5_proxy_value, probe_upstream_proxy_route,

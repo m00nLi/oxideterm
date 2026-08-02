@@ -1,3 +1,55 @@
+/// Dedicated SSH connection for resource monitoring on single-channel servers.
+///
+/// Wraps a `PooledSshConnection` and implements `ResourceSampler` by opening
+/// a single shell channel on the dedicated connection. No exec fallback —
+/// single-channel servers only allow one channel per SSH connection.
+#[derive(Clone)]
+pub(crate) struct DedicatedMonitorConnection {
+    pooled: Arc<PooledSshConnection>,
+}
+
+impl DedicatedMonitorConnection {
+    pub(crate) fn new(pooled: Arc<PooledSshConnection>) -> Self {
+        Self { pooled }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn is_closed(&self) -> bool {
+        self.pooled.is_closed().await
+    }
+
+    /// Opens a shell channel on the dedicated connection, sends the init
+    /// command, and returns an `SshShellChannel` for sampling.
+    pub(crate) async fn open_shell_channel(
+        &self,
+        init_command: &str,
+    ) -> Result<SshShellChannel, crate::SshTransportError> {
+        if self.pooled.is_closed().await {
+            return Err(crate::SshTransportError::ConnectionFailed(
+                "dedicated monitor connection is closed".to_string(),
+            ));
+        }
+        let channel = self
+            .pooled
+            .target
+            .channel_open_session()
+            .await
+            .map_err(|error| crate::SshTransportError::Channel(error.to_string()))?;
+        channel
+            .request_shell(false)
+            .await
+            .map_err(|error| crate::SshTransportError::Channel(error.to_string()))?;
+        if !init_command.is_empty() {
+            channel
+                .data(init_command.as_bytes())
+                .await
+                .map_err(|error| crate::SshTransportError::Channel(error.to_string()))?;
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        Ok(SshShellChannel { channel })
+    }
+}
+
 struct SshOutputBatcher {
     pending: Vec<u8>,
     utf8_guard: RawUtf8ResidualGuard,
@@ -67,6 +119,48 @@ impl SshOutputBatcher {
             SSH_OUTPUT_FLUSH_MS
         };
         self.flush_deadline = Some(now + Duration::from_millis(delay));
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct DedicatedSftpConnection {
+    pooled: Arc<PooledSshConnection>,
+}
+
+impl std::fmt::Debug for DedicatedSftpConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DedicatedSftpConnection").finish_non_exhaustive()
+    }
+}
+
+impl DedicatedSftpConnection {
+    pub(crate) fn new(pooled: Arc<PooledSshConnection>) -> Self {
+        Self { pooled }
+    }
+
+    pub(crate) async fn is_closed(&self) -> bool {
+        self.pooled.is_closed().await
+    }
+}
+
+impl SftpChannelOpener for DedicatedSftpConnection {
+    fn open_sftp_channel(
+        &self,
+    ) -> impl Future<Output = Result<russh::Channel<client::Msg>, SftpError>> + Send {
+        let pooled = self.pooled.clone();
+        async move {
+            tracing::debug!("open_sftp_channel: opening SFTP channel on dedicated connection");
+            if pooled.is_closed().await {
+                return Err(SftpError::ChannelError(
+                    "dedicated SSH connection is closed".to_string(),
+                ));
+            }
+            pooled
+                .target
+                .channel_open_session()
+                .await
+                .map_err(|error| SftpError::ChannelError(error.to_string()))
+        }
     }
 }
 

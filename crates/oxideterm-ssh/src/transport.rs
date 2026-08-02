@@ -692,6 +692,8 @@ pub struct SshTransportClient {
     config: SshConfig,
     prompt_handler: Option<Arc<dyn SshPromptHandler>>,
     managed_key_resolver: Option<ManagedKeyResolver>,
+    keepalive_interval_secs: u32,
+    keepalive_data: Vec<u8>,
 }
 
 include!("transport/connection.rs");
