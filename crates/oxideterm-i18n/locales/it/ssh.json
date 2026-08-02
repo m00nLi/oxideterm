@@ -178,5 +178,9 @@
       "chain_failed_desc": "Hop {{position}} di {{total}} non riuscito: {{error}}",
       "generic_title": "Connessione non riuscita"
     }
+  },
+  "form": {
+    "skip_remote_env_detection": "Salta rilevamento ambiente remoto",
+    "skip_remote_env_detection_hint": "Abilita per server che si disconnettono all'apertura di un secondo canale SSH. L'integrazione shell e il tracciamento directory non saranno disponibili per questa connessione."
   }
 }

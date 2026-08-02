@@ -246,5 +246,9 @@
         "ready": "就緒"
       }
     }
+  },
+  "form": {
+    "skip_remote_env_detection": "跳過遠端環境偵測",
+    "skip_remote_env_detection_hint": "為在開啟第二個 SSH 通道時會斷開連線的伺服器啟用。此連線的 Shell 整合和目錄追蹤將不可用。"
   }
 }

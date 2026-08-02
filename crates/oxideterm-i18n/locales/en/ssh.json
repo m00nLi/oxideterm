@@ -246,5 +246,9 @@
         "ready": "Ready"
       }
     }
+  },
+  "form": {
+    "skip_remote_env_detection": "Skip remote environment detection",
+    "skip_remote_env_detection_hint": "Enable for servers that disconnect when a second SSH channel is opened. Shell integration and directory tracking will be unavailable for this connection."
   }
 }

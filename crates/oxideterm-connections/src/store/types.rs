@@ -490,6 +490,8 @@ pub struct ConnectionInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_forwarding_socket: Option<String>,
     pub legacy_ssh_compatibility: bool,
+    #[serde(default)]
+    pub skip_remote_env_detection: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_connect_command: Option<String>,
 }
@@ -592,6 +594,7 @@ impl From<&SavedConnection> for ConnectionInfo {
             identity_agent: conn.options.identity_agent.clone(),
             agent_forwarding_socket: conn.options.agent_forwarding_socket.clone(),
             legacy_ssh_compatibility: conn.options.legacy_ssh_compatibility,
+            skip_remote_env_detection: conn.options.skip_remote_env_detection,
             post_connect_command: conn.post_connect_command().map(ToOwned::to_owned),
         }
     }

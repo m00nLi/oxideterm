@@ -199,6 +199,7 @@ pub(super) fn form_from_runtime_config(
     form.agent_forwarding_socket = config.agent_forwarding_socket.clone();
     form.legacy_ssh_compatibility = config.legacy_ssh_compatibility;
     form.connect_timeout_seconds = config.timeout_secs;
+    form.skip_remote_env_detection = config.skip_remote_env_detection;
     form.x11_forwarding = connection_x11_options(config.x11_forwarding);
     form.save_password = auth_fields.save_password;
 
