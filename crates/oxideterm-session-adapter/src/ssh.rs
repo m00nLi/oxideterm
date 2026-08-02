@@ -54,6 +54,7 @@ pub fn ssh_config_from_saved_connection_with_auth(
         x11_forwarding: x11_forward_policy(conn.options.x11_forwarding),
         strict_host_key_checking: true,
         post_connect_command: conn.post_connect_command().map(ToOwned::to_owned),
+        skip_remote_env_detection: conn.options.skip_remote_env_detection,
         ..SshConfig::default()
     })
 }
@@ -122,6 +123,7 @@ pub fn ssh_config_from_saved_connection_with_runtime_secrets(
         x11_forwarding: x11_forward_policy(conn.options.x11_forwarding),
         strict_host_key_checking: true,
         post_connect_command: conn.post_connect_command().map(ToOwned::to_owned),
+        skip_remote_env_detection: conn.options.skip_remote_env_detection,
         ..SshConfig::default()
     })
 }

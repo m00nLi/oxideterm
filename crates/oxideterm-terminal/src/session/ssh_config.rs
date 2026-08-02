@@ -20,6 +20,8 @@ pub struct SshSessionConfig {
     runtime_handle: Option<tokio::runtime::Handle>,
     defer_pty_until_resize: bool,
     post_connect_command: Option<String>,
+    keepalive_interval_secs: u32,
+    keepalive_data: Vec<u8>,
 }
 
 const POST_CONNECT_COMMAND_MAX_BYTES: usize = 8192;
@@ -50,6 +52,8 @@ impl SshSessionConfig {
             runtime_handle: None,
             defer_pty_until_resize: false,
             post_connect_command: None,
+            keepalive_interval_secs: 0,
+            keepalive_data: Vec::new(),
         }
     }
 
@@ -78,6 +82,8 @@ impl SshSessionConfig {
             runtime_handle: None,
             defer_pty_until_resize: false,
             post_connect_command: None,
+            keepalive_interval_secs: 0,
+            keepalive_data: Vec::new(),
         }
     }
 
@@ -148,6 +154,20 @@ impl SshSessionConfig {
         self.post_connect_command.as_deref()
     }
 
+    pub fn with_keepalive(mut self, interval_secs: u32, data: Vec<u8>) -> Self {
+        self.keepalive_interval_secs = interval_secs;
+        self.keepalive_data = data;
+        self
+    }
+
+    pub fn keepalive_interval_secs(&self) -> u32 {
+        self.keepalive_interval_secs
+    }
+
+    pub fn keepalive_data(&self) -> &[u8] {
+        &self.keepalive_data
+    }
+
     pub fn post_connect_input(&self) -> Result<Option<Vec<u8>>, String> {
         normalize_post_connect_command(self.post_connect_command.as_deref())
     }
@@ -169,6 +189,8 @@ impl From<oxideterm_ssh::SshConfig> for SshSessionConfig {
             runtime_handle: None,
             defer_pty_until_resize: false,
             post_connect_command,
+            keepalive_interval_secs: 0,
+            keepalive_data: Vec::new(),
         }
     }
 }
