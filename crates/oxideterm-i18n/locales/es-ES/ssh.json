@@ -175,5 +175,9 @@
       "chain_failed_desc": "Falló el salto {{position}} de {{total}}: {{error}}",
       "generic_title": "Error de conexión"
     }
+  },
+  "form": {
+    "skip_remote_env_detection": "Omitir detección de entorno remoto",
+    "skip_remote_env_detection_hint": "Activar para servidores que desconectan al abrir un segundo canal SSH. La integración de shell y el seguimiento de directorio no estarán disponibles para esta conexión."
   }
 }

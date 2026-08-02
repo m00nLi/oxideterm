@@ -175,5 +175,9 @@
       "chain_failed_desc": "Hop {{position}} von {{total}} fehlgeschlagen: {{error}}",
       "generic_title": "Verbindung fehlgeschlagen"
     }
+  },
+  "form": {
+    "skip_remote_env_detection": "Remote-Umgebungserkennung überspringen",
+    "skip_remote_env_detection_hint": "Für Server aktivieren, die die Verbindung beim Öffnen eines zweiten SSH-Kanals trennen. Shell-Integration und Verzeichnisverfolgung sind für diese Verbindung nicht verfügbar."
   }
 }

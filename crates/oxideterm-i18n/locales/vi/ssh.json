@@ -175,5 +175,9 @@
       "chain_failed_desc": "Bước nhảy {{position}}/{{total}} thất bại: {{error}}",
       "generic_title": "Kết nối thất bại"
     }
+  },
+  "form": {
+    "skip_remote_env_detection": "Bỏ qua phát hiện môi trường từ xa",
+    "skip_remote_env_detection_hint": "Kích hoạt cho các máy chủ ngắt kết nối khi mở kênh SSH thứ hai. Tích hợp shell và theo dõi thư mục sẽ không khả dụng cho kết nối này."
   }
 }

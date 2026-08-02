@@ -175,5 +175,9 @@
       "chain_failed_desc": "총 {{total}}개 중 {{position}}번째 홉 실패: {{error}}",
       "generic_title": "연결 실패"
     }
+  },
+  "form": {
+    "skip_remote_env_detection": "원격 환경 감지 건너뛰기",
+    "skip_remote_env_detection_hint": "두 번째 SSH 채널을 열 때 연결이 끊기는 서버에 대해 활성화합니다. 이 연결에서는 셸 통합 및 디렉터리 추적을 사용할 수 없습니다."
   }
 }

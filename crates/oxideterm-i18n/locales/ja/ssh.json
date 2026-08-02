@@ -175,5 +175,9 @@
       "chain_failed_desc": "{{total}} 中 {{position}} 番目のホップに失敗しました: {{error}}",
       "generic_title": "接続に失敗しました"
     }
+  },
+  "form": {
+    "skip_remote_env_detection": "リモート環境検出をスキップ",
+    "skip_remote_env_detection_hint": "2 番目の SSH チャネルを開いたときに切断するサーバーに対して有効にします。この接続ではシェル統合とディレクトリ追跡は使用できません。"
   }
 }

@@ -175,5 +175,9 @@
       "chain_failed_desc": "L'étape {{position}} sur {{total}} a échoué : {{error}}",
       "generic_title": "Échec de la connexion"
     }
+  },
+  "form": {
+    "skip_remote_env_detection": "Ignorer la détection d'environnement distant",
+    "skip_remote_env_detection_hint": "Activer pour les serveurs qui se déconnectent lors de l'ouverture d'un second canal SSH. L'intégration shell et le suivi de répertoire ne seront pas disponibles pour cette connexion."
   }
 }

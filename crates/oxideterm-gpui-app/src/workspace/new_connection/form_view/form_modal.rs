@@ -26,6 +26,7 @@ struct ConnectionFormModalSnapshot {
     icon: String,
     icon_picker_expanded: bool,
     legacy_ssh_compatibility: bool,
+    skip_remote_env_detection: bool,
     agent_forwarding: bool,
     identity_agent: String,
     agent_available: Option<bool>,
@@ -61,6 +62,7 @@ impl ConnectionFormModalSnapshot {
             icon: form.icon.clone(),
             icon_picker_expanded: form.icon_picker_expanded,
             legacy_ssh_compatibility: form.legacy_ssh_compatibility,
+            skip_remote_env_detection: form.skip_remote_env_detection,
             agent_forwarding: form.agent_forwarding,
             identity_agent: form.identity_agent.clone(),
             agent_available: form.agent_available,
@@ -816,6 +818,66 @@ impl WorkspaceApp {
                                                             }
                                                         },
                                                     )),
+                                            ),
+                                    )
+                                })
+                                .when(!prompt_mode, |content| {
+                                    content.child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(self.tokens.spacing.two))
+                                            .child(self.render_connection_checkbox(
+                                                self.i18n
+                                                    .t("ssh.form.skip_remote_env_detection"),
+                                                form.skip_remote_env_detection,
+                                                |form| {
+                                                    form.skip_remote_env_detection =
+                                                        !form.skip_remote_env_detection
+                                                },
+                                                cx,
+                                            ))
+                                            .child(
+                                                div()
+                                                    .id(
+                                                        "new-connection-skip-remote-env-detection-help",
+                                                    )
+                                                    .size(px(18.0))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .cursor_pointer()
+                                                    .child(Self::render_lucide_icon(
+                                                        LucideIcon::Info,
+                                                        14.0,
+                                                        rgb(self.tokens.ui.warning),
+                                                    ))
+                                                    .on_mouse_move(cx.listener(
+                                                        |this,
+                                                         event: &MouseMoveEvent,
+                                                         _window,
+                                                         cx| {
+                                                            this.queue_workspace_tooltip(
+                                                                "new-connection-skip-remote-env-detection",
+                                                                this.i18n.t("ssh.form.skip_remote_env_detection_hint"),
+                                                                f32::from(event.position.x) + 12.0,
+                                                                f32::from(event.position.y) + 16.0,
+                                                                cx,
+                                                            );
+                                                        },
+                                                    ))
+                                                    .on_mouse_down(
+                                                        MouseButton::Left,
+                                                        cx.listener(
+                                                            |this, _event, _window, cx| {
+                                                                this.clear_workspace_tooltip(
+                                                                    "new-connection-skip-remote-env-detection",
+                                                                    cx,
+                                                                );
+                                                                cx.stop_propagation();
+                                                            },
+                                                        ),
+                                                    ),
                                             ),
                                     )
                                 })
