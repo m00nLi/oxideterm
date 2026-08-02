@@ -483,7 +483,8 @@
       "page_awareness": "Percepción e integración",
       "page_transfer": "Transferencia",
       "page_highlight": "Resaltado",
-      "page_local": "Local"
+      "page_local": "Local",
+      "page_keepalive": "Keepalive"
     },
     "appearance": {
       "title": "Apariencia",
@@ -1597,7 +1598,6 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "Escritorio remoto",
-    "page_keepalive": "Keepalive"
+    "bg_tab_remote_desktop": "Escritorio remoto"
   }
 }

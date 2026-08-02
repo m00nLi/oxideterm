@@ -483,7 +483,8 @@
       "page_awareness": "認識と統合",
       "page_transfer": "転送",
       "page_highlight": "ハイライト",
-      "page_local": "ローカル"
+      "page_local": "ローカル",
+      "page_keepalive": "キープアライブ"
     },
     "appearance": {
       "title": "外観",
@@ -1597,7 +1598,6 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "リモートデスクトップ",
-    "page_keepalive": "キープアライブ"
+    "bg_tab_remote_desktop": "リモートデスクトップ"
   }
 }

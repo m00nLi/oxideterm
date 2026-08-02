@@ -483,7 +483,8 @@
       "page_awareness": "인식 및 통합",
       "page_transfer": "전송",
       "page_highlight": "강조",
-      "page_local": "로컬"
+      "page_local": "로컬",
+      "page_keepalive": "킵얼라이브"
     },
     "appearance": {
       "title": "외관",
@@ -1597,7 +1598,6 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "원격 데스크톱",
-    "page_keepalive": "킵얼라이브"
+    "bg_tab_remote_desktop": "원격 데스크톱"
   }
 }

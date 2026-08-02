@@ -483,7 +483,8 @@
       "page_awareness": "Awareness & Integration",
       "page_transfer": "Transfer",
       "page_highlight": "Highlight",
-      "page_local": "Local"
+      "page_local": "Local",
+      "page_keepalive": "Keepalive"
     },
     "appearance": {
       "title": "Appearance",
@@ -1597,7 +1598,6 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "Remote Desktop",
-    "page_keepalive": "Keepalive"
+    "bg_tab_remote_desktop": "Remote Desktop"
   }
 }

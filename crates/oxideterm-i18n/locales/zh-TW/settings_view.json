@@ -483,7 +483,8 @@
       "page_awareness": "感知與整合",
       "page_transfer": "傳輸",
       "page_highlight": "醒目標示",
-      "page_local": "本機"
+      "page_local": "本機",
+      "page_keepalive": "保活"
     },
     "appearance": {
       "title": "外觀",
@@ -1597,7 +1598,6 @@
     }
   },
   "terminal": {
-    "bg_tab_remote_desktop": "遠端桌面",
-    "page_keepalive": "保活"
+    "bg_tab_remote_desktop": "遠端桌面"
   }
 }
