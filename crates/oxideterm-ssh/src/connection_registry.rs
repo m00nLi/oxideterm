@@ -834,6 +834,11 @@ impl SshConnectionRegistry {
     }
 
     fn maybe_spawn_remote_env_detection(&self, entry: Arc<ConnectionEntry>) {
+        // Skip remote environment detection for single-channel SSH servers.
+        // Opening an exec channel would cause the server to disconnect.
+        if entry.config.skip_remote_env_detection {
+            return;
+        }
         let runtime = self
             .idle_task_runtime
             .read()
@@ -1098,6 +1103,15 @@ impl SshConnectionRegistry {
             .collect::<Vec<_>>();
         let mut changed = Vec::new();
         for connection_id in connection_ids {
+            // Skip keepalive probe for connections that opted out of remote
+            // env detection. The registry probe calls send_keepalive which
+            // kills the transport on servers that don't support
+            // keepalive@openssh.com global requests.
+            if let Some(handle) = self.get(&connection_id) {
+                if handle.entry.config.skip_remote_env_detection {
+                    continue;
+                }
+            }
             if matches!(
                 self.probe_active_connection(&connection_id, timeout).await,
                 ProbeConnectionStatus::Dead

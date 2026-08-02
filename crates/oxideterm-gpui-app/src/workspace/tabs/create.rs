@@ -888,11 +888,25 @@ impl WorkspaceApp {
             .with_managed_key_resolver(managed_key_resolver_from_store(&self.connection_store))
             .with_registry(self.ssh_registry.clone(), consumer)
         } else {
+            // Check if this node uses skip_remote_env_detection — if so,
+            // create an independent SSH connection instead of reusing the
+            // registry's shared transport.
+            let runtime_snapshot = self
+                .node_router
+                .node_runtime_snapshot(node_id)
+                .ok_or_else(|| anyhow::anyhow!("SSH node {} has no runtime config", node_id.0))?;
+            if runtime_snapshot.config.skip_remote_env_detection {
+                let prompt_handler = self.workspace_runtime.read(cx).native_ssh_prompt_handler();
+                SshSessionConfig::from(runtime_snapshot.config)
+                    .with_prompt_handler(prompt_handler)
+                    .with_managed_key_resolver(managed_key_resolver_from_store(&self.connection_store))
+            } else {
             // The default path adds a channel to the node-owned transport and
             // never clones its authentication configuration.
             SshSessionConfig::for_existing_connection(connection_id, host, port, username)
                 .with_x11_forwarding_override(node_x11_forwarding)
                 .with_registry(self.ssh_registry.clone(), consumer)
+            }
         }
         // Opening another terminal never replays a post-connect command unless
         // the caller explicitly supplies one.
