@@ -541,6 +541,13 @@ impl NodeRouter {
         &self,
         node_id: &NodeId,
     ) -> Result<AcquiredTransferSftp, RouteError> {
+        // Check if this node uses skip_remote_env_detection — if so, use
+        // a dedicated SSH connection instead of the registry's shared one.
+        if let Some(snapshot) = self.runtime.snapshot(node_id) {
+            if snapshot.config.skip_remote_env_detection {
+                return self.acquire_transfer_sftp_dedicated(node_id).await;
+            }
+        }
         let resolved = self
             .resolve_connection_wait(node_id, Duration::from_secs(15))
             .await?;
@@ -552,6 +559,32 @@ impl NodeRouter {
             .map_err(|error| sftp_route_error("Transfer SFTP init failed", error))?;
         Ok(AcquiredTransferSftp {
             connection_id,
+            session,
+        })
+    }
+
+    /// Acquire a transfer SFTP session on a dedicated SSH connection for
+    /// skip_remote_env_detection nodes. Each transfer gets its own SSH
+    /// connection with exactly one SFTP channel.
+    async fn acquire_transfer_sftp_dedicated(
+        &self,
+        node_id: &NodeId,
+    ) -> Result<AcquiredTransferSftp, RouteError> {
+        let snapshot = self
+            .runtime
+            .snapshot(node_id)
+            .ok_or_else(|| RouteError::NodeNotFound(node_id.0.clone()))?;
+        let transport = SshTransportClient::new(snapshot.config.clone());
+        let connection = transport
+            .connect_for_sftp()
+            .await
+            .map_err(|error| RouteError::ConnectionError(error.to_string()))?;
+        let session =
+            SftpSession::new(connection, format!("dedicated-transfer-{}", node_id.0))
+                .await
+                .map_err(|error| RouteError::ConnectionError(error.to_string()))?;
+        Ok(AcquiredTransferSftp {
+            connection_id: format!("dedicated-transfer-{}", node_id.0),
             session,
         })
     }
