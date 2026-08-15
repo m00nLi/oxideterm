@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use oxideterm_connection_monitor::{ResourceSampleShell, ResourceSampler, ResourceSamplerFuture};
 
-use crate::{SshConnectionHandle, SshShellChannel};
 use crate::DedicatedMonitorConnection;
+use crate::{SshConnectionHandle, SshShellChannel};
 
 impl ResourceSampler for SshConnectionHandle {
     fn open_shell<'a>(
@@ -106,8 +106,9 @@ impl ResourceSampler for DedicatedMonitorConnection {
     ) -> ResourceSamplerFuture<'a, Result<Box<dyn ResourceSampleShell>, String>> {
         Box::pin(async move {
             match tokio::time::timeout(timeout, self.open_shell_channel(init_command)).await {
-                Ok(Ok(shell)) => Ok(Box::new(DedicatedMonitorShell { shell })
-                    as Box<dyn ResourceSampleShell>),
+                Ok(Ok(shell)) => {
+                    Ok(Box::new(DedicatedMonitorShell { shell }) as Box<dyn ResourceSampleShell>)
+                }
                 Ok(Err(error)) => Err(error.to_string()),
                 Err(_) => Err("monitor shell open timed out".to_string()),
             }
@@ -136,11 +137,6 @@ impl ResourceSampleShell for DedicatedMonitorShell {
     }
 
     fn close<'a>(&'a mut self) -> ResourceSamplerFuture<'a, Result<(), String>> {
-        Box::pin(async move {
-            self.shell
-                .close()
-                .await
-                .map_err(|error| error.to_string())
-        })
+        Box::pin(async move { self.shell.close().await.map_err(|error| error.to_string()) })
     }
 }
