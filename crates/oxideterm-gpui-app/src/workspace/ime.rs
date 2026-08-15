@@ -1886,7 +1886,7 @@ impl WorkspaceApp {
             WorkspaceImeTarget::TabRename => self
                 .tab_rename_dialog
                 .as_ref()
-                .map(|dialog| dialog.draft.clone()),
+                .map(|dialog| dialog.1.clone()),
             WorkspaceImeTarget::AiModelSelectorSearch => self
                 .ai_entity
                 .read(cx)
@@ -2737,7 +2737,7 @@ impl WorkspaceApp {
             }
             WorkspaceImeTarget::TabRename => {
                 if let Some(dialog) = self.tab_rename_dialog.as_mut() {
-                    replace_utf16(&mut dialog.draft, replacement_range, text);
+                    replace_utf16(&mut dialog.1, replacement_range, text);
                     self.show_active_input_caret(cx);
                     cx.notify();
                 }

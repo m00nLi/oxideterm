@@ -925,6 +925,19 @@ impl WorkspaceApp {
             .update(cx, |runtime, _cx| runtime.revoke_app_surface(tab.id));
         self.apply_tab_mount_cleanup(mount_cleanup, Some(window), cx);
         self.sync_host_tools_lifecycle(false, cx);
+        // Clear inline-rename state if the closed tab was being renamed,
+        // otherwise the orphaned id would swallow all keyboard input.
+        if self
+            .tab_rename_dialog
+            .as_ref()
+            .is_some_and(|(id, _, _, _)| id.0 == tab.id.0)
+        {
+            self.tab_rename_dialog_offset = Point::new(px(0.0), px(0.0));
+            self.tab_rename_dialog_drag = None;
+            self.tab_rename_text_drag = None;
+            self.tab_rename_input_bounds = None;
+            self.tab_rename_dialog = None;
+        }
         if self
             .main_window_tabs
             .context_menu
@@ -1311,7 +1324,10 @@ impl WorkspaceApp {
     }
 
     pub(in crate::workspace) fn tab_display_title(&self, tab: &Tab) -> String {
+        // A user-set custom title wins over the static/i18n derived title so
+        // renamed tabs keep their name across language switches.
         let title = match tab.title_source {
+            _ if tab.custom_title.is_some() => tab.display_title().to_string(),
             TabTitleSource::Static => tab.title.clone(),
             TabTitleSource::I18nKey(key) => self.i18n.t(key),
         };
@@ -1324,9 +1340,26 @@ impl WorkspaceApp {
         title
     }
 
+    /// Format a tab title with a 1-based sequential prefix (e.g. "1.Local").
+    /// The sequence reflects the tab's position in the tab bar so closing a
+    /// tab shifts subsequent tabs and keeps the sequence compact.
+    pub(in crate::workspace) fn format_tab_title_with_seq(
+        &self,
+        title: &str,
+        seq: usize,
+    ) -> String {
+        format!("{seq}.{title}")
+    }
+
     pub(super) fn tab_visual_width(&self, tab: &Tab) -> f32 {
-        let metrics = self.tokens.metrics;
         let title = self.tab_display_title(tab);
+        self.tab_title_width(&title)
+    }
+
+    /// Compute the visual width of a fully formatted tab title string
+    /// (including sequence prefix and pane-count suffix).
+    pub(super) fn tab_title_width(&self, title: &str) -> f32 {
+        let metrics = self.tokens.metrics;
         let title_width = title
             .chars()
             .map(|ch| {

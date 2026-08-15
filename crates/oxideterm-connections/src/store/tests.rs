@@ -1942,6 +1942,7 @@ mod tests {
             identity_agent: None,
             agent_forwarding_socket: None,
             legacy_ssh_compatibility: true,
+            skip_remote_env_detection: false,
             x11_forwarding: ConnectionX11ForwardingOptions {
                 enabled: true,
                 mode: ConnectionX11ForwardingMode::Untrusted,

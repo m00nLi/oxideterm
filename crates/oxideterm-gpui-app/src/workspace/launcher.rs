@@ -695,6 +695,7 @@ impl WorkspaceApp {
                     id: tab_id,
                     kind: TabKind::Launcher,
                     title: self.i18n.t("launcher.tabTitle"),
+                    custom_title: None,
                     title_source: TabTitleSource::I18nKey("launcher.tabTitle"),
                     root_pane: None,
                     active_pane_id: None,

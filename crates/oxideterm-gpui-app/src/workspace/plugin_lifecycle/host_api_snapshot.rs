@@ -557,6 +557,7 @@ mod tests {
             identity_agent: Some("/private/agent.sock".to_string()),
             agent_forwarding_socket: Some("/private/forward-agent.sock".to_string()),
             legacy_ssh_compatibility: false,
+            skip_remote_env_detection: false,
             post_connect_command: Some("export TOKEN=private".to_string()),
         };
 

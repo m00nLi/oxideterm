@@ -250,6 +250,7 @@ impl WorkspaceApp {
                         tab_id: tab_id.to_string(),
                     },
                     title: contribution.definition.title,
+                    custom_title: None,
                     title_source: TabTitleSource::Static,
                     root_pane: None,
                     active_pane_id: None,

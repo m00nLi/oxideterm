@@ -407,6 +407,7 @@ impl WorkspaceApp {
                     id: tab_id,
                     kind: TabKind::SessionManager,
                     title: self.i18n.t("sessionManager.title"),
+                    custom_title: None,
                     title_source: TabTitleSource::I18nKey("sessionManager.title"),
                     root_pane: None,
                     active_pane_id: None,

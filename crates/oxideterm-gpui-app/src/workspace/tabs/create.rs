@@ -115,6 +115,7 @@ impl WorkspaceApp {
                 id: tab_id,
                 kind: TabKind::LocalTerminal,
                 title,
+                custom_title: None,
                 title_source: TabTitleSource::Static,
                 root_pane: Some(PaneNode::leaf(pane_id, session_id)),
                 active_pane_id: Some(pane_id),
@@ -173,6 +174,7 @@ impl WorkspaceApp {
                 id: tab_id,
                 kind: TabKind::LocalTerminal,
                 title,
+                custom_title: None,
                 title_source: TabTitleSource::Static,
                 root_pane: Some(PaneNode::leaf(pane_id, session_id)),
                 active_pane_id: Some(pane_id),
@@ -227,6 +229,7 @@ impl WorkspaceApp {
                 id: tab_id,
                 kind: TabKind::LocalTerminal,
                 title,
+                custom_title: None,
                 title_source: TabTitleSource::Static,
                 root_pane: Some(PaneNode::leaf(pane_id, session_id)),
                 active_pane_id: Some(pane_id),
@@ -270,6 +273,7 @@ impl WorkspaceApp {
                 id: tab_id,
                 kind: TabKind::MoshTerminal,
                 title,
+                custom_title: None,
                 title_source: TabTitleSource::Static,
                 root_pane: Some(PaneNode::leaf(pane_id, session_id)),
                 active_pane_id: Some(pane_id),
@@ -899,13 +903,15 @@ impl WorkspaceApp {
                 let prompt_handler = self.workspace_runtime.read(cx).native_ssh_prompt_handler();
                 SshSessionConfig::from(runtime_snapshot.config)
                     .with_prompt_handler(prompt_handler)
-                    .with_managed_key_resolver(managed_key_resolver_from_store(&self.connection_store))
+                    .with_managed_key_resolver(managed_key_resolver_from_store(
+                        &self.connection_store,
+                    ))
             } else {
-            // The default path adds a channel to the node-owned transport and
-            // never clones its authentication configuration.
-            SshSessionConfig::for_existing_connection(connection_id, host, port, username)
-                .with_x11_forwarding_override(node_x11_forwarding)
-                .with_registry(self.ssh_registry.clone(), consumer)
+                // The default path adds a channel to the node-owned transport and
+                // never clones its authentication configuration.
+                SshSessionConfig::for_existing_connection(connection_id, host, port, username)
+                    .with_x11_forwarding_override(node_x11_forwarding)
+                    .with_registry(self.ssh_registry.clone(), consumer)
             }
         }
         // Opening another terminal never replays a post-connect command unless
@@ -919,7 +925,11 @@ impl WorkspaceApp {
         // Apply channel-data keepalive for single-channel SSH servers.
         let ka = &self.settings_store.settings().terminal.keepalive;
         let ka_data = oxideterm_settings::parse_keepalive_string(&ka.send_string);
-        let ka_interval = if ka_data.is_empty() { 0 } else { ka.interval_secs.max(1) };
+        let ka_interval = if ka_data.is_empty() {
+            0
+        } else {
+            ka.interval_secs.max(1)
+        };
         let session_config = session_config.with_keepalive(ka_interval, ka_data);
         self.register_existing_ssh_terminal_session(node_id, session_id, cx)?;
         let shared_session = TerminalPane::ssh_shared_session(session_config, &preferences);
@@ -993,6 +1003,7 @@ impl WorkspaceApp {
                 id: tab_id,
                 kind: TabKind::SshTerminal,
                 title,
+                custom_title: None,
                 title_source: TabTitleSource::Static,
                 root_pane: Some(PaneNode::leaf(pane_id, session_id)),
                 active_pane_id: Some(pane_id),
@@ -1266,6 +1277,7 @@ impl WorkspaceApp {
                     id: tab_id,
                     kind: TabKind::Settings,
                     title: self.i18n.t("settings_view.title"),
+                    custom_title: None,
                     title_source: TabTitleSource::I18nKey("settings_view.title"),
                     root_pane: None,
                     active_pane_id: None,

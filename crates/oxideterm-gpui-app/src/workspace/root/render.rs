@@ -111,6 +111,14 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let active_ime_target = self.active_ime_target(cx);
+        // The tab-rename dialog uses input_caret for its caret but does not
+        // register a WorkspaceImeTarget anchor itself. Drive the blink timer
+        // while the dialog is open by syncing the dedicated rename target.
+        let active_ime_target = active_ime_target.or_else(|| {
+            self.tab_rename_dialog
+                .is_some()
+                .then(|| WorkspaceImeTarget::TabRename)
+        });
         self.workspace_input.update(cx, |input, cx| {
             input.sync_active_target(active_ime_target, cx);
         });
@@ -300,6 +308,14 @@ impl WorkspaceApp {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 // The top rendered blocking portal owns every key before
                 // background IME, terminal, and shortcut routing can observe it.
+                // Tab rename owns keyboard focus while active: it must capture
+                // text input before the terminal/command-bar dispatch chain so
+                // keystrokes edit the draft instead of the terminal.
+                if this.handle_tab_rename_key(event, cx) {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.capture_active_window_modal_key(event, window, cx) {
                     window.prevent_default();
                     cx.stop_propagation();

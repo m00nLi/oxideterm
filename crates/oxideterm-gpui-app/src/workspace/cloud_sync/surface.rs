@@ -25,6 +25,7 @@ impl WorkspaceApp {
                     id: tab_id,
                     kind: TabKind::CloudSync,
                     title: self.i18n.t("plugin.cloud_sync.panel_title"),
+                    custom_title: None,
                     title_source: TabTitleSource::I18nKey("plugin.cloud_sync.panel_title"),
                     root_pane: None,
                     active_pane_id: None,

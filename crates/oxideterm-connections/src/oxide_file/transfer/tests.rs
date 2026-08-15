@@ -69,6 +69,7 @@ mod tests {
                 identity_agent: None,
                 agent_forwarding_socket: None,
                 legacy_ssh_compatibility: false,
+                skip_remote_env_detection: false,
                 x11_forwarding: crate::ConnectionX11ForwardingOptions::default(),
                 dedicated_new_terminal_connection: false,
                 post_connect_command: None,

@@ -1,7 +1,6 @@
 use super::navigation::TAB_DRAG_THRESHOLD_PX;
 use super::*;
 
-use oxideterm_gpui_ui::button::ButtonVariant;
 use oxideterm_gpui_ui::context_menu::{
     ContextMenuItemKind, context_menu_content, context_menu_event_boundary, context_menu_item,
     context_menu_separator,
@@ -9,10 +8,8 @@ use oxideterm_gpui_ui::context_menu::{
 use oxideterm_gpui_ui::modal::overlay_content_boundary;
 
 const TAB_CONTEXT_MENU_WIDTH: f32 = 228.0;
-const TAB_CONTEXT_MENU_HEIGHT: f32 = 136.0;
 const TAB_CONTEXT_MENU_RENAME_HEIGHT: f32 = 168.0;
 const TAB_CONTEXT_MENU_MARGIN: f32 = 8.0;
-const TAB_RENAME_DIALOG_WIDTH: f32 = 420.0;
 const TAB_HANDOFF_PREVIEW_WIDTH_EXTRA: f32 = 96.0;
 const TAB_HANDOFF_PREVIEW_MIN_WIDTH: f32 = 220.0;
 const TAB_HANDOFF_PREVIEW_MAX_WIDTH: f32 = 360.0;
@@ -163,222 +160,6 @@ impl WorkspaceApp {
 
     pub(in crate::workspace) fn close_tab_context_menu(&mut self) -> bool {
         self.main_window_tabs.context_menu.take().is_some()
-    }
-
-    pub(in crate::workspace) fn begin_tab_rename(
-        &mut self,
-        tab_id: TabId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(title) = self.tab_by_id(tab_id, cx).and_then(|tab| {
-            matches!(
-                tab.kind,
-                TabKind::LocalTerminal | TabKind::SshTerminal | TabKind::MoshTerminal
-            )
-            .then(|| tab.title.clone())
-        }) else {
-            return false;
-        };
-        let title_len = title.encode_utf16().count();
-        // Keep the draft in window UI state; the canonical tab changes only on submit.
-        self.tab_rename_dialog = Some(TabRenameDialog {
-            tab_id,
-            draft: title,
-        });
-        self.close_tab_context_menu();
-        self.ime_marked_text = None;
-        self.set_ime_selection_from_anchor(WorkspaceImeTarget::TabRename, 0, title_len);
-        // Move key dispatch off the terminal pane before the platform text
-        // owner receives printable input for the rename field.
-        window.focus(&self.focus_handle, cx);
-        self.show_active_input_caret(cx);
-        cx.notify();
-        true
-    }
-
-    pub(in crate::workspace) fn cancel_tab_rename(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let closed = self.tab_rename_dialog.take().is_some();
-        if closed {
-            self.ime_marked_text = None;
-            self.clear_ime_selection();
-            // Restore the pane as the keyboard owner only after the blocking
-            // rename input has released its platform text handler.
-            self.focus_active_pane(window, cx);
-            cx.notify();
-        }
-        closed
-    }
-
-    pub(in crate::workspace) fn submit_tab_rename(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(dialog) = self.tab_rename_dialog.as_ref() else {
-            return false;
-        };
-        if dialog.draft.trim().is_empty() {
-            return false;
-        }
-        let tab_id = dialog.tab_id;
-        let draft = dialog.draft.clone();
-        let renamed = self.tab_host.update(cx, |tab_host, _cx| {
-            tab_host.rename_terminal_tab(tab_id, &draft)
-        });
-        // Renaming changes display metadata only; existing mounts and sessions stay live.
-        // If an asynchronous tab close won the race, dismiss the stale dialog as well.
-        self.tab_rename_dialog = None;
-        self.ime_marked_text = None;
-        self.clear_ime_selection();
-        self.focus_active_pane(window, cx);
-        cx.notify();
-        renamed
-    }
-
-    pub(in crate::workspace) fn handle_tab_rename_dialog_key(
-        &mut self,
-        event: &KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if self.tab_rename_dialog.is_none() || event.keystroke.modifiers.platform {
-            return false;
-        }
-        match event.keystroke.key.as_str() {
-            "escape" => self.cancel_tab_rename(window, cx),
-            "enter" => {
-                self.submit_tab_rename(window, cx);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    pub(in crate::workspace) fn render_tab_rename_dialog(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let dialog = self.tab_rename_dialog.as_ref()?;
-        let target = WorkspaceImeTarget::TabRename;
-        let submit_disabled = dialog.draft.trim().is_empty();
-        let input = text_input(
-            &self.tokens,
-            TextInputView {
-                value: dialog.draft.as_str(),
-                placeholder: self.i18n.t("tabbar.rename_tab_placeholder"),
-                focused: true,
-                caret_visible: self.input_caret.visible(),
-                secret: false,
-                selected_all: false,
-                selected_range: self.ime_selected_range_for_target(target, cx),
-                marked_text: self.marked_text_for_target(target, cx),
-            },
-        )
-        .h(px(34.0))
-        .cursor(CursorStyle::IBeam);
-        let workspace = cx.entity();
-        let input = text_input_anchor_probe(
-            target.anchor_id(),
-            input
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                        this.ime_marked_text = None;
-                        this.show_active_input_caret(cx);
-                        window.focus(&this.focus_handle, cx);
-                        this.begin_ime_selection_from_mouse_down(target, event, window, cx);
-                        cx.stop_propagation();
-                    }),
-                )
-                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                    this.update_ime_selection_drag_from_mouse_move(event, window, cx);
-                })),
-            move |anchor, _window, cx| {
-                let _ = workspace.update(cx, |this, cx| {
-                    this.update_text_input_anchor(anchor, cx);
-                });
-            },
-        );
-        let cancel_action = self.workspace_confirm_footer_action_button(
-            self.i18n.t("common.cancel"),
-            ButtonVariant::Secondary,
-            ConfirmDialogAction::Cancel,
-            false,
-            None,
-            |this, _event, window, cx| {
-                this.cancel_tab_rename(window, cx);
-            },
-            cx,
-        );
-        let rename_action = self.workspace_confirm_footer_action_button(
-            self.i18n.t("tabbar.rename_tab_action"),
-            ButtonVariant::Default,
-            ConfirmDialogAction::Confirm,
-            submit_disabled,
-            None,
-            |this, _event, window, cx| {
-                this.submit_tab_rename(window, cx);
-            },
-            cx,
-        );
-        let theme = self.tokens.ui;
-        let content = oxideterm_gpui_ui::modal::dialog_content(&self.tokens)
-            .w(px(TAB_RENAME_DIALOG_WIDTH))
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(rgb(theme.border))
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(14.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(rgb(theme.text))
-                            .child(self.i18n.t("tabbar.rename_tab")),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(rgb(theme.text_muted))
-                            .child(self.i18n.t("tabbar.rename_tab_description")),
-                    ),
-            )
-            .child(div().px_4().py_4().child(input))
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_t_1()
-                    .border_color(rgb(theme.border))
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap_2()
-                    .child(cancel_action)
-                    .child(rename_action),
-            );
-
-        Some(
-            oxideterm_gpui_ui::modal::dismissible_dialog_backdrop()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _event, window, cx| {
-                        this.cancel_tab_rename(window, cx);
-                        cx.stop_propagation();
-                    }),
-                )
-                .child(oxideterm_gpui_ui::modal::overlay_content_boundary(content))
-                .into_any_element(),
-        )
     }
 
     pub(in crate::workspace) fn detach_tab_to_window(
@@ -1133,19 +914,13 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let menu = self.main_window_tabs.context_menu?;
-        let renamable = self.tab_by_id(menu.tab_id, cx).is_some_and(|tab| {
-            matches!(
-                tab.kind,
-                TabKind::LocalTerminal | TabKind::SshTerminal | TabKind::MoshTerminal
-            )
-        });
+        let has_custom_title = self
+            .tab_by_id(menu.tab_id, cx)
+            .is_some_and(|tab| tab.custom_title.is_some());
         self.tab_by_id(menu.tab_id, cx)?;
         let viewport = window.viewport_size();
-        let menu_height = if renamable {
-            TAB_CONTEXT_MENU_RENAME_HEIGHT
-        } else {
-            TAB_CONTEXT_MENU_HEIGHT
-        };
+        let menu_height =
+            TAB_CONTEXT_MENU_RENAME_HEIGHT + if has_custom_title { 32.0 } else { 0.0 };
         let placement = browser_behavior::clamp_context_menu_position(
             menu.x,
             menu.y,
@@ -1159,24 +934,43 @@ impl WorkspaceApp {
         let menu_body = context_menu_event_boundary(
             context_menu_content(&self.tokens)
                 .w(px(TAB_CONTEXT_MENU_WIDTH))
-                .when(renamable, |content| {
-                    content.child(
+                .child(
+                    context_menu_item(
+                        &self.tokens,
+                        self.i18n.t("tabbar.rename_tab"),
+                        ContextMenuItemKind::Plain,
+                        false,
+                        false,
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.close_tab_context_menu();
+                            this.begin_tab_rename(menu.tab_id, cx);
+                            cx.stop_propagation();
+                        }),
+                    ),
+                )
+                .when(has_custom_title, |builder| {
+                    builder.child(
                         context_menu_item(
                             &self.tokens,
-                            self.i18n.t("tabbar.rename_tab"),
+                            self.i18n.t("tabbar.reset_title"),
                             ContextMenuItemKind::Plain,
                             false,
                             false,
                         )
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(move |this, _event, window, cx| {
-                                this.begin_tab_rename(menu.tab_id, window, cx);
+                            cx.listener(move |this, _event, _window, cx| {
+                                this.close_tab_context_menu();
+                                this.reset_tab_title(menu.tab_id, cx);
                                 cx.stop_propagation();
                             }),
                         ),
                     )
                 })
+                .child(context_menu_separator(&self.tokens))
                 .child(
                     context_menu_item(
                         &self.tokens,
@@ -1202,7 +996,6 @@ impl WorkspaceApp {
                         }),
                     ),
                 )
-                .child(context_menu_separator(&self.tokens))
                 .child(
                     context_menu_item(
                         &self.tokens,

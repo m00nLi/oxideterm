@@ -32,6 +32,7 @@ fn connection_sync_record(
             identity_agent: None,
             agent_forwarding_socket: None,
             legacy_ssh_compatibility: false,
+            skip_remote_env_detection: false,
             post_connect_command: None,
         }),
         options: Some(options),

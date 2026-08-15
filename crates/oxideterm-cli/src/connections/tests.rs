@@ -30,6 +30,7 @@ fn sample_connection(id: &str, name: &str) -> ConnectionInfo {
         identity_agent: None,
         agent_forwarding_socket: None,
         legacy_ssh_compatibility: false,
+        skip_remote_env_detection: false,
         post_connect_command: None,
     }
 }
