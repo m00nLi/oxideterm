@@ -2736,8 +2736,15 @@ impl WorkspaceApp {
                 }
             }
             WorkspaceImeTarget::TabRename => {
-                if let Some(dialog) = self.tab_rename_dialog.as_mut() {
-                    replace_utf16(&mut dialog.1, replacement_range, text);
+                if let Some((_, draft, anchor, cursor)) = self.tab_rename_dialog.as_mut() {
+                    let caret = tab_rename_caret_after_ime_commit(
+                        draft.encode_utf16().count(),
+                        &replacement_range,
+                        text,
+                    );
+                    replace_utf16(draft, replacement_range, text);
+                    *anchor = caret;
+                    *cursor = caret;
                     self.show_active_input_caret(cx);
                     cx.notify();
                 }
@@ -3276,6 +3283,17 @@ fn effective_platform_text_replacement_range(
     current_selection()
 }
 
+fn tab_rename_caret_after_ime_commit(
+    old_len_utf16: usize,
+    replacement_range: &Option<Range<usize>>,
+    text: &str,
+) -> usize {
+    let start = replacement_range
+        .as_ref()
+        .map_or(old_len_utf16, |range| range.start);
+    start + text.encode_utf16().count()
+}
+
 fn path_completion_owns_vertical_navigation(
     target: WorkspaceImeTarget,
     key: &str,
@@ -3311,9 +3329,10 @@ mod tests {
         line_start_for_utf16_offset, next_utf16_boundary, next_word_boundary,
         normalize_clipboard_text_for_ime_target, path_completion_owns_vertical_navigation,
         platform_text_commit_is_duplicate, previous_utf16_boundary, previous_word_boundary,
-        secret_ime_proxy, soft_wrapped_line_ranges_utf16, transpose_text_at_utf16_offset,
-        utf16_offset_for_char_index, vertical_line_navigation_destination,
-        word_range_for_utf16_offset, workspace_ime_target_for_plain_host_tools_input,
+        secret_ime_proxy, soft_wrapped_line_ranges_utf16, tab_rename_caret_after_ime_commit,
+        transpose_text_at_utf16_offset, utf16_offset_for_char_index,
+        vertical_line_navigation_destination, word_range_for_utf16_offset,
+        workspace_ime_target_for_plain_host_tools_input,
     };
 
     fn key(key: &str, key_char: Option<&str>, modifiers: Modifiers) -> Keystroke {
@@ -3322,6 +3341,24 @@ mod tests {
             key_char: key_char.map(str::to_string),
             modifiers,
         }
+    }
+
+    #[test]
+    fn tab_rename_caret_appends_after_ime_commit_without_range() {
+        assert_eq!(tab_rename_caret_after_ime_commit(3, &None, "abc"), 6);
+    }
+
+    #[test]
+    fn tab_rename_caret_lands_after_ime_replacement_range() {
+        assert_eq!(tab_rename_caret_after_ime_commit(5, &Some(1..4), "xy"), 3);
+    }
+
+    #[test]
+    fn tab_rename_caret_counts_utf16_units_for_surrogate_pairs() {
+        assert_eq!(
+            tab_rename_caret_after_ime_commit(0, &Some(0..0), "\u{1F512}"),
+            2
+        );
     }
 
     #[test]
