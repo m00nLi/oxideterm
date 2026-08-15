@@ -108,9 +108,32 @@ pub struct Tab {
     pub id: TabId,
     pub kind: TabKind,
     pub title: String,
+    pub custom_title: Option<String>,
     pub title_source: TabTitleSource,
     pub root_pane: Option<PaneNode>,
     pub active_pane_id: Option<PaneId>,
+}
+
+impl Tab {
+    pub fn display_title(&self) -> &str {
+        self.custom_title.as_deref().unwrap_or(&self.title)
+    }
+
+    pub fn set_custom_title(&mut self, title: Option<String>) {
+        match title {
+            Some(ref t) => {
+                let trimmed = t.trim();
+                if !trimmed.is_empty() && trimmed != self.title {
+                    self.custom_title = Some(trimmed.to_string());
+                } else {
+                    self.custom_title = None;
+                }
+            }
+            None => {
+                self.custom_title = None;
+            }
+        }
+    }
 }
 
 /// A split child keeps its layout share beside the node it sizes.
@@ -580,5 +603,62 @@ mod tests {
             }
             PaneNode::Leaf { .. } => panic!("expected split group"),
         }
+    }
+
+    fn sample_tab(title: &str) -> Tab {
+        Tab {
+            id: TabId(1),
+            kind: TabKind::LocalTerminal,
+            title: title.to_string(),
+            custom_title: None,
+            title_source: TabTitleSource::Static,
+            root_pane: None,
+            active_pane_id: None,
+        }
+    }
+
+    #[test]
+    fn display_title_returns_custom_when_set() {
+        let mut tab = sample_tab("Local");
+        assert_eq!(tab.display_title(), "Local");
+        tab.set_custom_title(Some("My Tab".to_string()));
+        assert_eq!(tab.display_title(), "My Tab");
+    }
+
+    #[test]
+    fn display_title_falls_back_to_raw_title() {
+        let tab = sample_tab("Local");
+        assert_eq!(tab.display_title(), "Local");
+    }
+
+    #[test]
+    fn set_custom_title_stores_trimmed_value() {
+        let mut tab = sample_tab("Local");
+        tab.set_custom_title(Some("  build  ".to_string()));
+        assert_eq!(tab.custom_title.as_deref(), Some("build"));
+    }
+
+    #[test]
+    fn set_custom_title_ignores_blank() {
+        let mut tab = sample_tab("Local");
+        tab.set_custom_title(Some("   ".to_string()));
+        assert!(tab.custom_title.is_none());
+    }
+
+    #[test]
+    fn set_custom_title_equal_to_raw_clears_custom() {
+        let mut tab = sample_tab("Local");
+        tab.set_custom_title(Some("Local".to_string()));
+        assert!(tab.custom_title.is_none());
+    }
+
+    #[test]
+    fn set_custom_title_none_clears_custom() {
+        let mut tab = sample_tab("Local");
+        tab.set_custom_title(Some("build".to_string()));
+        assert!(tab.custom_title.is_some());
+        tab.set_custom_title(None);
+        assert!(tab.custom_title.is_none());
+        assert_eq!(tab.display_title(), "Local");
     }
 }
