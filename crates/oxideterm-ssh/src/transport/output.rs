@@ -162,6 +162,10 @@ impl SftpChannelOpener for DedicatedSftpConnection {
                 .map_err(|error| SftpError::ChannelError(error.to_string()))
         }
     }
+
+    fn supports_sibling_channels(&self) -> bool {
+        false
+    }
 }
 
 impl SftpChannelOpener for SshConnectionHandle {

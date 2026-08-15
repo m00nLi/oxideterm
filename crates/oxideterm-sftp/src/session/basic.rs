@@ -4,6 +4,7 @@ impl SftpSession {
         O: SftpChannelOpener,
     {
         info!("Opening SFTP subsystem for session {session_id}");
+        let single_channel = !connection.supports_sibling_channels();
         // Store an erased channel factory so directory transfers can open
         // short-lived sibling SFTP channels without changing the public opener API.
         let channel_factory: SftpChannelFactory = Arc::new(move || {
@@ -19,6 +20,7 @@ impl SftpSession {
         Ok(Self {
             sftp: Arc::new(sftp),
             channel_factory,
+            single_channel,
             session_id,
             home: cwd.clone(),
             cwd,

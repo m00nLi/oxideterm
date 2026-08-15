@@ -461,6 +461,7 @@ impl SftpSession {
         plan_directory_transfer(
             requested_parallelism,
             self.sftp.advertised_open_handle_limit(),
+            self.single_channel,
         )
     }
 

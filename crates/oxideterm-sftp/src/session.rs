@@ -54,6 +54,13 @@ pub trait SftpChannelOpener: Clone + Send + Sync + 'static {
     fn open_sftp_channel(
         &self,
     ) -> impl Future<Output = Result<russh::Channel<russh::client::Msg>, SftpError>> + Send;
+
+    /// Whether the underlying transport tolerates more than one open session
+    /// channel. Single-channel SSH servers kill the whole TCP connection when
+    /// a second channel opens, so directory transfers must stay in one lane.
+    fn supports_sibling_channels(&self) -> bool {
+        true
+    }
 }
 
 type BoxedSftpChannelFuture =
@@ -67,6 +74,7 @@ pub struct WriteContentResult {
 pub struct SftpSession {
     sftp: Arc<RusshSftpSession>,
     channel_factory: SftpChannelFactory,
+    single_channel: bool,
     session_id: String,
     home: String,
     cwd: String,
