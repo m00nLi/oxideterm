@@ -21,6 +21,55 @@ mod tests {
     }
 
     #[test]
+    fn release_entries_removes_requested_ids_and_counts_them() {
+        let map = DashMap::new();
+        map.insert("a".to_string(), 1u32);
+        map.insert("b".to_string(), 2u32);
+
+        let removed = release_entries(&map, &["a".to_string(), "c".to_string()]);
+
+        assert_eq!(removed, 1);
+        assert!(!map.contains_key("a"));
+        assert_eq!(map.get("b").map(|value| *value), Some(2));
+    }
+
+    #[test]
+    fn release_entries_ignores_missing_and_duplicate_ids() {
+        let map = DashMap::new();
+        map.insert("a".to_string(), 1u32);
+
+        let removed = release_entries(
+            &map,
+            &["a".to_string(), "a".to_string(), "missing".to_string()],
+        );
+
+        assert_eq!(removed, 1);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn remove_runtime_subtree_releases_dedicated_sftp_bookkeeping() {
+        let registry = SshConnectionRegistry::default();
+        let router = NodeRouter::new(registry);
+        let expansion = router
+            .expand_manual_preset(
+                "saved-a",
+                vec![
+                    SshConfig::password("jump-a", 22, "me", "pw"),
+                    SshConfig::password("jump-b", 22, "me", "pw"),
+                ],
+                SshConfig::password("target", 22, "me", "pw"),
+            )
+            .unwrap();
+
+        let removed = router.remove_runtime_subtree(&expansion.path_node_ids[0]);
+
+        assert_eq!(removed.len(), 3);
+        assert!(removed.contains(&expansion.target_node_id));
+        assert!(router.node_state(&expansion.target_node_id).is_err());
+    }
+
+    #[test]
     fn resolves_node_to_shared_connection() {
         let registry = SshConnectionRegistry::default();
         let router = NodeRouter::new(registry.clone());

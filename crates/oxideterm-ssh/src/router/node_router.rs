@@ -20,6 +20,13 @@ impl std::fmt::Debug for DedicatedSftpEntry {
     }
 }
 
+fn release_entries<K, V>(map: &DashMap<K, V>, ids: &[K]) -> usize
+where
+    K: Eq + std::hash::Hash,
+{
+    ids.iter().filter(|id| map.remove(*id).is_some()).count()
+}
+
 impl NodeRouter {
     pub fn new(registry: SshConnectionRegistry) -> Self {
         Self::with_runtime_store(registry, NodeRuntimeStore::default())
@@ -332,7 +339,9 @@ impl NodeRouter {
     }
 
     pub fn remove_runtime_subtree(&self, node_id: &NodeId) -> Vec<NodeId> {
-        self.runtime.remove_subtree(node_id)
+        let removed = self.runtime.remove_subtree(node_id);
+        release_entries(&self.dedicated_sftp, &removed);
+        removed
     }
 
     pub fn bind_terminal_session(
@@ -500,7 +509,8 @@ impl NodeRouter {
     /// (matching Tauri behavior), and it is only released on node teardown.
     /// The underlying SSH connection is dropped when all references are gone.
     pub fn release_dedicated_sftp(&self, node_id: &NodeId) {
-        if let Some((_, _entry)) = self.dedicated_sftp.remove(node_id) {
+        let removed = release_entries(&self.dedicated_sftp, std::slice::from_ref(node_id));
+        if removed > 0 {
             tracing::debug!(node_id = %node_id.0, "Released dedicated SFTP connection");
         }
     }
