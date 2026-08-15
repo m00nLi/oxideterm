@@ -925,11 +925,8 @@ impl WorkspaceApp {
         // Apply channel-data keepalive for single-channel SSH servers.
         let ka = &self.settings_store.settings().terminal.keepalive;
         let ka_data = oxideterm_settings::parse_keepalive_string(&ka.send_string);
-        let ka_interval = if ka_data.is_empty() {
-            0
-        } else {
-            ka.interval_secs.max(1)
-        };
+        let ka_interval =
+            oxideterm_settings::effective_keepalive_interval(ka.interval_secs, &ka_data);
         let session_config = session_config.with_keepalive(ka_interval, ka_data);
         self.register_existing_ssh_terminal_session(node_id, session_id, cx)?;
         let shared_session = TerminalPane::ssh_shared_session(session_config, &preferences);

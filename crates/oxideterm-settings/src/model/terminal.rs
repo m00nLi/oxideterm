@@ -410,6 +410,22 @@ mod tests {
     }
 
     #[test]
+    fn keepalive_interval_zero_disables_channel_data() {
+        assert_eq!(effective_keepalive_interval(0, b"\n"), 0);
+    }
+
+    #[test]
+    fn keepalive_interval_requires_non_empty_send_data() {
+        assert_eq!(effective_keepalive_interval(30, b""), 0);
+    }
+
+    #[test]
+    fn keepalive_interval_preserves_enabled_values() {
+        assert_eq!(effective_keepalive_interval(30, b"\n"), 30);
+        assert_eq!(effective_keepalive_interval(1, b"\n"), 1);
+    }
+
+    #[test]
     fn terminal_settings_restore_legacy_presentation_defaults() {
         let defaults: [(&str, bool, fn(&TerminalSettings) -> bool); 5] = [
             ("smoothScroll", true, |settings| settings.smooth_scroll),
@@ -624,4 +640,15 @@ pub fn parse_keepalive_string(s: &str) -> Vec<u8> {
         }
     }
     result
+}
+
+/// Resolve the effective keepalive interval for channel-data keepalive.
+/// 0 = disabled and empty send data = disabled; otherwise the interval passes
+/// through unchanged so downstream transport guards stay the source of truth.
+pub fn effective_keepalive_interval(interval_secs: u32, send_data: &[u8]) -> u32 {
+    if interval_secs == 0 || send_data.is_empty() {
+        0
+    } else {
+        interval_secs
+    }
 }
