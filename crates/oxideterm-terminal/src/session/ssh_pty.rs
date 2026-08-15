@@ -31,6 +31,10 @@ pub struct SshPtySession {
     shell_integration: TerminalShellIntegration,
 }
 
+fn keepalive_payload(interval_secs: u32, data: Vec<u8>) -> Option<(u32, Vec<u8>)> {
+    (interval_secs > 0 && !data.is_empty()).then_some((interval_secs, data))
+}
+
 impl SshPtySession {
     pub fn new(
         mut config: SshSessionConfig,
@@ -95,8 +99,10 @@ impl SshPtySession {
                         // Keepalive: send custom data through the shell channel
                         // at idle intervals. Only enabled when both interval and
                         // data are non-empty.
-                        if keepalive_interval_secs > 0 && !keepalive_data.is_empty() {
-                            client = client.with_keepalive(keepalive_interval_secs, keepalive_data);
+                        if let Some((interval_secs, data)) =
+                            keepalive_payload(keepalive_interval_secs, keepalive_data)
+                        {
+                            client = client.with_keepalive(interval_secs, data);
                         }
                        match (registry, consumer) {
                             (Some(registry), Some(consumer)) if !skip_remote_env_detection => {
@@ -148,6 +154,11 @@ impl SshPtySession {
                         }
                         if let Some(resolver) = managed_key_resolver {
                             client = client.with_managed_key_resolver(resolver);
+                        }
+                        if let Some((interval_secs, data)) =
+                            keepalive_payload(keepalive_interval_secs, keepalive_data)
+                        {
+                            client = client.with_keepalive(interval_secs, data);
                         }
                         match (registry, consumer) {
                             (Some(registry), Some(consumer)) => {
@@ -975,5 +986,28 @@ impl TerminalSessionBackend for SshPtySession {
         self.handle
             .as_ref()
             .and_then(SshPtyHandle::ssh_connection_handle)
+    }
+}
+
+#[cfg(test)]
+mod ssh_pty_keepalive_tests {
+    use super::keepalive_payload;
+
+    #[test]
+    fn keepalive_payload_is_disabled_when_interval_is_zero() {
+        assert_eq!(keepalive_payload(0, vec![b'\n']), None);
+    }
+
+    #[test]
+    fn keepalive_payload_is_disabled_when_data_is_empty() {
+        assert_eq!(keepalive_payload(30, Vec::new()), None);
+    }
+
+    #[test]
+    fn keepalive_payload_passes_through_enabled_values() {
+        assert_eq!(
+            keepalive_payload(30, vec![b'\n']),
+            Some((30, vec![b'\n']))
+        );
     }
 }
