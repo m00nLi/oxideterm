@@ -271,8 +271,13 @@ impl SshConfig {
             .proxy_command
             .as_ref()
             .map_or_else(String::new, ProxyCommandConfig::connection_key_suffix);
+        let skip_remote_env_detection_key = if self.skip_remote_env_detection {
+            "|skip_remote_env_detection=true"
+        } else {
+            ""
+        };
         format!(
-            "{}@{}:{}|{}{}{}{}{}{}{}",
+            "{}@{}:{}|{}{}{}{}{}{}{}{}",
             self.username,
             self.host,
             self.port,
@@ -282,7 +287,8 @@ impl SshConfig {
             agent_forwarding_key,
             identity_agent_key,
             agent_forwarding_socket_key,
-            proxy_command_key
+            proxy_command_key,
+            skip_remote_env_detection_key
         )
     }
 
@@ -520,6 +526,28 @@ mod tests {
     fn builds_stable_connection_key() {
         let config = SshConfig::password("192.168.1.10", 22, "root", "pw");
         assert_eq!(config.connection_key(), "root@192.168.1.10:22|");
+    }
+
+    #[test]
+    fn connection_key_separates_single_channel_profiles() {
+        let mut single_channel = SshConfig::password("192.168.1.10", 22, "root", "pw");
+        single_channel.skip_remote_env_detection = true;
+
+        let pooled = SshConfig::password("192.168.1.10", 22, "root", "pw").connection_key();
+        let dedicated = single_channel.connection_key();
+
+        assert_ne!(pooled, dedicated);
+        assert!(dedicated.ends_with("|skip_remote_env_detection=true"));
+    }
+
+    #[test]
+    fn connection_key_keeps_single_channel_profiles_pooled_together() {
+        let mut first = SshConfig::password("192.168.1.10", 22, "root", "pw");
+        first.skip_remote_env_detection = true;
+        let mut second = SshConfig::password("192.168.1.10", 22, "root", "pw");
+        second.skip_remote_env_detection = true;
+
+        assert_eq!(first.connection_key(), second.connection_key());
     }
 
     #[test]
