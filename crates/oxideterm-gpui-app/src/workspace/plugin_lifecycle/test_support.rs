@@ -359,6 +359,7 @@ pub(super) fn test_connection_store_with_agent_connection(
             x11_forwarding: oxideterm_connections::ConnectionX11ForwardingOptions::default(),
             post_connect_command: None,
             terminal: oxideterm_connections::ConnectionTerminalOptions::default(),
+            skip_remote_env_detection: false,
         })
         .unwrap();
     store

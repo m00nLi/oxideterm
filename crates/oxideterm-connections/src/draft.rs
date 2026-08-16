@@ -110,6 +110,7 @@ pub struct ConnectionDraft {
     pub x11_forwarding: crate::ConnectionX11ForwardingOptions,
     pub post_connect_command: String,
     pub terminal: ConnectionTerminalOptions,
+    pub skip_remote_env_detection: bool,
 }
 
 pub fn saved_connection_from_ssh_host(host: SshConfigHost) -> Result<SavedConnection> {
@@ -225,6 +226,7 @@ pub fn save_request_from_draft(
         post_connect_command: (!draft.post_connect_command.trim().is_empty())
             .then(|| draft.post_connect_command.trim().to_string()),
         terminal: draft.terminal,
+        skip_remote_env_detection: draft.skip_remote_env_detection,
     })
 }
 
@@ -581,6 +583,7 @@ mod tests {
             dedicated_new_terminal_connection: false,
             post_connect_command: String::new(),
             terminal: ConnectionTerminalOptions::default(),
+            skip_remote_env_detection: false,
         };
 
         let request = save_request_from_draft(draft, None, None).unwrap();
@@ -589,6 +592,40 @@ mod tests {
             request.proxy_chain[0].auth,
             SavedAuth::KeyboardInteractive
         ));
+    }
+
+    #[test]
+    fn save_request_preserves_single_channel_flag() {
+        let draft = ConnectionDraft {
+            name: "Home".to_string(),
+            host: "target.example.com".to_string(),
+            port: "22".to_string(),
+            username: "me".to_string(),
+            auth: ConnectionAuthDraft {
+                kind: ConnectionAuthDraftKind::Agent,
+                ..ConnectionAuthDraft::default()
+            },
+            group: "Ungrouped".to_string(),
+            color: String::new(),
+            icon_background_color: String::new(),
+            icon: String::new(),
+            tags: Vec::new(),
+            proxy_hops: Vec::new(),
+            connect_timeout_seconds: crate::DEFAULT_SSH_CONNECT_TIMEOUT_SECONDS,
+            agent_forwarding: false,
+            identity_agent: None,
+            agent_forwarding_socket: None,
+            legacy_ssh_compatibility: false,
+            x11_forwarding: crate::ConnectionX11ForwardingOptions::default(),
+            dedicated_new_terminal_connection: false,
+            post_connect_command: String::new(),
+            terminal: ConnectionTerminalOptions::default(),
+            skip_remote_env_detection: true,
+        };
+
+        let request = save_request_from_draft(draft, None, None).unwrap();
+
+        assert!(request.skip_remote_env_detection);
     }
 
     #[test]

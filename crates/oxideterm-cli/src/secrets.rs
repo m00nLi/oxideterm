@@ -510,6 +510,7 @@ fn write_connection_secret(
             x11_forwarding: connection.options.x11_forwarding,
             post_connect_command,
             terminal: connection.options.terminal,
+            skip_remote_env_detection: connection.options.skip_remote_env_detection,
         })
         .map_err(|error| runtime_error(error, json))?;
     Ok(())

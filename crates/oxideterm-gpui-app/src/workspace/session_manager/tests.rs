@@ -81,6 +81,26 @@ pub(super) fn saved_connection_fixture(auth: SavedAuth) -> SavedConnection {
 }
 
 #[test]
+pub(super) fn save_request_from_form_preserves_single_channel_flag() {
+    let mut form = base_form();
+    form.skip_remote_env_detection = true;
+
+    let request = save_request_from_form(&mut form, None).unwrap();
+
+    assert!(request.skip_remote_env_detection);
+}
+
+#[test]
+pub(super) fn form_from_saved_connection_reads_single_channel_flag() {
+    let mut saved = saved_connection_fixture(SavedAuth::Agent);
+    saved.options.skip_remote_env_detection = true;
+
+    let form = form_from_saved_connection(&saved, None);
+
+    assert!(form.skip_remote_env_detection);
+}
+
+#[test]
 pub(super) fn session_manager_grid_projection_virtualizes_cards_by_responsive_row() {
     let items = (0..7)
         .map(|index| {

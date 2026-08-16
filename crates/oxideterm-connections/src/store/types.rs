@@ -1096,6 +1096,7 @@ pub struct SaveConnectionRequest {
     pub x11_forwarding: ConnectionX11ForwardingOptions,
     pub post_connect_command: Option<String>,
     pub terminal: ConnectionTerminalOptions,
+    pub skip_remote_env_detection: bool,
 }
 
 /// Returns the original plaintext allocations after persistence for one runtime handoff.

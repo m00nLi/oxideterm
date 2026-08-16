@@ -329,6 +329,7 @@ mod tests {
                 dedicated_new_terminal_connection: false,
                 post_connect_command: None,
                 terminal: ConnectionTerminalOptions::default(),
+                skip_remote_env_detection: false,
             })
             .unwrap();
 

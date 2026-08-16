@@ -209,6 +209,9 @@ pub(super) fn connection_request_from_spec(
         terminal: existing
             .map(|connection| connection.options.terminal)
             .unwrap_or_default(),
+        skip_remote_env_detection: existing
+            .map(|connection| connection.options.skip_remote_env_detection)
+            .unwrap_or(false),
     })
 }
 

@@ -38,7 +38,23 @@ mod tests {
             dedicated_new_terminal_connection: false,
             post_connect_command: None,
             terminal: ConnectionTerminalOptions::default(),
+            skip_remote_env_detection: false,
         }
+    }
+
+    #[test]
+    fn upsert_persists_single_channel_flag_roundtrip() {
+        let store_path = temp_store_path("single-channel-roundtrip");
+        let mut store = ConnectionStore::load(&store_path).unwrap();
+        let mut save = request("conn-1", SavedAuth::Agent);
+        save.skip_remote_env_detection = true;
+        store.upsert(save).unwrap();
+        drop(store);
+
+        let reloaded = ConnectionStore::load(&store_path).unwrap();
+        let connection = reloaded.get("conn-1").expect("saved connection");
+
+        assert!(connection.options.skip_remote_env_detection);
     }
 
     fn mosh_request(id: &str, auth: SavedAuth) -> SaveMoshProfileRequest {

@@ -391,6 +391,7 @@ pub(in crate::workspace) fn form_from_saved_connection(
     form.legacy_ssh_compatibility = conn.options.legacy_ssh_compatibility;
     form.connect_timeout_seconds = conn.options.effective_connect_timeout_seconds();
     form.dedicated_new_terminal_connection = conn.options.dedicated_new_terminal_connection;
+    form.skip_remote_env_detection = conn.options.skip_remote_env_detection;
     form.x11_forwarding = conn.options.x11_forwarding;
     form.terminal = conn.options.terminal;
     form.save_connection = true;
@@ -629,6 +630,7 @@ fn connection_draft_from_form_with_proxy_hop_prefix(
         x11_forwarding: form.x11_forwarding,
         post_connect_command: form.post_connect_command.clone(),
         terminal: form.terminal,
+        skip_remote_env_detection: form.skip_remote_env_detection,
     }
 }
 

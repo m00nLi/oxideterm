@@ -398,6 +398,7 @@ mod runtime_save_tests {
             x11_forwarding: ConnectionX11ForwardingOptions::default(),
             post_connect_command: None,
             terminal: ConnectionTerminalOptions::default(),
+            skip_remote_env_detection: false,
         }
     }
 

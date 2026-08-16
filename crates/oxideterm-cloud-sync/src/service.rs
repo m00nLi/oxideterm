@@ -731,6 +731,7 @@ mod tests {
                 x11_forwarding: Default::default(),
                 post_connect_command: None,
                 terminal: Default::default(),
+                skip_remote_env_detection: false,
             })
             .unwrap();
         let connections_snapshot = source.export_saved_connections_snapshot().unwrap();

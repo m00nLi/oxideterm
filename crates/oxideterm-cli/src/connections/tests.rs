@@ -3,6 +3,7 @@
 
 use oxideterm_connections::{AuthType, SavedUpstreamProxyPolicy};
 
+use super::spec::ConnectionSpec;
 use super::*;
 
 fn sample_connection(id: &str, name: &str) -> ConnectionInfo {
@@ -33,6 +34,48 @@ fn sample_connection(id: &str, name: &str) -> ConnectionInfo {
         skip_remote_env_detection: false,
         post_connect_command: None,
     }
+}
+
+#[test]
+fn spec_update_preserves_single_channel_flag() {
+    let path = std::env::temp_dir().join(format!(
+        "oxideterm-cli-single-channel-spec-{}.json",
+        std::process::id()
+    ));
+    let mut store = ConnectionStore::load(&path).unwrap();
+    store
+        .upsert(oxideterm_connections::SaveConnectionRequest {
+            id: Some("conn-1".to_string()),
+            name: "Home".to_string(),
+            group: None,
+            host: "example.com".to_string(),
+            port: 22,
+            username: "root".to_string(),
+            auth: oxideterm_connections::SavedAuth::Agent,
+            proxy_chain: Vec::new(),
+            upstream_proxy: SavedUpstreamProxyPolicy::UseGlobal,
+            color: None,
+            icon_background_color: None,
+            icon: None,
+            tags: Vec::new(),
+            connect_timeout_seconds: oxideterm_connections::DEFAULT_SSH_CONNECT_TIMEOUT_SECONDS,
+            agent_forwarding: false,
+            identity_agent: None,
+            agent_forwarding_socket: None,
+            legacy_ssh_compatibility: false,
+            dedicated_new_terminal_connection: false,
+            x11_forwarding: oxideterm_connections::ConnectionX11ForwardingOptions::default(),
+            post_connect_command: None,
+            terminal: oxideterm_connections::ConnectionTerminalOptions::default(),
+            skip_remote_env_detection: true,
+        })
+        .unwrap();
+    let existing = store.get("conn-1").expect("saved connection").clone();
+
+    let request =
+        connection_request_from_spec(ConnectionSpec::default(), Some(&existing), false).unwrap();
+
+    assert!(request.skip_remote_env_detection);
 }
 
 #[test]
