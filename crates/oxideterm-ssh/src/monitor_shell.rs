@@ -20,6 +20,7 @@ use crate::{SshConfig, SshTransportClient, SshTransportError};
 const MARKER_BEGIN: &str = "__OXIDE_MON_BEGIN__";
 const MARKER_END: &str = "__OXIDE_MON_END__";
 const IDLE_WINDOW_CAP: usize = 256;
+const MONITOR_SHELL_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Build the shell command line for one monitored command.
 ///
@@ -219,10 +220,11 @@ struct MonitorShellState {
 
 /// Serialized command runner over one persistent shell channel.
 pub struct SingleChannelShellSession<R> {
-    writer: Mutex<tokio::io::WriteHalf<R>>,
+    writer: Arc<Mutex<tokio::io::WriteHalf<R>>>,
     command_lock: Mutex<()>,
     state: Arc<Mutex<MonitorShellState>>,
     reader_task: tokio::task::JoinHandle<()>,
+    keepalive_task: tokio::task::JoinHandle<()>,
 }
 
 /// Concrete monitor session over a russh channel stream.
@@ -272,11 +274,28 @@ where
         let reader_task = tokio::spawn(async move {
             reader_loop(reader, reader_state).await;
         });
+        let writer = Arc::new(Mutex::new(writer));
+        let keepalive_writer = writer.clone();
+        let keepalive_task = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(MONITOR_SHELL_KEEPALIVE_INTERVAL).await;
+                if keepalive_writer
+                    .lock()
+                    .await
+                    .write_all(b"\n")
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         Self {
-            writer: Mutex::new(writer),
+            writer,
             command_lock: Mutex::new(()),
             state,
             reader_task,
+            keepalive_task,
         }
     }
 
@@ -323,6 +342,7 @@ impl<R> Drop for SingleChannelShellSession<R> {
         // Aborting the reader drops the read half, whose close-on-drop closes
         // the channel and releases the dedicated transport.
         self.reader_task.abort();
+        self.keepalive_task.abort();
     }
 }
 
