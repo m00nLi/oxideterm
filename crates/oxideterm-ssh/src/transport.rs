@@ -608,6 +608,56 @@ pub struct SshShellChannel {
     channel: Channel<client::Msg>,
 }
 
+/// Byte-stream decoder for sampler output: skips one echoed copy of the
+/// command and normalizes CRLF before appending to the output buffer.
+struct SamplerStreamDecoder {
+    echo_bytes: Vec<u8>,
+    echo_matched: usize,
+    echo_scanning: bool,
+    pending_cr: bool,
+}
+
+impl SamplerStreamDecoder {
+    fn new(command: &str) -> Self {
+        Self {
+            echo_bytes: command.bytes().filter(|&byte| byte != b'\r').collect(),
+            echo_matched: 0,
+            echo_scanning: true,
+            pending_cr: false,
+        }
+    }
+
+    fn feed(&mut self, data: &[u8], output: &mut Vec<u8>, max_output: usize) {
+        for &raw in data {
+            let byte = if self.pending_cr {
+                self.pending_cr = false;
+                if raw == b'\n' { b'\n' } else { raw }
+            } else if raw == b'\r' {
+                self.pending_cr = true;
+                continue;
+            } else {
+                raw
+            };
+
+            if self.echo_scanning {
+                if self.echo_matched < self.echo_bytes.len()
+                    && byte == self.echo_bytes[self.echo_matched]
+                {
+                    self.echo_matched += 1;
+                    if self.echo_matched == self.echo_bytes.len() {
+                        self.echo_scanning = false;
+                    }
+                    continue;
+                }
+                self.echo_scanning = false;
+            }
+            if output.len() < max_output {
+                output.push(byte);
+            }
+        }
+    }
+}
+
 impl SshShellChannel {
     pub async fn sample_until(
         &mut self,
@@ -621,15 +671,20 @@ impl SshShellChannel {
             .await
             .map_err(|error| SshTransportError::Channel(error.to_string()))?;
 
+        // Some single-channel servers echo their input. The echoed command
+        // contains the end marker, so an unguarded contains() match would
+        // finish immediately with garbage. Skip a contiguous, CRLF-normalized
+        // copy of the command at the start of the stream; if the first real
+        // byte does not match, treat everything as output (no echo).
+        let mut decoder = SamplerStreamDecoder::new(command);
         let mut output = Vec::new();
         tokio::time::timeout(timeout, async {
             loop {
                 match self.channel.wait().await {
                     Some(ChannelMsg::Data { data }) => {
-                        output.extend_from_slice(&data);
+                        decoder.feed(&data, &mut output, max_output_size);
                         if output.len() > max_output_size {
                             output.truncate(max_output_size);
-                            break;
                         }
                         if let Ok(text) = std::str::from_utf8(&output)
                             && text.contains(end_marker)
@@ -846,7 +901,8 @@ mod transport_error_tests {
 #[cfg(test)]
 mod auth_banner_tests {
     use super::{
-        auth_banner_prelude_bytes, new_auth_banner_sink, sanitize_auth_banner, take_auth_banners,
+        SamplerStreamDecoder, auth_banner_prelude_bytes, new_auth_banner_sink,
+        sanitize_auth_banner, take_auth_banners,
     };
 
     #[test]
@@ -881,5 +937,26 @@ mod auth_banner_tests {
             auth_banner_prelude_bytes(vec!["one\ntwo".to_string(), "three".to_string()]),
             b"one\r\ntwo\r\nthree\r\n".to_vec()
         );
+    }
+
+    #[test]
+    fn sampler_decoder_skips_echoed_command_and_normalizes_crlf() {
+        let mut decoder = SamplerStreamDecoder::new("echo hi; echo END");
+        let mut output = Vec::new();
+
+        decoder.feed(b"echo hi; echo E", &mut output, 1024);
+        decoder.feed(b"ND\r\nreal data\r\nEND", &mut output, 1024);
+
+        assert_eq!(output, b"\nreal data\nEND");
+    }
+
+    #[test]
+    fn sampler_decoder_passes_through_without_echo() {
+        let mut decoder = SamplerStreamDecoder::new("echo hi");
+        let mut output = Vec::new();
+
+        decoder.feed(b"real output", &mut output, 1024);
+
+        assert_eq!(output, b"real output");
     }
 }
