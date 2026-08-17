@@ -1,11 +1,13 @@
 // Copyright (C) 2026 AnalyseDeCircuit
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use oxideterm_connection_monitor::{ResourceSampleShell, ResourceSampler, ResourceSamplerFuture};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::DedicatedMonitorConnection;
+use crate::transport::SamplerStreamDecoder;
 use crate::{SshConnectionHandle, SshShellChannel};
 
 impl ResourceSampler for SshConnectionHandle {
@@ -107,7 +109,24 @@ impl ResourceSampler for DedicatedMonitorConnection {
         Box::pin(async move {
             match tokio::time::timeout(timeout, self.open_shell_channel(init_command)).await {
                 Ok(Ok(shell)) => {
-                    Ok(Box::new(DedicatedMonitorShell { shell }) as Box<dyn ResourceSampleShell>)
+                    let (reader, writer) = shell.into_raw_stream().into_split();
+                    let writer = Arc::new(tokio::sync::Mutex::new(writer));
+                    let keepalive_task = tokio::spawn({
+                        let writer = writer.clone();
+                        async move {
+                            loop {
+                                tokio::time::sleep(DEDICATED_SAMPLER_KEEPALIVE_INTERVAL).await;
+                                if writer.lock().await.write_all(b"\n").await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                    Ok(Box::new(DedicatedMonitorShell {
+                        reader,
+                        writer,
+                        keepalive_task: Some(keepalive_task),
+                    }) as Box<dyn ResourceSampleShell>)
                 }
                 Ok(Err(error)) => Err(error.to_string()),
                 Err(_) => Err("monitor shell open timed out".to_string()),
@@ -116,8 +135,12 @@ impl ResourceSampler for DedicatedMonitorConnection {
     }
 }
 
+const DEDICATED_SAMPLER_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
+
 struct DedicatedMonitorShell {
-    shell: SshShellChannel,
+    reader: russh::ChannelStreamReader<russh::client::Msg>,
+    writer: Arc<tokio::sync::Mutex<russh::ChannelStreamWriter<russh::client::Msg>>>,
+    keepalive_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ResourceSampleShell for DedicatedMonitorShell {
@@ -129,14 +152,46 @@ impl ResourceSampleShell for DedicatedMonitorShell {
         max_output_size: usize,
     ) -> ResourceSamplerFuture<'a, Result<String, String>> {
         Box::pin(async move {
-            self.shell
-                .sample_until(command, end_marker, timeout, max_output_size)
+            self.writer
+                .lock()
                 .await
-                .map_err(|error| error.to_string())
+                .write_all(command.as_bytes())
+                .await
+                .map_err(|error| error.to_string())?;
+
+            let mut decoder = SamplerStreamDecoder::new(command);
+            tokio::time::timeout(timeout, async {
+                let mut buffer = [0u8; 4096];
+                let mut output = Vec::new();
+                loop {
+                    let read = self
+                        .reader
+                        .read(&mut buffer)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    if read == 0 {
+                        return Err("persistent shell channel closed".to_string());
+                    }
+                    decoder.feed(&buffer[..read], &mut output, max_output_size);
+                    if let Ok(text) = std::str::from_utf8(&output)
+                        && text.contains(end_marker)
+                    {
+                        break;
+                    }
+                }
+                Ok::<String, String>(String::from_utf8_lossy(&output).into_owned())
+            })
+            .await
+            .map_err(|_| "sampler read timed out".to_string())?
         })
     }
 
     fn close<'a>(&'a mut self) -> ResourceSamplerFuture<'a, Result<(), String>> {
-        Box::pin(async move { self.shell.close().await.map_err(|error| error.to_string()) })
+        Box::pin(async move {
+            if let Some(task) = self.keepalive_task.take() {
+                task.abort();
+            }
+            Ok(())
+        })
     }
 }

@@ -610,7 +610,7 @@ pub struct SshShellChannel {
 
 /// Byte-stream decoder for sampler output: skips one echoed copy of the
 /// command and normalizes CRLF before appending to the output buffer.
-struct SamplerStreamDecoder {
+pub(crate) struct SamplerStreamDecoder {
     echo_bytes: Vec<u8>,
     echo_matched: usize,
     echo_scanning: bool,
@@ -618,7 +618,7 @@ struct SamplerStreamDecoder {
 }
 
 impl SamplerStreamDecoder {
-    fn new(command: &str) -> Self {
+    pub(crate) fn new(command: &str) -> Self {
         Self {
             echo_bytes: command.bytes().filter(|&byte| byte != b'\r').collect(),
             echo_matched: 0,
@@ -627,7 +627,7 @@ impl SamplerStreamDecoder {
         }
     }
 
-    fn feed(&mut self, data: &[u8], output: &mut Vec<u8>, max_output: usize) {
+    pub(crate) fn feed(&mut self, data: &[u8], output: &mut Vec<u8>, max_output: usize) {
         for &raw in data {
             let byte = if self.pending_cr {
                 self.pending_cr = false;
