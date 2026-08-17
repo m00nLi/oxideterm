@@ -16,7 +16,7 @@ mod connection_trace;
 mod host_key;
 mod local_paths;
 mod monitor;
-mod monitor_shell;
+pub mod monitor_shell;
 mod reconnect;
 mod router;
 mod session_tree_plan;

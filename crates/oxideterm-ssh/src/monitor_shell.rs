@@ -1,8 +1,9 @@
-//! SPIKE prototype for single-channel monitoring over one persistent shell.
+//! Serialized command execution over one persistent shell channel.
 //!
-//! Throwaway feasibility code: validates marker framing, serialization, and
-//! timeout resynchronization against a mock byte stream before wiring a real
-//! russh shell channel. Do not merge into production as-is.
+//! Single-channel SSH servers kill the transport when a second channel opens,
+//! so monitoring commands cannot use per-command exec channels. This module
+//! multiplexes commands over one shell channel with echo-proof marker framing
+//! and client-side timeout resynchronization.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -10,6 +11,8 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Mutex, oneshot};
+
+use crate::{SshConfig, SshTransportClient, SshTransportError};
 
 /// Final output marker. It is assembled by the remote shell from fragments so
 /// that shells which echo their input never emit the literal marker text as
@@ -202,10 +205,13 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-#[derive(Debug, PartialEq)]
-pub(crate) enum MonitorShellError {
+#[derive(Debug, PartialEq, thiserror::Error)]
+pub enum MonitorShellError {
+    #[error("monitor command timed out")]
     Timeout,
+    #[error("monitor shell channel closed")]
     ChannelClosed,
+    #[error("monitor shell write failed: {0}")]
     Write(String),
 }
 
@@ -216,11 +222,31 @@ struct MonitorShellState {
 }
 
 /// Serialized command runner over one persistent shell channel.
-pub(crate) struct SingleChannelShellSession<R> {
+pub struct SingleChannelShellSession<R> {
     writer: Mutex<tokio::io::WriteHalf<R>>,
     command_lock: Mutex<()>,
     state: Arc<Mutex<MonitorShellState>>,
-    _reader_task: tokio::task::JoinHandle<()>,
+    reader_task: tokio::task::JoinHandle<()>,
+}
+
+/// Concrete monitor session over a russh channel stream.
+pub type MonitorShellSession = SingleChannelShellSession<russh::ChannelStream<russh::client::Msg>>;
+
+/// Open one dedicated SSH connection and its single shell channel.
+///
+/// `keepalive_interval_secs > 0` with non-empty `keepalive_data` keeps the
+/// otherwise idle transport alive on servers that require channel data.
+pub async fn connect_monitor_shell(
+    config: SshConfig,
+    keepalive_interval_secs: u32,
+    keepalive_data: Vec<u8>,
+) -> Result<MonitorShellSession, SshTransportError> {
+    let mut client = SshTransportClient::new(config);
+    if keepalive_interval_secs > 0 && !keepalive_data.is_empty() {
+        client = client.with_keepalive(keepalive_interval_secs, keepalive_data);
+    }
+    let shell = client.connect_for_monitor_channel().await?;
+    Ok(SingleChannelShellSession::new(shell.into_raw_stream()))
 }
 
 impl<R> SingleChannelShellSession<R>
@@ -238,11 +264,11 @@ where
             writer: Mutex::new(writer),
             command_lock: Mutex::new(()),
             state,
-            _reader_task: reader_task,
+            reader_task,
         }
     }
 
-    pub(crate) async fn run_command(
+    pub async fn run_command(
         &mut self,
         command: &str,
         timeout: Duration,
@@ -277,6 +303,14 @@ where
                 Err(MonitorShellError::Timeout)
             }
         }
+    }
+}
+
+impl<R> Drop for SingleChannelShellSession<R> {
+    fn drop(&mut self) {
+        // Aborting the reader drops the read half, whose close-on-drop closes
+        // the channel and releases the dedicated transport.
+        self.reader_task.abort();
     }
 }
 

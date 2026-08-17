@@ -1,4 +1,4 @@
-//! SPIKE real-server probe for the single-channel monitor shell prototype.
+//! Real-server probe for the single-channel monitor shell.
 //!
 //! Exposed only behind the `monitor-probe` feature. The probe trusts the host
 //! key automatically and reads its target from environment variables; never
@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use crate::{
-    SshConfig, SshTransportClient, SshTransportError,
-    monitor_shell::{MonitorShellError, SingleChannelShellSession},
+    SshConfig, SshTransportError,
+    monitor_shell::{MonitorShellError, MonitorShellSession, connect_monitor_shell},
 };
 
 /// Public mirror of the internal command error for probe callers.
@@ -30,15 +30,12 @@ impl From<MonitorShellError> for ProbeCommandError {
 }
 
 pub struct ProbeSession {
-    session: SingleChannelShellSession<russh::ChannelStream<russh::client::Msg>>,
+    session: MonitorShellSession,
 }
 
 pub async fn connect_probe(config: SshConfig) -> Result<ProbeSession, SshTransportError> {
-    let shell = SshTransportClient::new(config)
-        .connect_for_monitor_channel()
-        .await?;
     Ok(ProbeSession {
-        session: SingleChannelShellSession::new(shell.into_probe_stream()),
+        session: connect_monitor_shell(config, 0, Vec::new()).await?,
     })
 }
 

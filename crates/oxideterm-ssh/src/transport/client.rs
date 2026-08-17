@@ -1564,8 +1564,8 @@ impl SshTransportClient {
         Ok(std::sync::Arc::new(DedicatedMonitorConnection::new(pooled)))
     }
 
-    /// SPIKE probe path: open one raw shell channel on a dedicated connection.
-    #[cfg(feature = "monitor-probe")]
+    /// Open one raw shell channel on a dedicated connection for the
+    /// single-channel monitor shell session.
     pub(crate) async fn connect_for_monitor_channel(
         self,
     ) -> Result<SshShellChannel, SshTransportError> {

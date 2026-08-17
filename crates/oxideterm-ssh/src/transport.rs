@@ -668,8 +668,7 @@ impl SshShellChannel {
             .map_err(|error| SshTransportError::Channel(error.to_string()))
     }
 
-    #[cfg(feature = "monitor-probe")]
-    pub(crate) fn into_probe_stream(self) -> russh::ChannelStream<client::Msg> {
+    pub(crate) fn into_raw_stream(self) -> russh::ChannelStream<client::Msg> {
         // ChannelStream owns independent read/write halves, so the framing
         // reader and command writer never contend on the &mut Channel.
         self.channel.into_stream()
