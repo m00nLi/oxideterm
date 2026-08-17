@@ -23,7 +23,7 @@ use crate::{
 };
 
 pub const RESOURCE_SAMPLE_INTERVAL: Duration = Duration::from_secs(10);
-pub const RESOURCE_SAMPLE_TIMEOUT: Duration = Duration::from_secs(5);
+pub const RESOURCE_SAMPLE_TIMEOUT: Duration = Duration::from_secs(20);
 pub const RESOURCE_CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 // Host Tools samples include process and Docker tables. Keep enough room for
 // normal inventories so SSH capture truncation does not look like a parser failure.

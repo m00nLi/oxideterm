@@ -17,7 +17,7 @@ use super::{
 };
 
 pub const GPU_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
-pub const GPU_SAMPLE_TIMEOUT: Duration = Duration::from_secs(10);
+pub const GPU_SAMPLE_TIMEOUT: Duration = Duration::from_secs(30);
 pub const GPU_CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 // Multi-accelerator hosts can return sizeable per-process and per-tile data,
 // while the cap still prevents an unbounded remote command response.
