@@ -250,6 +250,14 @@ pub async fn connect_monitor_shell(
     Ok(SingleChannelShellSession::new(shell.into_raw_stream()))
 }
 
+/// Wrap an existing shell channel in a serialized monitor session.
+///
+/// Used when the monitor shell rides the node's existing transport so
+/// single-channel servers never see an additional connection.
+pub fn monitor_shell_session(shell: crate::SshShellChannel) -> MonitorShellSession {
+    SingleChannelShellSession::new(shell.into_raw_stream())
+}
+
 /// Open a dedicated sampler connection for profiler/GPU sampling.
 ///
 /// Returns a type-erased sampler so callers never see the internal dedicated
