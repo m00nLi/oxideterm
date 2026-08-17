@@ -1203,7 +1203,7 @@ mod tests {
     fn package_copy_stays_in_entity_and_emits_structured_notice(cx: &mut TestAppContext) {
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -1232,7 +1232,7 @@ mod tests {
     fn package_filter_and_expansion_do_not_start_remote_capture(cx: &mut TestAppContext) {
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),

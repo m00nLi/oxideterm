@@ -397,11 +397,20 @@ impl WorkspaceApp {
         );
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let host_tools_messages = HostToolsMessages::from_i18n(&i18n);
+        let monitor_keepalive = {
+            let keepalive = &settings.terminal.keepalive;
+            let data = oxideterm_settings::parse_keepalive_string(&keepalive.send_string);
+            (
+                oxideterm_settings::effective_keepalive_interval(keepalive.interval_secs, &data),
+                data,
+            )
+        };
         let host_tools = cx.new(|cx| {
             let mut host_tools = HostToolsEntity::new(
                 profiler_update_tx,
                 profiler_update_rx,
                 ssh_registry.clone(),
+                monitor_keepalive,
                 cx,
             );
             host_tools.set_messages(host_tools_messages);

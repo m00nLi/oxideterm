@@ -10,6 +10,7 @@ pub(in crate::workspace) struct HostToolsEntity {
     // This handle is private to the Entity. Host Tools exposes snapshots and
     // sampler acquisition only; page code cannot disconnect shared nodes.
     ssh_registry: SshConnectionRegistry,
+    monitor_executor: MonitorCommandExecutor,
     pub(super) profiler_registry: ProfilerRegistry,
     pub(super) profiler_update_tx: tokio::sync::mpsc::UnboundedSender<ProfilerUpdate>,
     pub(super) sampler_delivery_wake: crate::workspace::delivery::ActiveDeliveryWake,
@@ -502,10 +503,27 @@ impl HostToolsEntity {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_for_tests(
+        profiler_update_tx: tokio::sync::mpsc::UnboundedSender<ProfilerUpdate>,
+        profiler_update_rx: tokio::sync::mpsc::UnboundedReceiver<ProfilerUpdate>,
+        ssh_registry: SshConnectionRegistry,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new(
+            profiler_update_tx,
+            profiler_update_rx,
+            ssh_registry,
+            (0, Vec::new()),
+            cx,
+        )
+    }
+
     pub(in crate::workspace) fn new(
         profiler_update_tx: tokio::sync::mpsc::UnboundedSender<ProfilerUpdate>,
         profiler_update_rx: tokio::sync::mpsc::UnboundedReceiver<ProfilerUpdate>,
         ssh_registry: SshConnectionRegistry,
+        monitor_keepalive: (u32, Vec<u8>),
         cx: &mut Context<Self>,
     ) -> Self {
         let sampler_delivery_wake = crate::workspace::delivery::ActiveDeliveryWake::default();
@@ -520,6 +538,7 @@ impl HostToolsEntity {
                 reliable_delivery_wake.clone(),
             );
         let mut entity = Self {
+            monitor_executor: MonitorCommandExecutor::new(ssh_registry.clone(), monitor_keepalive),
             ssh_registry,
             profiler_registry: ProfilerRegistry::new(),
             profiler_update_tx,
@@ -651,6 +670,10 @@ impl HostToolsEntity {
         self.pool_summaries.len()
     }
 
+    pub(super) fn update_monitor_keepalive(&mut self, interval_secs: u32, data: Vec<u8>) {
+        self.monitor_executor.set_keepalive(interval_secs, data);
+    }
+
     pub(super) fn topology_snapshot(&self) -> Option<ConnectionTopologySnapshot> {
         self.topology_snapshot.clone()
     }
@@ -694,15 +717,17 @@ impl HostToolsEntity {
         max_output_size: usize,
         runtime: tokio::runtime::Handle,
     ) -> bool {
-        let Some(handle) = self.ssh_registry.get(&request.connection_id) else {
+        if self.ssh_registry.get(&request.connection_id).is_none() {
             return false;
-        };
+        }
+        let executor = self.monitor_executor.clone();
+        let connection_id = request.connection_id.clone();
         let delivery_tx = self.reliable_delivery_tx.clone();
         // Only the generated log command crosses the task boundary. The
         // registry-owned handle keeps credentials and node lifetime private.
         runtime.spawn(async move {
-            let result = handle
-                .run_command_capture(&command, timeout, max_output_size)
+            let result = executor
+                .run(&connection_id, &command, timeout, max_output_size)
                 .await
                 .map_err(|_| ());
             let _ = delivery_tx.send(super::delivery::HostToolsReliableDelivery::LogSnapshot(
@@ -720,15 +745,17 @@ impl HostToolsEntity {
         max_output_size: usize,
         runtime: tokio::runtime::Handle,
     ) -> bool {
-        let Some(handle) = self.ssh_registry.get(&request.connection_id) else {
+        if self.ssh_registry.get(&request.connection_id).is_none() {
             return false;
-        };
+        }
+        let executor = self.monitor_executor.clone();
+        let connection_id = request.connection_id.clone();
         let delivery_tx = self.reliable_delivery_tx.clone();
         // The registry handle keeps authentication and node ownership inside
         // the SSH runtime while the generated diagnostic command runs.
         runtime.spawn(async move {
-            let result = handle
-                .run_command_capture(&command, timeout, max_output_size)
+            let result = executor
+                .run(&connection_id, &command, timeout, max_output_size)
                 .await
                 .map_err(|_| ());
             let _ = delivery_tx.send(super::delivery::HostToolsReliableDelivery::PortSnapshot(
@@ -746,15 +773,17 @@ impl HostToolsEntity {
         max_output_size: usize,
         runtime: tokio::runtime::Handle,
     ) -> bool {
-        let Some(handle) = self.ssh_registry.get(&request.connection_id) else {
+        if self.ssh_registry.get(&request.connection_id).is_none() {
             return false;
-        };
+        }
+        let executor = self.monitor_executor.clone();
+        let connection_id = request.connection_id.clone();
         let delivery_tx = self.reliable_delivery_tx.clone();
         // Filesystem capture uses the registry-owned transport without moving
         // credentials or node lifecycle control into the page task.
         runtime.spawn(async move {
-            let result = handle
-                .run_command_capture(&command, timeout, max_output_size)
+            let result = executor
+                .run(&connection_id, &command, timeout, max_output_size)
                 .await
                 .map_err(|_| ());
             let _ = delivery_tx.send(
@@ -774,15 +803,17 @@ impl HostToolsEntity {
         max_output_size: usize,
         runtime: tokio::runtime::Handle,
     ) -> bool {
-        let Some(handle) = self.ssh_registry.get(&request.connection_id) else {
+        if self.ssh_registry.get(&request.connection_id).is_none() {
             return false;
-        };
+        }
+        let executor = self.monitor_executor.clone();
+        let connection_id = request.connection_id.clone();
         let delivery_tx = self.reliable_delivery_tx.clone();
         // Package inventory uses the registry-owned transport and cannot
         // release the shared node or inspect its authentication material.
         runtime.spawn(async move {
-            let result = handle
-                .run_command_capture(&command, timeout, max_output_size)
+            let result = executor
+                .run(&connection_id, &command, timeout, max_output_size)
                 .await
                 .map_err(|_| ());
             let _ = delivery_tx.send(super::delivery::HostToolsReliableDelivery::PackageSnapshot(
@@ -800,15 +831,17 @@ impl HostToolsEntity {
         max_output_size: usize,
         runtime: tokio::runtime::Handle,
     ) -> bool {
-        let Some(handle) = self.ssh_registry.get(&request.connection_id) else {
+        if self.ssh_registry.get(&request.connection_id).is_none() {
             return false;
-        };
+        }
+        let executor = self.monitor_executor.clone();
+        let connection_id = request.connection_id.clone();
         let delivery_tx = self.reliable_delivery_tx.clone();
         // Scheduled-task inventory runs on the registry-owned transport and
         // cannot acquire node release or authentication capabilities.
         runtime.spawn(async move {
-            let result = handle
-                .run_command_capture(&command, timeout, max_output_size)
+            let result = executor
+                .run(&connection_id, &command, timeout, max_output_size)
                 .await
                 .map_err(|_| ());
             let _ = delivery_tx.send(
@@ -828,14 +861,16 @@ impl HostToolsEntity {
         max_output_size: usize,
         runtime: tokio::runtime::Handle,
     ) -> bool {
-        let Some(handle) = self.ssh_registry.get(&request.connection_id) else {
+        if self.ssh_registry.get(&request.connection_id).is_none() {
             return false;
-        };
+        }
+        let executor = self.monitor_executor.clone();
+        let connection_id = request.connection_id.clone();
         let delivery_tx = self.reliable_delivery_tx.clone();
         // Raw log output stays inside the Entity delivery and dialog state.
         runtime.spawn(async move {
-            let result = handle
-                .run_command_capture(&command, timeout, max_output_size)
+            let result = executor
+                .run(&connection_id, &command, timeout, max_output_size)
                 .await
                 .map_err(|_| ());
             let _ = delivery_tx.send(super::delivery::HostToolsReliableDelivery::ScheduleLogs(
@@ -853,14 +888,16 @@ impl HostToolsEntity {
         max_output_size: usize,
         runtime: tokio::runtime::Handle,
     ) -> bool {
-        let Some(handle) = self.ssh_registry.get(&request.connection_id) else {
+        if self.ssh_registry.get(&request.connection_id).is_none() {
             return false;
-        };
+        }
+        let executor = self.monitor_executor.clone();
+        let connection_id = request.connection_id.clone();
         let delivery_tx = self.reliable_delivery_tx.clone();
         // Action output is reduced to a success bit before it enters delivery.
         runtime.spawn(async move {
-            let result = handle
-                .run_command_capture(&command, timeout, max_output_size)
+            let result = executor
+                .run(&connection_id, &command, timeout, max_output_size)
                 .await
                 .map(|mut output| {
                     let succeeded = output.exit_code.unwrap_or(0) == 0;
@@ -885,15 +922,17 @@ impl HostToolsEntity {
         max_output_size: usize,
         runtime: tokio::runtime::Handle,
     ) -> bool {
-        let Some(handle) = self.ssh_registry.get(&request.connection_id) else {
+        if self.ssh_registry.get(&request.connection_id).is_none() {
             return false;
-        };
+        }
+        let executor = self.monitor_executor.clone();
+        let connection_id = request.connection_id.clone();
         let delivery_tx = self.reliable_delivery_tx.clone();
         // Remote process output has no UI consumer. Reduce it in the worker
         // and clear both buffers before crossing the Entity delivery boundary.
         runtime.spawn(async move {
-            let result = handle
-                .run_command_capture(&command, timeout, max_output_size)
+            let result = executor
+                .run(&connection_id, &command, timeout, max_output_size)
                 .await
                 .map(|mut output| {
                     let succeeded = output.exit_code.unwrap_or(0) == 0;
@@ -917,14 +956,16 @@ impl HostToolsEntity {
         max_output_size: usize,
         runtime: tokio::runtime::Handle,
     ) -> bool {
-        let Some(handle) = self.ssh_registry.get(&request.connection_id) else {
+        if self.ssh_registry.get(&request.connection_id).is_none() {
             return false;
-        };
+        }
+        let executor = self.monitor_executor.clone();
+        let connection_id = request.connection_id.clone();
         let delivery_tx = self.reliable_delivery_tx.clone();
         // Docker action output is not product data. Clear it before delivery.
         runtime.spawn(async move {
-            let result = handle
-                .run_command_capture(&command, timeout, max_output_size)
+            let result = executor
+                .run(&connection_id, &command, timeout, max_output_size)
                 .await
                 .map(|mut output| {
                     let succeeded = output.exit_code.unwrap_or(0) == 0;
@@ -948,14 +989,16 @@ impl HostToolsEntity {
         max_output_size: usize,
         runtime: tokio::runtime::Handle,
     ) -> bool {
-        let Some(handle) = self.ssh_registry.get(&request.connection_id) else {
+        if self.ssh_registry.get(&request.connection_id).is_none() {
             return false;
-        };
+        }
+        let executor = self.monitor_executor.clone();
+        let connection_id = request.connection_id.clone();
         let delivery_tx = self.reliable_delivery_tx.clone();
         // Raw logs remain inside the Entity delivery and dialog state.
         runtime.spawn(async move {
-            let result = handle
-                .run_command_capture(&command, timeout, max_output_size)
+            let result = executor
+                .run(&connection_id, &command, timeout, max_output_size)
                 .await
                 .map_err(|_| ());
             let _ = delivery_tx.send(super::delivery::HostToolsReliableDelivery::DockerLogs(
@@ -973,14 +1016,16 @@ impl HostToolsEntity {
         max_output_size: usize,
         runtime: tokio::runtime::Handle,
     ) -> bool {
-        let Some(handle) = self.ssh_registry.get(&request.connection_id) else {
+        if self.ssh_registry.get(&request.connection_id).is_none() {
             return false;
-        };
+        }
+        let executor = self.monitor_executor.clone();
+        let connection_id = request.connection_id.clone();
         let delivery_tx = self.reliable_delivery_tx.clone();
         // Inventory output stays inside the Entity and is parsed before render.
         runtime.spawn(async move {
-            let result = handle
-                .run_command_capture(&command, timeout, max_output_size)
+            let result = executor
+                .run(&connection_id, &command, timeout, max_output_size)
                 .await
                 .map_err(|_| ());
             let _ = delivery_tx.send(super::delivery::HostToolsReliableDelivery::ServiceSnapshot(
@@ -998,14 +1043,16 @@ impl HostToolsEntity {
         max_output_size: usize,
         runtime: tokio::runtime::Handle,
     ) -> bool {
-        let Some(handle) = self.ssh_registry.get(&request.connection_id) else {
+        if self.ssh_registry.get(&request.connection_id).is_none() {
             return false;
-        };
+        }
+        let executor = self.monitor_executor.clone();
+        let connection_id = request.connection_id.clone();
         let delivery_tx = self.reliable_delivery_tx.clone();
         // Service action output has no UI consumer and is cleared in the worker.
         runtime.spawn(async move {
-            let result = handle
-                .run_command_capture(&command, timeout, max_output_size)
+            let result = executor
+                .run(&connection_id, &command, timeout, max_output_size)
                 .await
                 .map(|mut output| {
                     let succeeded = output.exit_code.unwrap_or(0) == 0;
@@ -1029,14 +1076,16 @@ impl HostToolsEntity {
         max_output_size: usize,
         runtime: tokio::runtime::Handle,
     ) -> bool {
-        let Some(handle) = self.ssh_registry.get(&request.connection_id) else {
+        if self.ssh_registry.get(&request.connection_id).is_none() {
             return false;
-        };
+        }
+        let executor = self.monitor_executor.clone();
+        let connection_id = request.connection_id.clone();
         let delivery_tx = self.reliable_delivery_tx.clone();
         // Raw service logs never cross the typed workspace event boundary.
         runtime.spawn(async move {
-            let result = handle
-                .run_command_capture(&command, timeout, max_output_size)
+            let result = executor
+                .run(&connection_id, &command, timeout, max_output_size)
                 .await
                 .map_err(|_| ());
             let _ = delivery_tx.send(super::delivery::HostToolsReliableDelivery::ServiceLogs(
@@ -1054,14 +1103,16 @@ impl HostToolsEntity {
         max_output_size: usize,
         runtime: tokio::runtime::Handle,
     ) -> bool {
-        let Some(handle) = self.ssh_registry.get(&request.connection_id) else {
+        if self.ssh_registry.get(&request.connection_id).is_none() {
             return false;
-        };
+        }
+        let executor = self.monitor_executor.clone();
+        let connection_id = request.connection_id.clone();
         let delivery_tx = self.reliable_delivery_tx.clone();
         // Raw tmux inventory stays inside the Entity delivery boundary.
         runtime.spawn(async move {
-            let result = handle
-                .run_command_capture(&command, timeout, max_output_size)
+            let result = executor
+                .run(&connection_id, &command, timeout, max_output_size)
                 .await
                 .map_err(|_| ());
             let _ = delivery_tx.send(super::delivery::HostToolsReliableDelivery::TmuxSnapshot(
@@ -1079,15 +1130,17 @@ impl HostToolsEntity {
         max_output_size: usize,
         runtime: tokio::runtime::Handle,
     ) -> bool {
-        let Some(handle) = self.ssh_registry.get(&request.connection_id) else {
+        if self.ssh_registry.get(&request.connection_id).is_none() {
             return false;
-        };
+        }
+        let executor = self.monitor_executor.clone();
+        let connection_id = request.connection_id.clone();
         let delivery_tx = self.reliable_delivery_tx.clone();
         // The generated command is moved once into the worker. Captured output
         // is cleared before only a success bit crosses delivery.
         runtime.spawn(async move {
-            let result = handle
-                .run_command_capture(command.as_str(), timeout, max_output_size)
+            let result = executor
+                .run(&connection_id, command.as_str(), timeout, max_output_size)
                 .await
                 .map(|mut output| {
                     let succeeded = output.exit_code.unwrap_or(0) == 0;
@@ -1867,7 +1920,7 @@ mod tests {
     fn runtime_navigation_transition_is_entity_owned(cx: &mut TestAppContext) {
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -1898,7 +1951,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -1957,8 +2010,9 @@ mod tests {
             node_consumer.clone(),
         );
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
-        let entity =
-            cx.new(|cx| HostToolsEntity::new(profiler_update_tx, profiler_update_rx, registry, cx));
+        let entity = cx.new(|cx| {
+            HostToolsEntity::new_for_tests(profiler_update_tx, profiler_update_rx, registry, cx)
+        });
 
         entity.update(cx, |entity, cx| {
             entity.refresh_pool_snapshot(cx);
@@ -1987,8 +2041,9 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
         let registry = SshConnectionRegistry::default();
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
-        let entity =
-            cx.new(|cx| HostToolsEntity::new(profiler_update_tx, profiler_update_rx, registry, cx));
+        let entity = cx.new(|cx| {
+            HostToolsEntity::new_for_tests(profiler_update_tx, profiler_update_rx, registry, cx)
+        });
 
         entity.update(cx, |entity, cx| {
             assert!(entity.lifecycle_refresh_task.is_some());
@@ -2039,8 +2094,9 @@ mod tests {
             shell_close_count: shell_close_count.clone(),
         });
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
-        let entity =
-            cx.new(|cx| HostToolsEntity::new(profiler_update_tx, profiler_update_rx, registry, cx));
+        let entity = cx.new(|cx| {
+            HostToolsEntity::new_for_tests(profiler_update_tx, profiler_update_rx, registry, cx)
+        });
         let mut events = cx.events(&entity);
         let monitoring = oxideterm_settings::HostToolsSettings::default();
         let sampling_config = oxideterm_connection_monitor::ResourceSamplingConfig::default();
@@ -2186,7 +2242,7 @@ mod tests {
     fn topology_interaction_state_is_entity_owned(cx: &mut TestAppContext) {
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -2220,7 +2276,7 @@ mod tests {
     fn tool_navigation_and_scrollbar_capture_are_entity_owned(cx: &mut TestAppContext) {
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -2266,8 +2322,9 @@ mod tests {
             node_consumer.clone(),
         );
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
-        let entity =
-            cx.new(|cx| HostToolsEntity::new(profiler_update_tx, profiler_update_rx, registry, cx));
+        let entity = cx.new(|cx| {
+            HostToolsEntity::new_for_tests(profiler_update_tx, profiler_update_rx, registry, cx)
+        });
         let mut events = cx.events(&entity);
 
         entity.update(cx, |entity, cx| {
@@ -2381,7 +2438,7 @@ mod tests {
     fn search_focus_lists_and_tmux_input_are_entity_owned(cx: &mut TestAppContext) {
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -2433,7 +2490,7 @@ mod tests {
     fn gpu_actions_and_expansion_are_entity_owned(cx: &mut TestAppContext) {
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -2462,7 +2519,7 @@ mod tests {
     fn process_action_state_and_delivery_are_entity_owned_and_redacted(cx: &mut TestAppContext) {
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -2546,7 +2603,7 @@ mod tests {
     fn docker_actions_and_logs_are_entity_owned_and_redacted(cx: &mut TestAppContext) {
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -2647,7 +2704,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -2795,7 +2852,7 @@ mod tests {
         let runtime_handle = runtime.handle().clone();
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -2918,7 +2975,7 @@ mod tests {
     fn log_snapshot_delivery_is_entity_owned_and_redacted(cx: &mut TestAppContext) {
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -2980,7 +3037,7 @@ mod tests {
     fn port_snapshot_state_and_delivery_are_entity_owned(cx: &mut TestAppContext) {
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -3044,7 +3101,7 @@ mod tests {
     fn filesystem_snapshot_state_and_delivery_are_entity_owned(cx: &mut TestAppContext) {
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -3110,7 +3167,7 @@ mod tests {
     fn package_snapshot_state_and_delivery_are_entity_owned(cx: &mut TestAppContext) {
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -3174,7 +3231,7 @@ mod tests {
     fn schedule_snapshot_state_and_delivery_are_entity_owned(cx: &mut TestAppContext) {
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),
@@ -3240,7 +3297,7 @@ mod tests {
     fn schedule_logs_and_actions_are_entity_owned_and_redacted(cx: &mut TestAppContext) {
         let (profiler_update_tx, profiler_update_rx) = tokio::sync::mpsc::unbounded_channel();
         let entity = cx.new(|cx| {
-            HostToolsEntity::new(
+            HostToolsEntity::new_for_tests(
                 profiler_update_tx,
                 profiler_update_rx,
                 SshConnectionRegistry::default(),

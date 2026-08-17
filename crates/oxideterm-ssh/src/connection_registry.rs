@@ -431,6 +431,16 @@ impl SshConnectionHandle {
         &self.entry.config
     }
 
+    /// Whether this entry belongs to a single-channel SSH server profile.
+    pub fn skip_remote_env_detection(&self) -> bool {
+        self.entry.config.skip_remote_env_detection
+    }
+
+    /// Clone the entry's SSH config for opening sibling dedicated transports.
+    pub fn ssh_config(&self) -> SshConfig {
+        self.entry.config.clone()
+    }
+
     pub fn info(&self) -> ConnectionInfo {
         self.entry.info()
     }
