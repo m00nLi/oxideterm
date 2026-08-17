@@ -1,15 +1,17 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 
 use oxideterm_connection_monitor::{ResourceSampleShell, ResourceSampler, ResourceSamplerFuture};
 use oxideterm_ssh::{
     SshCommandOutput, SshConnectionRegistry,
-    monitor_shell::{MonitorShellError, MonitorShellSession, monitor_shell_session},
+    monitor_shell::{MonitorShellError, MonitorShellSession, connect_monitor_shell},
 };
 use tracing::{debug, warn};
+
+const DEFAULT_MONITOR_KEEPALIVE_INTERVAL: u32 = 10;
 
 /// Runs host-tools commands on the right transport for the target node.
 ///
@@ -20,15 +22,35 @@ use tracing::{debug, warn};
 pub(crate) struct MonitorCommandExecutor {
     registry: SshConnectionRegistry,
     sessions: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<MonitorShellSession>>>>>,
+    keepalive: Arc<RwLock<(u32, Vec<u8>)>>,
     detected_os: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl MonitorCommandExecutor {
-    pub(super) fn new(registry: SshConnectionRegistry) -> Self {
+    pub(super) fn new(registry: SshConnectionRegistry, keepalive: (u32, Vec<u8>)) -> Self {
         Self {
             registry,
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            keepalive: Arc::new(RwLock::new(keepalive)),
             detected_os: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub(super) fn set_keepalive(&self, interval_secs: u32, data: Vec<u8>) {
+        if let Ok(mut keepalive) = self.keepalive.write() {
+            *keepalive = (interval_secs, data);
+        }
+    }
+
+    pub(super) fn keepalive_snapshot(&self) -> (u32, Vec<u8>) {
+        let keepalive = self.keepalive.read().expect("keepalive lock poisoned");
+        let (interval, data) = (keepalive.0, keepalive.1.clone());
+        if interval == 0 || data.is_empty() {
+            // Monitor connections are dedicated and otherwise idle; keep them
+            // alive by default even when the user never configured keepalive.
+            (DEFAULT_MONITOR_KEEPALIVE_INTERVAL, vec![b'\n'])
+        } else {
+            (interval, data)
         }
     }
 
@@ -95,18 +117,19 @@ impl MonitorCommandExecutor {
         {
             session.clone()
         } else {
-            debug!(connection_id, "opening monitor shell on the node transport");
-            // Single-channel servers cap concurrent connections, so reuse the
-            // node's existing transport instead of opening another one. The
-            // node transport channel is otherwise unused for these nodes.
-            let shell = handle
-                .open_persistent_shell_channel("")
+            debug!(
+                connection_id,
+                "opening dedicated single-channel monitor shell"
+            );
+            let config = handle.ssh_config();
+            let (interval_secs, data) = self.keepalive_snapshot();
+            let session = connect_monitor_shell(config, interval_secs, data)
                 .await
                 .map_err(|error| {
-                    warn!(connection_id, error = %error, "single-channel monitor shell open failed");
+                    warn!(connection_id, error = %error, "single-channel monitor connect failed");
                     MonitorShellError::Write(error.to_string())
                 })?;
-            let session = Arc::new(tokio::sync::Mutex::new(monitor_shell_session(shell)));
+            let session = Arc::new(tokio::sync::Mutex::new(session));
             self.sessions
                 .lock()
                 .expect("monitor session map poisoned")

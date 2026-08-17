@@ -285,8 +285,13 @@ impl WorkspaceApp {
         let sampling_config = self.resource_sampling_config();
         let runtime = self.forwarding_runtime.handle().clone();
         let messages = HostToolsMessages::from_i18n(&self.i18n);
+        let keepalive = self.settings_store.settings().terminal.keepalive.clone();
+        let ka_data = oxideterm_settings::parse_keepalive_string(&keepalive.send_string);
+        let ka_interval =
+            oxideterm_settings::effective_keepalive_interval(keepalive.interval_secs, &ka_data);
         self.host_tools.update(cx, |host_tools, cx| {
             host_tools.set_messages(messages);
+            host_tools.update_monitor_keepalive(ka_interval, ka_data.clone());
             host_tools.apply_monitoring_settings(
                 visibility,
                 monitoring,

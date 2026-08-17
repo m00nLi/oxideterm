@@ -510,13 +510,20 @@ impl HostToolsEntity {
         ssh_registry: SshConnectionRegistry,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new(profiler_update_tx, profiler_update_rx, ssh_registry, cx)
+        Self::new(
+            profiler_update_tx,
+            profiler_update_rx,
+            ssh_registry,
+            (0, Vec::new()),
+            cx,
+        )
     }
 
     pub(in crate::workspace) fn new(
         profiler_update_tx: tokio::sync::mpsc::UnboundedSender<ProfilerUpdate>,
         profiler_update_rx: tokio::sync::mpsc::UnboundedReceiver<ProfilerUpdate>,
         ssh_registry: SshConnectionRegistry,
+        monitor_keepalive: (u32, Vec<u8>),
         cx: &mut Context<Self>,
     ) -> Self {
         let sampler_delivery_wake = crate::workspace::delivery::ActiveDeliveryWake::default();
@@ -531,7 +538,7 @@ impl HostToolsEntity {
                 reliable_delivery_wake.clone(),
             );
         let mut entity = Self {
-            monitor_executor: MonitorCommandExecutor::new(ssh_registry.clone()),
+            monitor_executor: MonitorCommandExecutor::new(ssh_registry.clone(), monitor_keepalive),
             ssh_registry,
             profiler_registry: ProfilerRegistry::new(),
             profiler_update_tx,
@@ -661,6 +668,10 @@ impl HostToolsEntity {
     #[cfg(test)]
     pub(super) fn pool_summary_count(&self) -> usize {
         self.pool_summaries.len()
+    }
+
+    pub(super) fn update_monitor_keepalive(&mut self, interval_secs: u32, data: Vec<u8>) {
+        self.monitor_executor.set_keepalive(interval_secs, data);
     }
 
     pub(super) fn topology_snapshot(&self) -> Option<ConnectionTopologySnapshot> {
