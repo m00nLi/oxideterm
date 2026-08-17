@@ -245,6 +245,22 @@ pub async fn connect_monitor_shell(
     Ok(SingleChannelShellSession::new(shell.into_raw_stream()))
 }
 
+/// Open a dedicated sampler connection for profiler/GPU sampling.
+///
+/// Returns a type-erased sampler so callers never see the internal dedicated
+/// connection type. The same channel-data keepalive guard applies.
+pub async fn connect_monitor_sampler(
+    config: SshConfig,
+    keepalive_interval_secs: u32,
+    keepalive_data: Vec<u8>,
+) -> Result<std::sync::Arc<dyn oxideterm_connection_monitor::ResourceSampler>, SshTransportError> {
+    let mut client = SshTransportClient::new(config);
+    if keepalive_interval_secs > 0 && !keepalive_data.is_empty() {
+        client = client.with_keepalive(keepalive_interval_secs, keepalive_data);
+    }
+    client.connect_for_monitor().await
+}
+
 impl<R> SingleChannelShellSession<R>
 where
     R: AsyncRead + AsyncWrite + Unpin + Send + 'static,

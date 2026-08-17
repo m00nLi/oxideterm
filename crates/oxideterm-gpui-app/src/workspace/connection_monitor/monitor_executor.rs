@@ -36,6 +36,11 @@ impl MonitorCommandExecutor {
         }
     }
 
+    pub(super) fn keepalive_snapshot(&self) -> (u32, Vec<u8>) {
+        let keepalive = self.keepalive.blocking_read();
+        (keepalive.0, keepalive.1.clone())
+    }
+
     pub(super) async fn run(
         &self,
         connection_id: &str,

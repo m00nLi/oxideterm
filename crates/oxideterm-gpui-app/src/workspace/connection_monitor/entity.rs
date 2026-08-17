@@ -3,6 +3,7 @@ use super::*;
 use gpui::Task;
 use oxideterm_connection_monitor::ResourceSampler;
 use oxideterm_editor_core::utf16::replace_utf16;
+use oxideterm_ssh::monitor_shell::connect_monitor_sampler;
 use oxideterm_topology::ConnectionTopologySnapshot;
 
 /// Owns Host Tools sampling state independently from WorkspaceApp and SSH nodes.
@@ -1599,6 +1600,39 @@ impl HostToolsEntity {
         let Some(handle) = self.ssh_registry.get(&connection_id) else {
             return;
         };
+        if handle.skip_remote_env_detection() {
+            let config = handle.ssh_config();
+            let executor = self.monitor_executor.clone();
+            let (keepalive_interval, keepalive_data) = executor.keepalive_snapshot();
+            cx.spawn(async move |this, cx| -> Result<(), String> {
+                let os_type = executor
+                    .run(&connection_id, "uname -s", Duration::from_secs(10), 128)
+                    .await
+                    .ok()
+                    .map(|output| output.stdout.trim().to_string())
+                    .filter(|os| !os.is_empty())
+                    .unwrap_or_else(|| "Linux".to_string());
+                let sampler = connect_monitor_sampler(config, keepalive_interval, keepalive_data)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                this.update(cx, |entity, cx| {
+                    entity.profiler_registry.start_with_sampler_on_config(
+                        connection_id.clone(),
+                        sampler,
+                        os_type,
+                        sampling_config,
+                        Some(entity.profiler_update_tx.clone()),
+                        runtime.clone(),
+                    );
+                    cx.notify();
+                })
+                .ok();
+                Ok(())
+            })
+            .detach();
+            cx.notify();
+            return;
+        }
         let Some(os_type) = handle.remote_env().map(|environment| environment.os_type) else {
             // Environment detection owns OS selection; never guess a probe dialect.
             return;
@@ -1646,6 +1680,42 @@ impl HostToolsEntity {
         let Some(handle) = self.ssh_registry.get(&connection_id) else {
             return;
         };
+        if handle.skip_remote_env_detection() {
+            let config = handle.ssh_config();
+            let executor = self.monitor_executor.clone();
+            let (keepalive_interval, keepalive_data) = executor.keepalive_snapshot();
+            let update_tx = self.host_gpu.update_tx.clone();
+            cx.spawn(async move |this, cx| -> Result<(), String> {
+                let os_type = executor
+                    .run(&connection_id, "uname -s", Duration::from_secs(10), 128)
+                    .await
+                    .ok()
+                    .map(|output| output.stdout.trim().to_string())
+                    .filter(|os| !os.is_empty())
+                    .unwrap_or_else(|| "Linux".to_string());
+                let sampler = connect_monitor_sampler(config, keepalive_interval, keepalive_data)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                this.update(cx, |entity, cx| {
+                    entity.host_gpu.snapshot_connection_id = Some(connection_id.clone());
+                    entity.host_gpu.snapshot = None;
+                    entity.host_gpu.expanded_uuid = None;
+                    entity.host_gpu.sampling_task = Some(start_gpu_sampling_on(
+                        connection_id.clone(),
+                        sampler,
+                        os_type,
+                        update_tx,
+                        runtime.clone(),
+                    ));
+                    cx.notify();
+                })
+                .ok();
+                Ok(())
+            })
+            .detach();
+            cx.notify();
+            return;
+        }
         let Some(os_type) = handle.remote_env().map(|environment| environment.os_type) else {
             return;
         };
