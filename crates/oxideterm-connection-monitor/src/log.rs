@@ -259,13 +259,16 @@ fn build_linux_log_snapshot_command(preset: LogPreset, limit: usize) -> String {
     format!(
         concat!(
             "echo '===HOST_LOGS==='; ",
+            "oxide_use_files=0; ",
             "if command -v journalctl >/dev/null 2>&1; then ",
-            "echo '__OXIDE_LOG_CAPABILITY__\tfull\tlinux_systemd'; ",
             "oxide_logs=$(journalctl {journal_args} -n {limit} --no-pager -o json 2>&1); ",
             "oxide_status=$?; ",
-            "if [ \"$oxide_status\" -eq 0 ]; then printf '%s\\n' \"$oxide_logs\" | sed 's/^/JSON\t/'; ",
-            "else printf '__OXIDE_LOG_ERROR__\\t%s\\n' \"$(printf '%s' \"$oxide_logs\" | head -n 1 | tr '\\t' ' ')\"; fi; ",
+            "if [ \"$oxide_status\" -eq 0 ]; then echo '__OXIDE_LOG_CAPABILITY__\tfull\tlinux_systemd'; printf '%s\\n' \"$oxide_logs\" | sed 's/^/JSON\t/'; ",
+            "else oxide_use_files=1; fi; ",
             "else ",
+            "oxide_use_files=1; ",
+            "fi; ",
+            "if [ \"$oxide_use_files\" -eq 1 ]; then ",
             "echo '__OXIDE_LOG_CAPABILITY__\tpartial\tlinux_files'; ",
             "oxide_found=0; ",
             "for oxide_log_file in {file_candidates}; do ",
@@ -277,6 +280,7 @@ fn build_linux_log_snapshot_command(preset: LogPreset, limit: usize) -> String {
             "tail -n {limit} \"$oxide_log_file\" 2>/dev/null{file_filter} | awk -v src=\"$oxide_log_file\" '{{ gsub(/\\t/, \" \"); printf \"ROW\\t\\tinfo\\t%s\\t\\t%s\\n\", src, $0 }}'; ",
             "done | tail -n {limit}; ",
             "else echo '__OXIDE_LOG_UNAVAILABLE__'; ",
+            "fi; ",
             "fi; ",
             "echo '===HOST_LOGS_END==='"
         ),
