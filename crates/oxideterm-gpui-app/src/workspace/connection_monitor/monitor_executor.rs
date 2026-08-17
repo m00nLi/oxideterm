@@ -143,7 +143,12 @@ impl MonitorCommandExecutor {
             .run_command(command, timeout, max_output)
             .await;
         if let Err(error) = &result {
-            warn!(connection_id, error = %error, "single-channel monitor command failed");
+            warn!(
+                connection_id,
+                error = %error,
+                command = command,
+                "single-channel monitor command failed"
+            );
         }
         if matches!(
             result,
