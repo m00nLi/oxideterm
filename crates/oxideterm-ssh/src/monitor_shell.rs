@@ -4,7 +4,6 @@
 //! timeout resynchronization against a mock byte stream before wiring a real
 //! russh shell channel. Do not merge into production as-is.
 
-use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,25 +11,26 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Mutex, oneshot};
 
-const MARKER_BEGIN_PREFIX: &str = "__OXIDE_MON_BEGIN_";
-const MARKER_END_PREFIX: &str = "__OXIDE_MON_END_";
+/// Final output marker. It is assembled by the remote shell from fragments so
+/// that shells which echo their input never emit the literal marker text as
+/// part of the echoed command line.
+const MARKER_BEGIN: &str = "__OXIDE_MON_BEGIN__";
+const MARKER_END: &str = "__OXIDE_MON_END__";
 const IDLE_WINDOW_CAP: usize = 256;
 
 /// Build the shell command line for one monitored command.
 ///
 /// The command runs inside a subshell so `cd`/environment changes cannot leak
-/// into later commands. Unique markers delimit the captured output.
-pub(crate) fn monitor_command_line(command: &str, token: u64) -> String {
+/// into later commands. Markers are produced with `printf '%s'` so the echoed
+/// command contains `%s` instead of the literal marker.
+pub(crate) fn monitor_command_line(command: &str) -> String {
     format!(
-        "printf '\\n{begin}{token}\\n'; ( {command} ); printf '\\n{end}{token}\\n'\n",
-        begin = MARKER_BEGIN_PREFIX,
-        end = MARKER_END_PREFIX,
+        "printf '\\n__OXIDE_MON_%s__\\n' BEGIN; ( {command} ); printf '\\n__OXIDE_MON_%s__\\n' END\n"
     )
 }
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct MonitorCommandResult {
-    pub(crate) token: u64,
     pub(crate) output: Vec<u8>,
     pub(crate) truncated: bool,
 }
@@ -38,7 +38,6 @@ pub(crate) struct MonitorCommandResult {
 /// Stream parser that splits one serial shell stream into per-command outputs.
 #[derive(Debug, Default)]
 pub(crate) struct MonitorShellFraming {
-    current_token: Option<u64>,
     current_output: Vec<u8>,
     current_max: usize,
     current_truncated: bool,
@@ -56,8 +55,7 @@ impl MonitorShellFraming {
     }
 
     /// Mark a command as in flight. Call after writing its command line.
-    pub(crate) fn begin_command(&mut self, token: u64, max_output: usize) {
-        self.current_token = Some(token);
+    pub(crate) fn begin_command(&mut self, max_output: usize) {
         self.current_output.clear();
         self.current_max = max_output;
         self.current_truncated = false;
@@ -78,7 +76,6 @@ impl MonitorShellFraming {
     /// Abort the in-flight command and discard its output until the next
     /// begin marker (timeout recovery without killing the channel).
     pub(crate) fn fail_current(&mut self) {
-        self.current_token = None;
         self.current_output.clear();
         self.current_truncated = false;
         self.collecting = false;
@@ -90,13 +87,9 @@ impl MonitorShellFraming {
     }
 
     fn scan_collecting(&mut self) {
-        let Some(token) = self.current_token else {
-            return;
-        };
-        let end_marker = format!("{MARKER_END_PREFIX}{token}");
-        let Some(marker_pos) = find_subslice(&self.collect_window, end_marker.as_bytes()) else {
+        let Some(marker_pos) = find_subslice(&self.collect_window, MARKER_END.as_bytes()) else {
             // Everything except a potential split marker suffix is now safe.
-            let keep = end_marker
+            let keep = MARKER_END
                 .len()
                 .saturating_sub(1)
                 .min(self.collect_window.len());
@@ -114,12 +107,10 @@ impl MonitorShellFraming {
         let mut output = std::mem::take(&mut self.current_output);
         trim_trailing_whitespace(&mut output);
         self.completed.push_back(MonitorCommandResult {
-            token,
             output,
             truncated: self.current_truncated,
         });
-        self.collect_window.drain(..marker_pos + end_marker.len());
-        self.current_token = None;
+        self.collect_window.drain(..marker_pos + MARKER_END.len());
         self.collecting = false;
         self.current_truncated = false;
 
@@ -131,37 +122,16 @@ impl MonitorShellFraming {
     }
 
     fn scan_idle(&mut self) {
-        let Some(prefix_pos) = find_subslice(&self.idle_window, MARKER_BEGIN_PREFIX.as_bytes())
-        else {
+        let Some(marker_pos) = find_subslice(&self.idle_window, MARKER_BEGIN.as_bytes()) else {
             return;
         };
-        let digits_start = prefix_pos + MARKER_BEGIN_PREFIX.len();
-        let digit_len = self.idle_window[digits_start..]
-            .iter()
-            .take_while(|byte| byte.is_ascii_digit())
-            .count();
-        if digit_len == 0 {
-            self.idle_window.drain(..digits_start);
-            self.scan_idle();
-            return;
-        }
-        let token_text =
-            std::str::from_utf8(&self.idle_window[digits_start..digits_start + digit_len])
-                .unwrap_or("");
-        let Ok(token) = token_text.parse::<u64>() else {
-            self.idle_window.drain(..digits_start);
-            self.scan_idle();
-            return;
-        };
-
         // Drop everything through the marker and its trailing line break.
-        self.idle_window.drain(..digits_start + digit_len);
+        self.idle_window.drain(..marker_pos + MARKER_BEGIN.len());
         if let Some(stripped) = self.idle_window.strip_prefix(b"\n") {
             let len = self.idle_window.len() - stripped.len();
             self.idle_window.drain(..len);
         }
 
-        self.current_token = Some(token);
         self.current_output.clear();
         self.current_truncated = false;
         self.collecting = true;
@@ -215,13 +185,13 @@ pub(crate) enum MonitorShellError {
 #[derive(Debug, Default)]
 struct MonitorShellState {
     framing: MonitorShellFraming,
-    next_token: u64,
-    waiters: HashMap<u64, oneshot::Sender<Result<(Vec<u8>, bool), MonitorShellError>>>,
+    waiters: VecDeque<oneshot::Sender<Result<(Vec<u8>, bool), MonitorShellError>>>,
 }
 
 /// Serialized command runner over one persistent shell channel.
 pub(crate) struct SingleChannelShellSession<R> {
     writer: Mutex<tokio::io::WriteHalf<R>>,
+    command_lock: Mutex<()>,
     state: Arc<Mutex<MonitorShellState>>,
     _reader_task: tokio::task::JoinHandle<()>,
 }
@@ -239,6 +209,7 @@ where
         });
         Self {
             writer: Mutex::new(writer),
+            command_lock: Mutex::new(()),
             state,
             _reader_task: reader_task,
         }
@@ -250,17 +221,16 @@ where
         timeout: Duration,
         max_output: usize,
     ) -> Result<(Vec<u8>, bool), MonitorShellError> {
-        let (token, receiver) = {
+        let _command_guard = self.command_lock.lock().await;
+        let receiver = {
             let mut state = self.state.lock().await;
-            let token = state.next_token;
-            state.next_token = state.next_token.wrapping_add(1);
-            state.framing.begin_command(token, max_output);
+            state.framing.begin_command(max_output);
             let (sender, receiver) = oneshot::channel();
-            state.waiters.insert(token, sender);
-            (token, receiver)
+            state.waiters.push_back(sender);
+            receiver
         };
 
-        let line = monitor_command_line(command, token);
+        let line = monitor_command_line(command);
         self.writer
             .lock()
             .await
@@ -274,7 +244,9 @@ where
             Err(_elapsed) => {
                 let mut state = self.state.lock().await;
                 state.framing.fail_current();
-                state.waiters.remove(&token);
+                // The timed-out command is the oldest waiter because command
+                // submission is fully serialized.
+                state.waiters.pop_front();
                 Err(MonitorShellError::Timeout)
             }
         }
@@ -306,7 +278,7 @@ where
         };
         let mut guard = state.lock().await;
         for result in completed {
-            if let Some(sender) = guard.waiters.remove(&result.token) {
+            if let Some(sender) = guard.waiters.pop_front() {
                 let _ = sender.send(Ok((result.output, result.truncated)));
             }
         }
@@ -315,7 +287,7 @@ where
 
 async fn fail_all_waiters(state: &Arc<Mutex<MonitorShellState>>) {
     let mut guard = state.lock().await;
-    for (_, sender) in guard.waiters.drain() {
+    for sender in guard.waiters.drain(..) {
         let _ = sender.send(Err(MonitorShellError::ChannelClosed));
     }
 }
@@ -326,30 +298,32 @@ mod tests {
     use tokio::io::AsyncBufReadExt;
 
     #[test]
-    fn command_line_wraps_command_in_subshell_with_unique_markers() {
-        let line = monitor_command_line("cat /proc/loadavg", 42);
+    fn command_line_wraps_command_in_subshell_without_literal_markers() {
+        let line = monitor_command_line("cat /proc/loadavg");
 
         assert!(line.contains("( cat /proc/loadavg )"));
-        assert!(line.contains("__OXIDE_MON_BEGIN_42"));
-        assert!(line.contains("__OXIDE_MON_END_42"));
+        // Echo-proofing: the echoed command must never contain the literal
+        // marker text, only the printf fragments that assemble it.
+        assert!(!line.contains(MARKER_BEGIN));
+        assert!(!line.contains(MARKER_END));
+        assert!(line.contains("%s"));
         assert!(line.ends_with('\n'));
     }
 
     #[test]
     fn framing_extracts_output_between_markers() {
         let mut framing = MonitorShellFraming::new();
-        framing.begin_command(1, 4096);
+        framing.begin_command(4096);
 
-        framing.feed(b"\n__OXIDE_MON_BEGIN_1\n");
+        framing.feed(b"\n__OXIDE_MON_BEGIN__\n");
         framing.feed(b"load average: 0.1\n");
-        framing.feed(b"\n__OXIDE_MON_END_1\n");
+        framing.feed(b"\n__OXIDE_MON_END__\n");
 
         let completed = framing.take_completed();
         assert_eq!(completed.len(), 1);
         assert_eq!(
             completed[0],
             MonitorCommandResult {
-                token: 1,
                 output: b"load average: 0.1".to_vec(),
                 truncated: false,
             }
@@ -357,13 +331,31 @@ mod tests {
     }
 
     #[test]
+    fn framing_ignores_echoed_command_lines() {
+        let mut framing = MonitorShellFraming::new();
+        framing.begin_command(4096);
+
+        // A shell that echoes its input replays the command line, which only
+        // contains the printf fragments, before the real markers appear.
+        framing.feed(
+            b"printf '\\n__OXIDE_MON_%s__\\n' BEGIN; ( echo probe-ok ); printf '\\n__OXIDE_MON_%s__\\n' END\n",
+        );
+        framing.feed(b"\n__OXIDE_MON_BEGIN__\nprobe-ok\n");
+        framing.feed(b"\n__OXIDE_MON_END__\n");
+
+        let completed = framing.take_completed();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].output, b"probe-ok");
+    }
+
+    #[test]
     fn framing_tolerates_markers_split_across_chunks() {
         let mut framing = MonitorShellFraming::new();
-        framing.begin_command(2, 4096);
+        framing.begin_command(4096);
 
-        framing.feed(b"\n__OXIDE_MON_BEGIN_2\nout");
-        framing.feed(b"put\n__OXIDE_MON_EN");
-        framing.feed(b"D_2\n");
+        framing.feed(b"\n__OXIDE_MON_BEGIN__\nout");
+        framing.feed(b"put\n__OXIDE_MON_END");
+        framing.feed(b"__\n");
 
         let completed = framing.take_completed();
         assert_eq!(completed.len(), 1);
@@ -373,28 +365,27 @@ mod tests {
     #[test]
     fn framing_recovers_after_timeout_and_skips_stale_output() {
         let mut framing = MonitorShellFraming::new();
-        framing.begin_command(1, 4096);
-        framing.feed(b"\n__OXIDE_MON_BEGIN_1\npartial");
+        framing.begin_command(4096);
+        framing.feed(b"\n__OXIDE_MON_BEGIN__\npartial");
 
         framing.fail_current();
         // Late output from the hung command must be discarded.
         framing.feed(b"stale bytes that never terminate\n");
 
-        framing.begin_command(2, 4096);
-        framing.feed(b"\n__OXIDE_MON_BEGIN_2\nfresh\n__OXIDE_MON_END_2\n");
+        framing.begin_command(4096);
+        framing.feed(b"\n__OXIDE_MON_BEGIN__\nfresh\n__OXIDE_MON_END__\n");
 
         let completed = framing.take_completed();
         assert_eq!(completed.len(), 1);
-        assert_eq!(completed[0].token, 2);
         assert_eq!(completed[0].output, b"fresh");
     }
 
     #[test]
     fn framing_truncates_oversized_output() {
         let mut framing = MonitorShellFraming::new();
-        framing.begin_command(3, 8);
+        framing.begin_command(8);
 
-        framing.feed(b"\n__OXIDE_MON_BEGIN_3\n0123456789\n__OXIDE_MON_END_3\n");
+        framing.feed(b"\n__OXIDE_MON_BEGIN__\n0123456789\n__OXIDE_MON_END__\n");
 
         let completed = framing.take_completed();
         assert_eq!(completed.len(), 1);
@@ -412,14 +403,14 @@ mod tests {
             reader.read_until(b'\n', &mut line).await.unwrap();
             reader
                 .get_mut()
-                .write_all(b"\n__OXIDE_MON_BEGIN_0\none\n\n__OXIDE_MON_END_0\n")
+                .write_all(b"\n__OXIDE_MON_BEGIN__\none\n\n__OXIDE_MON_END__\n")
                 .await
                 .unwrap();
             line.clear();
             reader.read_until(b'\n', &mut line).await.unwrap();
             reader
                 .get_mut()
-                .write_all(b"\n__OXIDE_MON_BEGIN_1\ntwo\n\n__OXIDE_MON_END_1\n")
+                .write_all(b"\n__OXIDE_MON_BEGIN__\ntwo\n\n__OXIDE_MON_END__\n")
                 .await
                 .unwrap();
         });
@@ -450,14 +441,14 @@ mod tests {
             reader.read_until(b'\n', &mut line).await.unwrap();
             reader
                 .get_mut()
-                .write_all(b"\n__OXIDE_MON_BEGIN_0\nstuck\n")
+                .write_all(b"\n__OXIDE_MON_BEGIN__\nstuck\n")
                 .await
                 .unwrap();
             line.clear();
             reader.read_until(b'\n', &mut line).await.unwrap();
             reader
                 .get_mut()
-                .write_all(b"\n__OXIDE_MON_BEGIN_1\nok\n\n__OXIDE_MON_END_1\n")
+                .write_all(b"\n__OXIDE_MON_BEGIN__\nok\n\n__OXIDE_MON_END__\n")
                 .await
                 .unwrap();
         });
