@@ -7,6 +7,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -224,6 +225,7 @@ pub struct SingleChannelShellSession<R> {
     writer: Arc<Mutex<tokio::io::WriteHalf<R>>>,
     command_lock: Mutex<()>,
     state: Arc<Mutex<MonitorShellState>>,
+    command_in_flight: Arc<AtomicBool>,
     reader_task: tokio::task::JoinHandle<()>,
     keepalive_task: tokio::task::JoinHandle<()>,
 }
@@ -276,10 +278,17 @@ where
             reader_loop(reader, reader_state).await;
         });
         let writer = Arc::new(Mutex::new(writer));
+        let command_in_flight = Arc::new(AtomicBool::new(false));
         let keepalive_writer = writer.clone();
+        let keepalive_busy = command_in_flight.clone();
         let keepalive_task = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(MONITOR_SHELL_KEEPALIVE_INTERVAL).await;
+                if keepalive_busy.load(Ordering::Relaxed) {
+                    // A command is reading from the shell; an injected
+                    // newline would be echoed into its output.
+                    continue;
+                }
                 if keepalive_writer
                     .lock()
                     .await
@@ -296,6 +305,7 @@ where
             writer,
             command_lock: Mutex::new(()),
             state,
+            command_in_flight,
             reader_task,
             keepalive_task,
         }
@@ -308,6 +318,7 @@ where
         max_output: usize,
     ) -> Result<(Vec<u8>, bool), MonitorShellError> {
         let _command_guard = self.command_lock.lock().await;
+        let _in_flight_guard = InFlightGuard::new(self.command_in_flight.clone());
         let receiver = {
             let mut state = self.state.lock().await;
             state.framing.begin_command(max_output);
@@ -336,6 +347,23 @@ where
                 Err(MonitorShellError::Timeout)
             }
         }
+    }
+}
+
+struct InFlightGuard {
+    flag: Arc<AtomicBool>,
+}
+
+impl InFlightGuard {
+    fn new(flag: Arc<AtomicBool>) -> Self {
+        flag.store(true, Ordering::Relaxed);
+        Self { flag }
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::Relaxed);
     }
 }
 
