@@ -55,10 +55,6 @@ pub(crate) struct MonitorShellFraming {
 }
 
 impl MonitorShellFraming {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
     /// Mark a command as in flight. Call after writing its command line.
     pub(crate) fn begin_command(&mut self, max_output: usize) {
         self.current_output.clear();
@@ -373,7 +369,7 @@ mod tests {
 
     #[test]
     fn framing_extracts_output_between_markers() {
-        let mut framing = MonitorShellFraming::new();
+        let mut framing = MonitorShellFraming::default();
         framing.begin_command(4096);
 
         framing.feed(b"\n__OXIDE_MON_BEGIN__\n");
@@ -393,7 +389,7 @@ mod tests {
 
     #[test]
     fn framing_ignores_echoed_command_lines() {
-        let mut framing = MonitorShellFraming::new();
+        let mut framing = MonitorShellFraming::default();
         framing.begin_command(4096);
 
         // A shell that echoes its input replays the command line, which only
@@ -411,7 +407,7 @@ mod tests {
 
     #[test]
     fn framing_tolerates_markers_split_across_chunks() {
-        let mut framing = MonitorShellFraming::new();
+        let mut framing = MonitorShellFraming::default();
         framing.begin_command(4096);
 
         framing.feed(b"\n__OXIDE_MON_BEGIN__\nout");
@@ -425,7 +421,7 @@ mod tests {
 
     #[test]
     fn framing_normalizes_crlf_output() {
-        let mut framing = MonitorShellFraming::new();
+        let mut framing = MonitorShellFraming::default();
         framing.begin_command(4096);
 
         framing.feed(b"\r\n__OXIDE_MON_BEGIN__\r\nprobe-ok\r\n\r\n__OXIDE_MON_END__\r\n");
@@ -437,7 +433,7 @@ mod tests {
 
     #[test]
     fn framing_normalizes_crlf_split_across_chunks() {
-        let mut framing = MonitorShellFraming::new();
+        let mut framing = MonitorShellFraming::default();
         framing.begin_command(4096);
 
         framing.feed(b"\r\n__OXIDE_MON_BEGIN__\r");
@@ -451,7 +447,7 @@ mod tests {
 
     #[test]
     fn framing_normalizes_multiline_crlf_output() {
-        let mut framing = MonitorShellFraming::new();
+        let mut framing = MonitorShellFraming::default();
         framing.begin_command(4096);
 
         framing.feed(b"\r\n__OXIDE_MON_BEGIN__\r\na b\r\nc\r\n__OXIDE_MON_END__\r\n");
@@ -463,7 +459,7 @@ mod tests {
 
     #[test]
     fn framing_recovers_after_timeout_and_skips_stale_output() {
-        let mut framing = MonitorShellFraming::new();
+        let mut framing = MonitorShellFraming::default();
         framing.begin_command(4096);
         framing.feed(b"\n__OXIDE_MON_BEGIN__\npartial");
 
@@ -481,7 +477,7 @@ mod tests {
 
     #[test]
     fn framing_truncates_oversized_output() {
-        let mut framing = MonitorShellFraming::new();
+        let mut framing = MonitorShellFraming::default();
         framing.begin_command(8);
 
         framing.feed(b"\n__OXIDE_MON_BEGIN__\n0123456789\n__OXIDE_MON_END__\n");

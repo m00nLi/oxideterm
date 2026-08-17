@@ -11,7 +11,10 @@
 
 use std::{env, time::Duration};
 
-use oxideterm_ssh::{AuthMethod, SshConfig, monitor_probe::connect_probe};
+use oxideterm_ssh::{
+    AuthMethod, SshConfig,
+    monitor_probe::{connect_probe, connect_sampler_probe},
+};
 
 #[tokio::main]
 async fn main() {
@@ -30,7 +33,7 @@ async fn run() -> Result<(), String> {
         "connecting to {}@{}:{} (host key auto-trusted for this probe)",
         config.username, config.host, config.port
     );
-    let mut session = connect_probe(config)
+    let mut session = connect_probe(config.clone())
         .await
         .map_err(|error| error.to_string())?;
     println!("shell channel open");
@@ -118,6 +121,30 @@ async fn run() -> Result<(), String> {
         Expected::Output(b"done"),
     )
     .await?;
+
+    // Dedicated sampler connection: validates the profiler/GPU read path on
+    // the same single-channel server with one shell channel.
+    let sampler = connect_sampler_probe(config.clone())
+        .await
+        .map_err(|error| error.to_string())?;
+    let sampled = sampler
+        .sample_until(
+            "",
+            "echo profiler-ok; echo __PROBE_SAMPLE_END__",
+            "__PROBE_SAMPLE_END__",
+            Duration::from_secs(15),
+            64 * 1024,
+        )
+        .await
+        .map_err(|error| format!("profiler sample read: {error}"))?;
+    if !sampled.contains("profiler-ok") {
+        let preview = String::from_utf8_lossy(&sampled.as_bytes()[..sampled.len().min(128)]);
+        return Err(format!(
+            "profiler sample read: marker output missing, got {:?}",
+            preview
+        ));
+    }
+    println!("PASS profiler sample read ({} bytes)", sampled.len());
 
     println!("ALL PROBE SCENARIOS PASSED");
     Ok(())

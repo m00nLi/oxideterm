@@ -6,8 +6,10 @@
 
 use std::time::Duration;
 
+use oxideterm_connection_monitor::ResourceSampler;
+
 use crate::{
-    SshConfig, SshTransportError,
+    SshConfig, SshTransportClient, SshTransportError,
     monitor_shell::{MonitorShellError, MonitorShellSession, connect_monitor_shell},
 };
 
@@ -50,5 +52,34 @@ impl ProbeSession {
             .run_command(command, timeout, max_output)
             .await
             .map_err(ProbeCommandError::from)
+    }
+}
+
+/// Dedicated sampler connection for validating the profiler read path.
+pub struct ProbeSampler {
+    sampler: std::sync::Arc<dyn ResourceSampler>,
+}
+
+pub async fn connect_sampler_probe(config: SshConfig) -> Result<ProbeSampler, SshTransportError> {
+    Ok(ProbeSampler {
+        sampler: SshTransportClient::new(config)
+            .connect_for_monitor()
+            .await?,
+    })
+}
+
+impl ProbeSampler {
+    pub async fn sample_until(
+        &self,
+        init_command: &str,
+        command: &str,
+        end_marker: &str,
+        timeout: Duration,
+        max_output: usize,
+    ) -> Result<String, String> {
+        let mut shell = self.sampler.open_shell(init_command, timeout).await?;
+        shell
+            .sample_until(command, end_marker, timeout, max_output)
+            .await
     }
 }
