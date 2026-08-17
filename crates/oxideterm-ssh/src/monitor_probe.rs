@@ -9,8 +9,10 @@ use std::time::Duration;
 use oxideterm_connection_monitor::ResourceSampler;
 
 use crate::{
-    SshConfig, SshTransportClient, SshTransportError,
-    monitor_shell::{MonitorShellError, MonitorShellSession, connect_monitor_shell},
+    SshConfig, SshTransportError,
+    monitor_shell::{
+        MonitorShellError, MonitorShellSession, connect_monitor_sampler, connect_monitor_shell,
+    },
 };
 
 /// Public mirror of the internal command error for probe callers.
@@ -35,9 +37,13 @@ pub struct ProbeSession {
     session: MonitorShellSession,
 }
 
-pub async fn connect_probe(config: SshConfig) -> Result<ProbeSession, SshTransportError> {
+pub async fn connect_probe(
+    config: SshConfig,
+    keepalive_interval_secs: u32,
+    keepalive_data: Vec<u8>,
+) -> Result<ProbeSession, SshTransportError> {
     Ok(ProbeSession {
-        session: connect_monitor_shell(config, 0, Vec::new()).await?,
+        session: connect_monitor_shell(config, keepalive_interval_secs, keepalive_data).await?,
     })
 }
 
@@ -60,11 +66,13 @@ pub struct ProbeSampler {
     sampler: std::sync::Arc<dyn ResourceSampler>,
 }
 
-pub async fn connect_sampler_probe(config: SshConfig) -> Result<ProbeSampler, SshTransportError> {
+pub async fn connect_sampler_probe(
+    config: SshConfig,
+    keepalive_interval_secs: u32,
+    keepalive_data: Vec<u8>,
+) -> Result<ProbeSampler, SshTransportError> {
     Ok(ProbeSampler {
-        sampler: SshTransportClient::new(config)
-            .connect_for_monitor()
-            .await?,
+        sampler: connect_monitor_sampler(config, keepalive_interval_secs, keepalive_data).await?,
     })
 }
 

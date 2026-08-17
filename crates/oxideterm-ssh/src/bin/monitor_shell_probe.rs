@@ -29,11 +29,16 @@ async fn main() {
 
 async fn run() -> Result<(), String> {
     let config = probe_config()?;
+    let keepalive_interval = env::var("OXIDE_PROBE_KEEPALIVE_SECS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(5);
+    let keepalive_data = vec![b'\n'];
     println!(
-        "connecting to {}@{}:{} (host key auto-trusted for this probe)",
-        config.username, config.host, config.port
+        "connecting to {}@{}:{} (host key auto-trusted, keepalive {}s)",
+        config.username, config.host, config.port, keepalive_interval
     );
-    let mut session = connect_probe(config.clone())
+    let mut session = connect_probe(config.clone(), keepalive_interval, keepalive_data.clone())
         .await
         .map_err(|error| error.to_string())?;
     println!("shell channel open");
@@ -122,9 +127,22 @@ async fn run() -> Result<(), String> {
     )
     .await?;
 
+    // A fully quiet dedicated connection must survive idle with channel-data
+    // keepalive on servers that otherwise drop idle transports.
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    check(
+        &mut session,
+        "idle keepalive survival",
+        "echo idle-ok",
+        Duration::from_secs(10),
+        4096,
+        Expected::Output(b"idle-ok"),
+    )
+    .await?;
+
     // Dedicated sampler connection: validates the profiler/GPU read path on
     // the same single-channel server with one shell channel.
-    let sampler = connect_sampler_probe(config.clone())
+    let sampler = connect_sampler_probe(config.clone(), keepalive_interval, keepalive_data)
         .await
         .map_err(|error| error.to_string())?;
     let sampled = sampler
