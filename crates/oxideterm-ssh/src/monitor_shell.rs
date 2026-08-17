@@ -41,6 +41,8 @@ pub(crate) struct MonitorShellFraming {
     current_output: Vec<u8>,
     current_max: usize,
     current_truncated: bool,
+    pending_cr: bool,
+    skip_leading_newline: bool,
     collecting: bool,
     /// Uncommitted bytes while a command is collecting.
     collect_window: Vec<u8>,
@@ -59,6 +61,8 @@ impl MonitorShellFraming {
         self.current_output.clear();
         self.current_max = max_output;
         self.current_truncated = false;
+        self.pending_cr = false;
+        self.skip_leading_newline = false;
         self.collecting = false;
     }
 
@@ -78,6 +82,8 @@ impl MonitorShellFraming {
     pub(crate) fn fail_current(&mut self) {
         self.current_output.clear();
         self.current_truncated = false;
+        self.pending_cr = false;
+        self.skip_leading_newline = false;
         self.collecting = false;
         self.collect_window.clear();
     }
@@ -127,13 +133,10 @@ impl MonitorShellFraming {
         };
         // Drop everything through the marker and its trailing line break.
         self.idle_window.drain(..marker_pos + MARKER_BEGIN.len());
-        if let Some(stripped) = self.idle_window.strip_prefix(b"\n") {
-            let len = self.idle_window.len() - stripped.len();
-            self.idle_window.drain(..len);
-        }
 
         self.current_output.clear();
         self.current_truncated = false;
+        self.skip_leading_newline = true;
         self.collecting = true;
         self.collect_window = std::mem::take(&mut self.idle_window);
         self.scan_collecting();
@@ -143,12 +146,36 @@ impl MonitorShellFraming {
         if self.current_truncated {
             return;
         }
-        let remaining = self.current_max.saturating_sub(self.current_output.len());
-        if bytes.len() > remaining {
-            self.current_output.extend_from_slice(&bytes[..remaining]);
-            self.current_truncated = true;
-        } else {
-            self.current_output.extend_from_slice(bytes);
+        for &byte in bytes {
+            if self.pending_cr {
+                self.pending_cr = false;
+                if byte == b'\n' {
+                    // Collapse CRLF into one newline before byte counting.
+                    if self.skip_leading_newline {
+                        self.skip_leading_newline = false;
+                        continue;
+                    }
+                    if self.current_output.len() >= self.current_max {
+                        self.current_truncated = true;
+                        return;
+                    }
+                    self.current_output.push(b'\n');
+                    continue;
+                }
+            }
+            if byte == b'\r' {
+                self.pending_cr = true;
+                continue;
+            }
+            if byte == b'\n' && self.skip_leading_newline {
+                self.skip_leading_newline = false;
+                continue;
+            }
+            if self.current_output.len() >= self.current_max {
+                self.current_truncated = true;
+                return;
+            }
+            self.current_output.push(byte);
         }
     }
 }
@@ -360,6 +387,44 @@ mod tests {
         let completed = framing.take_completed();
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].output, b"output");
+    }
+
+    #[test]
+    fn framing_normalizes_crlf_output() {
+        let mut framing = MonitorShellFraming::new();
+        framing.begin_command(4096);
+
+        framing.feed(b"\r\n__OXIDE_MON_BEGIN__\r\nprobe-ok\r\n\r\n__OXIDE_MON_END__\r\n");
+
+        let completed = framing.take_completed();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].output, b"probe-ok");
+    }
+
+    #[test]
+    fn framing_normalizes_crlf_split_across_chunks() {
+        let mut framing = MonitorShellFraming::new();
+        framing.begin_command(4096);
+
+        framing.feed(b"\r\n__OXIDE_MON_BEGIN__\r");
+        framing.feed(b"\nprobe-ok\r");
+        framing.feed(b"\n\r\n__OXIDE_MON_END__\r\n");
+
+        let completed = framing.take_completed();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].output, b"probe-ok");
+    }
+
+    #[test]
+    fn framing_normalizes_multiline_crlf_output() {
+        let mut framing = MonitorShellFraming::new();
+        framing.begin_command(4096);
+
+        framing.feed(b"\r\n__OXIDE_MON_BEGIN__\r\na b\r\nc\r\n__OXIDE_MON_END__\r\n");
+
+        let completed = framing.take_completed();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].output, b"a b\nc");
     }
 
     #[test]
