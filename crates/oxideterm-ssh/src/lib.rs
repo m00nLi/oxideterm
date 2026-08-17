@@ -23,6 +23,9 @@ mod session_tree_plan;
 mod transport;
 mod upstream_proxy;
 
+#[cfg(feature = "monitor-probe")]
+pub mod monitor_probe;
+
 pub use agent_endpoint::ssh_agent_available;
 pub use capability::{
     SshAlgorithmOffer, SshCapabilityLayer, SshCapabilityLimitation, SshCapabilityReport,

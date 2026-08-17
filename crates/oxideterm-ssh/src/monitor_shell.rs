@@ -216,7 +216,7 @@ pub(crate) enum MonitorShellError {
 struct MonitorShellState {
     framing: MonitorShellFraming,
     next_token: u64,
-    waiters: HashMap<u64, oneshot::Sender<Result<Vec<u8>, MonitorShellError>>>,
+    waiters: HashMap<u64, oneshot::Sender<Result<(Vec<u8>, bool), MonitorShellError>>>,
 }
 
 /// Serialized command runner over one persistent shell channel.
@@ -249,7 +249,7 @@ where
         command: &str,
         timeout: Duration,
         max_output: usize,
-    ) -> Result<Vec<u8>, MonitorShellError> {
+    ) -> Result<(Vec<u8>, bool), MonitorShellError> {
         let (token, receiver) = {
             let mut state = self.state.lock().await;
             let token = state.next_token;
@@ -307,7 +307,7 @@ where
         let mut guard = state.lock().await;
         for result in completed {
             if let Some(sender) = guard.waiters.remove(&result.token) {
-                let _ = sender.send(Ok(result.output));
+                let _ = sender.send(Ok((result.output, result.truncated)));
             }
         }
     }
@@ -427,11 +427,13 @@ mod tests {
         let first = session
             .run_command("echo one", Duration::from_secs(2), 1024)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let second = session
             .run_command("echo two", Duration::from_secs(2), 1024)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
 
         assert_eq!(first, b"one");
         assert_eq!(second, b"two");
@@ -468,7 +470,8 @@ mod tests {
         let recovered = session
             .run_command("echo ok", Duration::from_secs(2), 1024)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         assert_eq!(recovered, b"ok");
         responder.await.unwrap();
     }

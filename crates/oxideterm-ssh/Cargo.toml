@@ -31,3 +31,13 @@ windows.workspace = true
 
 [dev-dependencies]
 rand10.workspace = true
+
+[features]
+# SPIKE only: builds the real-server monitor-shell probe. Do not enable in
+# production builds.
+monitor-probe = []
+
+[[bin]]
+name = "monitor-shell-probe"
+path = "src/bin/monitor_shell_probe.rs"
+required-features = ["monitor-probe"]
