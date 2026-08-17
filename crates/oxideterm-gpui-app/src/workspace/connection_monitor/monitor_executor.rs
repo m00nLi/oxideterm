@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use oxideterm_connection_monitor::{ResourceSampleShell, ResourceSampler, ResourceSamplerFuture};
 use oxideterm_ssh::{
     SshCommandOutput, SshConnectionRegistry,
     monitor_shell::{MonitorShellError, MonitorShellSession, connect_monitor_shell},
@@ -159,5 +160,66 @@ impl MonitorCommandExecutor {
             exit_code: None,
             truncated,
         })
+    }
+}
+
+/// Profiler/GPU sampler that reuses the shared monitor shell instead of
+/// opening another connection. Single-channel servers cap concurrent
+/// connections, so every consumer must share one transport.
+#[derive(Clone)]
+pub(crate) struct MonitorSessionSampler {
+    executor: MonitorCommandExecutor,
+    connection_id: String,
+}
+
+impl MonitorSessionSampler {
+    pub(crate) fn new(executor: MonitorCommandExecutor, connection_id: String) -> Self {
+        Self {
+            executor,
+            connection_id,
+        }
+    }
+}
+
+impl ResourceSampler for MonitorSessionSampler {
+    fn open_shell<'a>(
+        &'a self,
+        _init_command: &'a str,
+        _timeout: Duration,
+    ) -> ResourceSamplerFuture<'a, Result<Box<dyn ResourceSampleShell>, String>> {
+        Box::pin(async move {
+            Ok(Box::new(MonitorSessionSampleShell {
+                executor: self.executor.clone(),
+                connection_id: self.connection_id.clone(),
+            }) as Box<dyn ResourceSampleShell>)
+        })
+    }
+}
+
+struct MonitorSessionSampleShell {
+    executor: MonitorCommandExecutor,
+    connection_id: String,
+}
+
+impl ResourceSampleShell for MonitorSessionSampleShell {
+    fn sample_until<'a>(
+        &'a mut self,
+        command: &'a str,
+        _end_marker: &'a str,
+        timeout: Duration,
+        max_output_size: usize,
+    ) -> ResourceSamplerFuture<'a, Result<String, String>> {
+        Box::pin(async move {
+            let output = self
+                .executor
+                .run(&self.connection_id, command, timeout, max_output_size)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(output.stdout)
+        })
+    }
+
+    fn close<'a>(&'a mut self) -> ResourceSamplerFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
     }
 }

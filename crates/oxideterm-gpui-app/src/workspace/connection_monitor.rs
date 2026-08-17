@@ -22,7 +22,7 @@ pub(super) use events::{
     ScheduleActionNoticeKind,
 };
 pub(super) use health::host_tools_tab_index;
-pub(super) use monitor_executor::MonitorCommandExecutor;
+pub(super) use monitor_executor::{MonitorCommandExecutor, MonitorSessionSampler};
 pub(super) use types::{
     ConnectionRuntimeSection, HostSnapshotFeedback, HostToolsMessages, HostToolsTextInput,
     HostToolsWindowModalSnapshot,

@@ -3,7 +3,6 @@ use super::*;
 use gpui::Task;
 use oxideterm_connection_monitor::ResourceSampler;
 use oxideterm_editor_core::utf16::replace_utf16;
-use oxideterm_ssh::monitor_shell::connect_monitor_sampler;
 use oxideterm_topology::ConnectionTopologySnapshot;
 
 /// Owns Host Tools sampling state independently from WorkspaceApp and SSH nodes.
@@ -1632,30 +1631,34 @@ impl HostToolsEntity {
             return;
         };
         if handle.skip_remote_env_detection() {
-            let config = handle.ssh_config();
             let executor = self.monitor_executor.clone();
-            let (keepalive_interval, keepalive_data) = executor.keepalive_snapshot();
+            if let Some(os_type) = executor.cached_os_type(&connection_id) {
+                self.profiler_registry.start_with_sampler_on_config(
+                    connection_id.clone(),
+                    std::sync::Arc::new(MonitorSessionSampler::new(executor, connection_id)),
+                    os_type,
+                    sampling_config,
+                    Some(self.profiler_update_tx.clone()),
+                    runtime,
+                );
+                cx.notify();
+                return;
+            }
             let runtime_handle = runtime.clone();
+            let detect_connection_id = connection_id.clone();
             cx.spawn(async move |this, cx| -> Result<(), String> {
-                let monitor_connection_id = connection_id.clone();
-                let (os_type, sampler) = runtime_handle
-                    .spawn(async move {
-                        let os_type = executor
-                            .ensure_os_type(&monitor_connection_id)
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        let sampler =
-                            connect_monitor_sampler(config, keepalive_interval, keepalive_data)
-                                .await
-                                .map_err(|error| error.to_string())?;
-                        Ok::<_, String>((os_type, sampler))
-                    })
+                let os_type = runtime_handle
+                    .spawn(async move { executor.ensure_os_type(&detect_connection_id).await })
                     .await
-                    .map_err(|join| join.to_string())??;
+                    .map_err(|join| join.to_string())?
+                    .map_err(|error| error.to_string())?;
                 this.update(cx, |entity, cx| {
                     entity.profiler_registry.start_with_sampler_on_config(
                         connection_id.clone(),
-                        sampler,
+                        std::sync::Arc::new(MonitorSessionSampler::new(
+                            entity.monitor_executor.clone(),
+                            connection_id.clone(),
+                        )),
                         os_type,
                         sampling_config,
                         Some(entity.profiler_update_tx.clone()),
@@ -1718,34 +1721,40 @@ impl HostToolsEntity {
             return;
         };
         if handle.skip_remote_env_detection() {
-            let config = handle.ssh_config();
             let executor = self.monitor_executor.clone();
-            let (keepalive_interval, keepalive_data) = executor.keepalive_snapshot();
             let update_tx = self.host_gpu.update_tx.clone();
+            if let Some(os_type) = executor.cached_os_type(&connection_id) {
+                self.host_gpu.snapshot_connection_id = Some(connection_id.clone());
+                self.host_gpu.snapshot = None;
+                self.host_gpu.expanded_uuid = None;
+                self.host_gpu.sampling_task = Some(start_gpu_sampling_on(
+                    connection_id.clone(),
+                    std::sync::Arc::new(MonitorSessionSampler::new(executor, connection_id)),
+                    os_type,
+                    update_tx,
+                    runtime,
+                ));
+                cx.notify();
+                return;
+            }
             let runtime_handle = runtime.clone();
+            let detect_connection_id = connection_id.clone();
             cx.spawn(async move |this, cx| -> Result<(), String> {
-                let monitor_connection_id = connection_id.clone();
-                let (os_type, sampler) = runtime_handle
-                    .spawn(async move {
-                        let os_type = executor
-                            .ensure_os_type(&monitor_connection_id)
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        let sampler =
-                            connect_monitor_sampler(config, keepalive_interval, keepalive_data)
-                                .await
-                                .map_err(|error| error.to_string())?;
-                        Ok::<_, String>((os_type, sampler))
-                    })
+                let os_type = runtime_handle
+                    .spawn(async move { executor.ensure_os_type(&detect_connection_id).await })
                     .await
-                    .map_err(|join| join.to_string())??;
+                    .map_err(|join| join.to_string())?
+                    .map_err(|error| error.to_string())?;
                 this.update(cx, |entity, cx| {
                     entity.host_gpu.snapshot_connection_id = Some(connection_id.clone());
                     entity.host_gpu.snapshot = None;
                     entity.host_gpu.expanded_uuid = None;
                     entity.host_gpu.sampling_task = Some(start_gpu_sampling_on(
                         connection_id.clone(),
-                        sampler,
+                        std::sync::Arc::new(MonitorSessionSampler::new(
+                            entity.monitor_executor.clone(),
+                            connection_id.clone(),
+                        )),
                         os_type,
                         update_tx,
                         runtime.clone(),
