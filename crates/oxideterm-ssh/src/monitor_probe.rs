@@ -9,7 +9,6 @@ use std::time::Duration;
 use crate::{
     SshConfig, SshTransportClient, SshTransportError,
     monitor_shell::{MonitorShellError, SingleChannelShellSession},
-    transport::SshShellChannelStream,
 };
 
 /// Public mirror of the internal command error for probe callers.
@@ -31,7 +30,7 @@ impl From<MonitorShellError> for ProbeCommandError {
 }
 
 pub struct ProbeSession {
-    session: SingleChannelShellSession<SshShellChannelStream>,
+    session: SingleChannelShellSession<russh::ChannelStream<russh::client::Msg>>,
 }
 
 pub async fn connect_probe(config: SshConfig) -> Result<ProbeSession, SshTransportError> {

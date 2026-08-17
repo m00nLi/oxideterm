@@ -2,16 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     future::Future,
-    io,
     path::PathBuf,
     pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    task::{Context, Poll},
     time::Duration,
 };
 
@@ -671,119 +669,10 @@ impl SshShellChannel {
     }
 
     #[cfg(feature = "monitor-probe")]
-    pub(crate) fn into_probe_stream(self) -> SshShellChannelStream {
-        SshShellChannelStream {
-            channel: Arc::new(tokio::sync::Mutex::new(self.channel)),
-            pending: VecDeque::new(),
-            wait_future: None,
-            write_future: None,
-            eof: false,
-        }
-    }
-}
-
-#[cfg(feature = "monitor-probe")]
-pub(crate) struct SshShellChannelStream {
-    channel: Arc<tokio::sync::Mutex<Channel<client::Msg>>>,
-    pending: VecDeque<u8>,
-    wait_future: Option<Pin<Box<dyn Future<Output = Option<ChannelMsg>> + Send>>>,
-    write_future: Option<Pin<Box<dyn Future<Output = Result<(), russh::Error>> + Send>>>,
-    eof: bool,
-}
-
-#[cfg(feature = "monitor-probe")]
-impl AsyncRead for SshShellChannelStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        loop {
-            if !self.pending.is_empty() {
-                let take = self.pending.len().min(buf.remaining());
-                let drained: Vec<u8> = self.pending.drain(..take).collect();
-                buf.put_slice(&drained);
-                return Poll::Ready(Ok(()));
-            }
-            if self.eof {
-                return Poll::Ready(Ok(()));
-            }
-
-            if self.wait_future.is_none() {
-                let channel = Arc::clone(&self.channel);
-                let future = async move {
-                    let mut guard = channel.lock().await;
-                    guard.wait().await
-                };
-                self.wait_future = Some(Box::pin(future));
-            }
-            let message = match self
-                .wait_future
-                .as_mut()
-                .expect("wait future was just inserted")
-                .as_mut()
-                .poll(cx)
-            {
-                Poll::Ready(message) => {
-                    self.wait_future = None;
-                    message
-                }
-                Poll::Pending => return Poll::Pending,
-            };
-            match message {
-                Some(ChannelMsg::Data { data }) => {
-                    self.pending.extend(data);
-                }
-                Some(_) => {}
-                None => {
-                    self.eof = true;
-                }
-            }
-        }
-    }
-}
-
-#[cfg(feature = "monitor-probe")]
-impl AsyncWrite for SshShellChannelStream {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        if self.write_future.is_none() {
-            let channel = Arc::clone(&self.channel);
-            let owned = buf.to_vec();
-            let future = async move {
-                let guard = channel.lock().await;
-                guard.data(&owned[..]).await
-            };
-            self.write_future = Some(Box::pin(future));
-        }
-        match self
-            .write_future
-            .as_mut()
-            .expect("write future was just inserted")
-            .as_mut()
-            .poll(cx)
-        {
-            Poll::Ready(Ok(())) => {
-                self.write_future = None;
-                Poll::Ready(Ok(buf.len()))
-            }
-            Poll::Ready(Err(error)) => {
-                self.write_future = None;
-                Poll::Ready(Err(io::Error::other(error.to_string())))
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
+    pub(crate) fn into_probe_stream(self) -> russh::ChannelStream<client::Msg> {
+        // ChannelStream owns independent read/write halves, so the framing
+        // reader and command writer never contend on the &mut Channel.
+        self.channel.into_stream()
     }
 }
 
