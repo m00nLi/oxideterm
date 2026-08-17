@@ -147,8 +147,13 @@ impl MonitorCommandExecutor {
         }
         if matches!(
             result,
-            Err(MonitorShellError::ChannelClosed | MonitorShellError::Write(_))
+            Err(MonitorShellError::Timeout
+                | MonitorShellError::ChannelClosed
+                | MonitorShellError::Write(_))
         ) {
+            // A timed-out remote command still occupies the serial shell, so
+            // the session is unusable until the remote process exits. Drop it
+            // and let the next command open a fresh connection.
             self.sessions
                 .lock()
                 .expect("monitor session map poisoned")
