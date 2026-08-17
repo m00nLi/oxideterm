@@ -8,6 +8,7 @@ use oxideterm_ssh::{
     SshCommandOutput, SshConnectionRegistry,
     monitor_shell::{MonitorShellError, MonitorShellSession, connect_monitor_shell},
 };
+use tracing::{debug, warn};
 
 /// Runs host-tools commands on the right transport for the target node.
 ///
@@ -49,13 +50,20 @@ impl MonitorCommandExecutor {
         max_output: usize,
     ) -> Result<SshCommandOutput, MonitorShellError> {
         let Some(handle) = self.registry.get(connection_id) else {
+            warn!(
+                connection_id,
+                "monitor command dropped: connection not in registry"
+            );
             return Err(MonitorShellError::ChannelClosed);
         };
         if !handle.skip_remote_env_detection() {
             return handle
                 .run_command_capture(command, timeout, max_output)
                 .await
-                .map_err(|_| MonitorShellError::ChannelClosed);
+                .map_err(|error| {
+                    warn!(connection_id, error = %error, "registry monitor command failed");
+                    MonitorShellError::ChannelClosed
+                });
         }
 
         let session = if let Some(session) = self
@@ -66,6 +74,10 @@ impl MonitorCommandExecutor {
         {
             session.clone()
         } else {
+            debug!(
+                connection_id,
+                "opening dedicated single-channel monitor shell"
+            );
             let config = handle.ssh_config();
             let (interval_secs, data) = {
                 let keepalive = self.keepalive.read().expect("keepalive lock poisoned");
@@ -73,7 +85,10 @@ impl MonitorCommandExecutor {
             };
             let session = connect_monitor_shell(config, interval_secs, data)
                 .await
-                .map_err(|error| MonitorShellError::Write(error.to_string()))?;
+                .map_err(|error| {
+                    warn!(connection_id, error = %error, "single-channel monitor connect failed");
+                    MonitorShellError::Write(error.to_string())
+                })?;
             let session = Arc::new(tokio::sync::Mutex::new(session));
             self.sessions
                 .lock()
@@ -87,6 +102,9 @@ impl MonitorCommandExecutor {
             .await
             .run_command(command, timeout, max_output)
             .await;
+        if let Err(error) = &result {
+            warn!(connection_id, error = %error, "single-channel monitor command failed");
+        }
         if matches!(
             result,
             Err(MonitorShellError::ChannelClosed | MonitorShellError::Write(_))
