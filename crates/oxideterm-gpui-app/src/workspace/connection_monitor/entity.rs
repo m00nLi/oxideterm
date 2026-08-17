@@ -1604,17 +1604,31 @@ impl HostToolsEntity {
             let config = handle.ssh_config();
             let executor = self.monitor_executor.clone();
             let (keepalive_interval, keepalive_data) = executor.keepalive_snapshot();
+            let runtime_handle = runtime.clone();
             cx.spawn(async move |this, cx| -> Result<(), String> {
-                let os_type = executor
-                    .run(&connection_id, "uname -s", Duration::from_secs(10), 128)
+                let monitor_connection_id = connection_id.clone();
+                let (os_type, sampler) = runtime_handle
+                    .spawn(async move {
+                        let os_type = executor
+                            .run(
+                                &monitor_connection_id,
+                                "uname -s",
+                                Duration::from_secs(10),
+                                128,
+                            )
+                            .await
+                            .ok()
+                            .map(|output| output.stdout.trim().to_string())
+                            .filter(|os| !os.is_empty())
+                            .unwrap_or_else(|| "Linux".to_string());
+                        let sampler =
+                            connect_monitor_sampler(config, keepalive_interval, keepalive_data)
+                                .await
+                                .map_err(|error| error.to_string())?;
+                        Ok::<_, String>((os_type, sampler))
+                    })
                     .await
-                    .ok()
-                    .map(|output| output.stdout.trim().to_string())
-                    .filter(|os| !os.is_empty())
-                    .unwrap_or_else(|| "Linux".to_string());
-                let sampler = connect_monitor_sampler(config, keepalive_interval, keepalive_data)
-                    .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|join| join.to_string())??;
                 this.update(cx, |entity, cx| {
                     entity.profiler_registry.start_with_sampler_on_config(
                         connection_id.clone(),
@@ -1685,17 +1699,31 @@ impl HostToolsEntity {
             let executor = self.monitor_executor.clone();
             let (keepalive_interval, keepalive_data) = executor.keepalive_snapshot();
             let update_tx = self.host_gpu.update_tx.clone();
+            let runtime_handle = runtime.clone();
             cx.spawn(async move |this, cx| -> Result<(), String> {
-                let os_type = executor
-                    .run(&connection_id, "uname -s", Duration::from_secs(10), 128)
+                let monitor_connection_id = connection_id.clone();
+                let (os_type, sampler) = runtime_handle
+                    .spawn(async move {
+                        let os_type = executor
+                            .run(
+                                &monitor_connection_id,
+                                "uname -s",
+                                Duration::from_secs(10),
+                                128,
+                            )
+                            .await
+                            .ok()
+                            .map(|output| output.stdout.trim().to_string())
+                            .filter(|os| !os.is_empty())
+                            .unwrap_or_else(|| "Linux".to_string());
+                        let sampler =
+                            connect_monitor_sampler(config, keepalive_interval, keepalive_data)
+                                .await
+                                .map_err(|error| error.to_string())?;
+                        Ok::<_, String>((os_type, sampler))
+                    })
                     .await
-                    .ok()
-                    .map(|output| output.stdout.trim().to_string())
-                    .filter(|os| !os.is_empty())
-                    .unwrap_or_else(|| "Linux".to_string());
-                let sampler = connect_monitor_sampler(config, keepalive_interval, keepalive_data)
-                    .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|join| join.to_string())??;
                 this.update(cx, |entity, cx| {
                     entity.host_gpu.snapshot_connection_id = Some(connection_id.clone());
                     entity.host_gpu.snapshot = None;
