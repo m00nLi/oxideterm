@@ -642,6 +642,16 @@ impl WorkspaceApp {
                 self.sync_ai_runtime_node_owner(&node_id, &state, cx);
                 if node_readiness_became_ready(previous.as_ref(), &state) {
                     self.restore_forwarding_session_for_node(&node_id, cx);
+                    if self
+                        .ssh_registry
+                        .get(&node_id.0)
+                        .is_some_and(|handle| handle.skip_remote_env_detection())
+                    {
+                        let runtime = self.forwarding_runtime.handle().clone();
+                        self.host_tools.update(cx, |host_tools, _cx| {
+                            host_tools.warm_monitor_session(&node_id.0, runtime);
+                        });
+                    }
                     self.workspace_runtime.update(cx, |runtime, cx| {
                         runtime.finish_connection_trace_success(&node_id, cx);
                     });

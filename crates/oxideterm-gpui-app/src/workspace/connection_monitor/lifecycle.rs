@@ -134,6 +134,7 @@ impl HostToolsEntity {
         let Some(connection_id) = self.ensure_selected_connection(&live_connection_ids, cx) else {
             return;
         };
+        self.warm_monitor_session(&connection_id, runtime.clone());
         self.start_os_detection_if_needed(&connection_id, runtime.clone(), cx);
         if !self.visibility.sidebar_is_visible() || sampling_config.is_empty() {
             self.stop_profiler_sampling();
