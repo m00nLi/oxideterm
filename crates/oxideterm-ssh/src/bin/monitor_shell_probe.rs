@@ -91,7 +91,9 @@ async fn run() -> Result<(), String> {
         &mut session,
         "recovery after hung command",
         "echo after-hang",
-        Duration::from_secs(10),
+        // The remote `sleep 30` still owns the serial shell; this command
+        // only executes after it finishes, so the deadline must exceed it.
+        Duration::from_secs(45),
         4096,
         Expected::Output(b"after-hang"),
     )
