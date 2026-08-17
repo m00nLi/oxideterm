@@ -10,6 +10,8 @@ use oxideterm_ssh::{
 };
 use tracing::{debug, warn};
 
+const DEFAULT_MONITOR_KEEPALIVE_INTERVAL: u32 = 10;
+
 /// Runs host-tools commands on the right transport for the target node.
 ///
 /// Normal servers keep per-command exec channels on the shared registry
@@ -20,6 +22,7 @@ pub(crate) struct MonitorCommandExecutor {
     registry: SshConnectionRegistry,
     sessions: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<MonitorShellSession>>>>>,
     keepalive: Arc<RwLock<(u32, Vec<u8>)>>,
+    detected_os: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl MonitorCommandExecutor {
@@ -28,6 +31,7 @@ impl MonitorCommandExecutor {
             registry,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             keepalive: Arc::new(RwLock::new(keepalive)),
+            detected_os: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -39,7 +43,45 @@ impl MonitorCommandExecutor {
 
     pub(super) fn keepalive_snapshot(&self) -> (u32, Vec<u8>) {
         let keepalive = self.keepalive.read().expect("keepalive lock poisoned");
-        (keepalive.0, keepalive.1.clone())
+        let (interval, data) = (keepalive.0, keepalive.1.clone());
+        if interval == 0 || data.is_empty() {
+            // Monitor connections are dedicated and otherwise idle; keep them
+            // alive by default even when the user never configured keepalive.
+            (DEFAULT_MONITOR_KEEPALIVE_INTERVAL, vec![b'\n'])
+        } else {
+            (interval, data)
+        }
+    }
+
+    pub(super) fn cached_os_type(&self, connection_id: &str) -> Option<String> {
+        self.detected_os
+            .lock()
+            .expect("detected os map poisoned")
+            .get(connection_id)
+            .cloned()
+    }
+
+    pub(super) async fn ensure_os_type(
+        &self,
+        connection_id: &str,
+    ) -> Result<String, MonitorShellError> {
+        if let Some(os_type) = self.cached_os_type(connection_id) {
+            return Ok(os_type);
+        }
+        let output = self
+            .run(connection_id, "uname -s", Duration::from_secs(10), 128)
+            .await?;
+        let os_type = output.stdout.trim().to_string();
+        let os_type = if os_type.is_empty() {
+            "Linux".to_string()
+        } else {
+            os_type
+        };
+        self.detected_os
+            .lock()
+            .expect("detected os map poisoned")
+            .insert(connection_id.to_string(), os_type.clone());
+        Ok(os_type)
     }
 
     pub(super) async fn run(
@@ -79,10 +121,7 @@ impl MonitorCommandExecutor {
                 "opening dedicated single-channel monitor shell"
             );
             let config = handle.ssh_config();
-            let (interval_secs, data) = {
-                let keepalive = self.keepalive.read().expect("keepalive lock poisoned");
-                (keepalive.0, keepalive.1.clone())
-            };
+            let (interval_secs, data) = self.keepalive_snapshot();
             let session = connect_monitor_shell(config, interval_secs, data)
                 .await
                 .map_err(|error| {

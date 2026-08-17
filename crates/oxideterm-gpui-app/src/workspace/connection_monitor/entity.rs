@@ -702,12 +702,43 @@ impl HostToolsEntity {
     }
 
     pub(super) fn connection_os_type(&self, connection_id: &str) -> Option<String> {
-        self.ssh_registry.get(connection_id).map(|handle| {
-            handle
-                .remote_env()
-                .map(|environment| environment.os_type)
-                .unwrap_or_else(|| "Unknown".to_string())
+        let handle = self.ssh_registry.get(connection_id)?;
+        if handle.skip_remote_env_detection() {
+            return self.monitor_executor.cached_os_type(connection_id);
+        }
+        handle
+            .remote_env()
+            .map(|environment| environment.os_type)
+            .or_else(|| Some("Unknown".to_string()))
+    }
+
+    pub(super) fn start_os_detection_if_needed(
+        &self,
+        connection_id: &str,
+        runtime: tokio::runtime::Handle,
+        cx: &mut Context<Self>,
+    ) {
+        let needs_detection = self
+            .ssh_registry
+            .get(connection_id)
+            .is_some_and(|handle| handle.skip_remote_env_detection())
+            && self
+                .monitor_executor
+                .cached_os_type(connection_id)
+                .is_none();
+        if !needs_detection {
+            return;
+        }
+        let executor = self.monitor_executor.clone();
+        let detect_connection_id = connection_id.to_string();
+        let runtime_handle = runtime;
+        cx.spawn(async move |this, cx| {
+            let _ = runtime_handle
+                .spawn(async move { executor.ensure_os_type(&detect_connection_id).await })
+                .await;
+            let _ = this.update(cx, |_, cx| cx.notify());
         })
+        .detach();
     }
 
     pub(super) fn spawn_log_snapshot_capture(
@@ -1610,17 +1641,9 @@ impl HostToolsEntity {
                 let (os_type, sampler) = runtime_handle
                     .spawn(async move {
                         let os_type = executor
-                            .run(
-                                &monitor_connection_id,
-                                "uname -s",
-                                Duration::from_secs(10),
-                                128,
-                            )
+                            .ensure_os_type(&monitor_connection_id)
                             .await
-                            .ok()
-                            .map(|output| output.stdout.trim().to_string())
-                            .filter(|os| !os.is_empty())
-                            .unwrap_or_else(|| "Linux".to_string());
+                            .map_err(|error| error.to_string())?;
                         let sampler =
                             connect_monitor_sampler(config, keepalive_interval, keepalive_data)
                                 .await
@@ -1705,17 +1728,9 @@ impl HostToolsEntity {
                 let (os_type, sampler) = runtime_handle
                     .spawn(async move {
                         let os_type = executor
-                            .run(
-                                &monitor_connection_id,
-                                "uname -s",
-                                Duration::from_secs(10),
-                                128,
-                            )
+                            .ensure_os_type(&monitor_connection_id)
                             .await
-                            .ok()
-                            .map(|output| output.stdout.trim().to_string())
-                            .filter(|os| !os.is_empty())
-                            .unwrap_or_else(|| "Linux".to_string());
+                            .map_err(|error| error.to_string())?;
                         let sampler =
                             connect_monitor_sampler(config, keepalive_interval, keepalive_data)
                                 .await
