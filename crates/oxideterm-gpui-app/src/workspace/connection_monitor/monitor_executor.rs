@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 
@@ -18,7 +18,7 @@ use oxideterm_ssh::{
 pub(crate) struct MonitorCommandExecutor {
     registry: SshConnectionRegistry,
     sessions: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<MonitorShellSession>>>>>,
-    keepalive: Arc<tokio::sync::RwLock<(u32, Vec<u8>)>>,
+    keepalive: Arc<RwLock<(u32, Vec<u8>)>>,
 }
 
 impl MonitorCommandExecutor {
@@ -26,18 +26,18 @@ impl MonitorCommandExecutor {
         Self {
             registry,
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            keepalive: Arc::new(tokio::sync::RwLock::new(keepalive)),
+            keepalive: Arc::new(RwLock::new(keepalive)),
         }
     }
 
     pub(super) fn set_keepalive(&self, interval_secs: u32, data: Vec<u8>) {
-        if let Ok(mut keepalive) = self.keepalive.try_write() {
+        if let Ok(mut keepalive) = self.keepalive.write() {
             *keepalive = (interval_secs, data);
         }
     }
 
     pub(super) fn keepalive_snapshot(&self) -> (u32, Vec<u8>) {
-        let keepalive = self.keepalive.blocking_read();
+        let keepalive = self.keepalive.read().expect("keepalive lock poisoned");
         (keepalive.0, keepalive.1.clone())
     }
 
@@ -68,7 +68,7 @@ impl MonitorCommandExecutor {
         } else {
             let config = handle.ssh_config();
             let (interval_secs, data) = {
-                let keepalive = self.keepalive.read().await;
+                let keepalive = self.keepalive.read().expect("keepalive lock poisoned");
                 (keepalive.0, keepalive.1.clone())
             };
             let session = connect_monitor_shell(config, interval_secs, data)
