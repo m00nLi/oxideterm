@@ -63,44 +63,6 @@ impl MonitorCommandExecutor {
         Ok(os_type)
     }
 
-    /// Open (or reuse) the monitor shell without running a command.
-    ///
-    /// The idle keepalive inside the session keeps the node transport alive
-    /// on servers that drop idle connections after a few seconds.
-    pub(super) async fn ensure_monitor_session(
-        &self,
-        connection_id: &str,
-    ) -> Result<(), MonitorShellError> {
-        let Some(handle) = self.registry.get(connection_id) else {
-            return Err(MonitorShellError::ChannelClosed);
-        };
-        if !handle.skip_remote_env_detection() {
-            return Ok(());
-        }
-        if self
-            .sessions
-            .lock()
-            .expect("monitor session map poisoned")
-            .contains_key(connection_id)
-        {
-            return Ok(());
-        }
-        debug!(connection_id, "opening monitor shell on the node transport");
-        let shell = handle
-            .open_persistent_shell_channel("")
-            .await
-            .map_err(|error| {
-                warn!(connection_id, error = %error, "single-channel monitor shell open failed");
-                MonitorShellError::Write(error.to_string())
-            })?;
-        let session = Arc::new(tokio::sync::Mutex::new(monitor_shell_session(shell)));
-        self.sessions
-            .lock()
-            .expect("monitor session map poisoned")
-            .insert(connection_id.to_string(), session);
-        Ok(())
-    }
-
     pub(super) async fn run(
         &self,
         connection_id: &str,
@@ -133,13 +95,23 @@ impl MonitorCommandExecutor {
         {
             session.clone()
         } else {
-            self.ensure_monitor_session(connection_id).await?;
+            debug!(connection_id, "opening monitor shell on the node transport");
+            // Single-channel servers cap concurrent connections, so reuse the
+            // node's existing transport instead of opening another one. The
+            // node transport channel is otherwise unused for these nodes.
+            let shell = handle
+                .open_persistent_shell_channel("")
+                .await
+                .map_err(|error| {
+                    warn!(connection_id, error = %error, "single-channel monitor shell open failed");
+                    MonitorShellError::Write(error.to_string())
+                })?;
+            let session = Arc::new(tokio::sync::Mutex::new(monitor_shell_session(shell)));
             self.sessions
                 .lock()
                 .expect("monitor session map poisoned")
-                .get(connection_id)
-                .expect("monitor session was just inserted")
-                .clone()
+                .insert(connection_id.to_string(), session.clone());
+            session
         };
 
         let result = session

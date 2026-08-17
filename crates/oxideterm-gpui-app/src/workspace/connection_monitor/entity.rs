@@ -729,23 +729,6 @@ impl HostToolsEntity {
         .detach();
     }
 
-    pub(crate) fn warm_monitor_session(
-        &self,
-        connection_id: &str,
-        runtime: tokio::runtime::Handle,
-    ) {
-        let executor = self.monitor_executor.clone();
-        let connection_id = connection_id.to_string();
-        runtime.spawn(async move {
-            for _attempt in 0..30 {
-                match executor.ensure_monitor_session(&connection_id).await {
-                    Ok(()) => return,
-                    Err(_) => tokio::time::sleep(Duration::from_secs(2)).await,
-                }
-            }
-        });
-    }
-
     pub(super) fn spawn_log_snapshot_capture(
         &self,
         command: String,
