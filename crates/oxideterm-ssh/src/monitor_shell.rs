@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Mutex, oneshot};
+use tracing::{debug, warn};
 
 use crate::{SshConfig, SshTransportClient, SshTransportError};
 
@@ -286,6 +287,7 @@ where
                     .await
                     .is_err()
                 {
+                    warn!("monitor shell keepalive write failed, stopping");
                     break;
                 }
             }
@@ -354,12 +356,14 @@ where
     loop {
         let read = match reader.read(&mut buffer).await {
             Ok(read) => read,
-            Err(_) => {
+            Err(error) => {
+                warn!(error = %error, "monitor shell reader failed");
                 fail_all_waiters(&state).await;
                 return;
             }
         };
         if read == 0 {
+            debug!("monitor shell reader reached EOF");
             fail_all_waiters(&state).await;
             return;
         }

@@ -5,6 +5,7 @@ use std::{sync::Arc, time::Duration};
 
 use oxideterm_connection_monitor::{ResourceSampleShell, ResourceSampler, ResourceSamplerFuture};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tracing::warn;
 
 use crate::DedicatedMonitorConnection;
 use crate::transport::SamplerStreamDecoder;
@@ -117,6 +118,7 @@ impl ResourceSampler for DedicatedMonitorConnection {
                             loop {
                                 tokio::time::sleep(DEDICATED_SAMPLER_KEEPALIVE_INTERVAL).await;
                                 if writer.lock().await.write_all(b"\n").await.is_err() {
+                                    warn!("sampler shell keepalive write failed, stopping");
                                     break;
                                 }
                             }
@@ -170,6 +172,7 @@ impl ResourceSampleShell for DedicatedMonitorShell {
                         .await
                         .map_err(|error| error.to_string())?;
                     if read == 0 {
+                        warn!("sampler shell channel reached EOF");
                         return Err("persistent shell channel closed".to_string());
                     }
                     decoder.feed(&buffer[..read], &mut output, max_output_size);
