@@ -599,7 +599,7 @@ fn build_unix_tmux_snapshot_command() -> String {
             "oxide_tmux_sessions=$(tmux list-sessions -F {session_format} 2>&1); ",
             "oxide_tmux_status=$?; ",
             "if [ \"$oxide_tmux_status\" -ne 0 ]; then ",
-            "if printf '%s' \"$oxide_tmux_sessions\" | grep -qi 'no server running'; then :; ",
+            "if printf '%s' \"$oxide_tmux_sessions\" | grep -Eqi 'no server running|error connecting to'; then :; ",
             "else printf '__OXIDE_TMUX_ERROR__\\t%s\\n' \"$(printf '%s' \"$oxide_tmux_sessions\" | head -n 1 | tr '\\t' ' ')\"; fi; ",
             "else ",
             "printf '%s\\n' \"$oxide_tmux_sessions\"; ",
