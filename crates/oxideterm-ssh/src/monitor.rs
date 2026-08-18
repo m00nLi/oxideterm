@@ -9,7 +9,7 @@ use tracing::warn;
 
 use crate::DedicatedMonitorConnection;
 use crate::transport::SamplerStreamDecoder;
-use crate::{SshConnectionHandle, SshShellChannel};
+use crate::{SshConfig, SshConnectionHandle, SshShellChannel, SshTransportClient};
 
 impl ResourceSampler for SshConnectionHandle {
     fn open_shell<'a>(
@@ -110,25 +110,8 @@ impl ResourceSampler for DedicatedMonitorConnection {
         Box::pin(async move {
             match tokio::time::timeout(timeout, self.open_shell_channel(init_command)).await {
                 Ok(Ok(shell)) => {
-                    let (reader, writer) = shell.into_raw_stream().into_split();
-                    let writer = Arc::new(tokio::sync::Mutex::new(writer));
-                    let keepalive_task = tokio::spawn({
-                        let writer = writer.clone();
-                        async move {
-                            loop {
-                                tokio::time::sleep(DEDICATED_SAMPLER_KEEPALIVE_INTERVAL).await;
-                                if writer.lock().await.write_all(b"\n").await.is_err() {
-                                    warn!("sampler shell keepalive write failed, stopping");
-                                    break;
-                                }
-                            }
-                        }
-                    });
-                    Ok(Box::new(DedicatedMonitorShell {
-                        reader,
-                        writer,
-                        keepalive_task: Some(keepalive_task),
-                    }) as Box<dyn ResourceSampleShell>)
+                    Ok(Box::new(into_dedicated_monitor_shell(shell))
+                        as Box<dyn ResourceSampleShell>)
                 }
                 Ok(Err(error)) => Err(error.to_string()),
                 Err(_) => Err("monitor shell open timed out".to_string()),
@@ -138,6 +121,76 @@ impl ResourceSampler for DedicatedMonitorConnection {
 }
 
 const DEDICATED_SAMPLER_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
+
+fn into_dedicated_monitor_shell(shell: SshShellChannel) -> DedicatedMonitorShell {
+    let (reader, writer) = shell.into_raw_stream().into_split();
+    let writer = Arc::new(tokio::sync::Mutex::new(writer));
+    let keepalive_task = tokio::spawn({
+        let writer = writer.clone();
+        async move {
+            loop {
+                tokio::time::sleep(DEDICATED_SAMPLER_KEEPALIVE_INTERVAL).await;
+                if writer.lock().await.write_all(b"\n").await.is_err() {
+                    warn!("sampler shell keepalive write failed, stopping");
+                    break;
+                }
+            }
+        }
+    });
+    DedicatedMonitorShell {
+        reader,
+        writer,
+        keepalive_task: Some(keepalive_task),
+    }
+}
+
+/// Reconnecting sampler for single-channel nodes.
+///
+/// The server forbids a second channel per transport, so recovering from a
+/// poisoned or closed sampler shell requires a brand-new SSH connection.
+/// Every `open_shell` call therefore connects fresh.
+pub struct ReconnectingMonitorSampler {
+    config: SshConfig,
+    keepalive_interval_secs: u32,
+    keepalive_data: Vec<u8>,
+}
+
+pub fn reconnectable_monitor_sampler(
+    config: SshConfig,
+    keepalive_interval_secs: u32,
+    keepalive_data: Vec<u8>,
+) -> Arc<dyn ResourceSampler> {
+    Arc::new(ReconnectingMonitorSampler {
+        config,
+        keepalive_interval_secs,
+        keepalive_data,
+    })
+}
+
+impl ResourceSampler for ReconnectingMonitorSampler {
+    fn open_shell<'a>(
+        &'a self,
+        init_command: &'a str,
+        timeout: Duration,
+    ) -> ResourceSamplerFuture<'a, Result<Box<dyn ResourceSampleShell>, String>> {
+        Box::pin(async move {
+            let mut client = SshTransportClient::new(self.config.clone());
+            if self.keepalive_interval_secs > 0 && !self.keepalive_data.is_empty() {
+                client = client
+                    .with_keepalive(self.keepalive_interval_secs, self.keepalive_data.clone());
+            }
+            let connection = tokio::time::timeout(timeout, client.connect_for_monitor_raw())
+                .await
+                .map_err(|_| "sampler connect timed out".to_string())?
+                .map_err(|error| error.to_string())?;
+            let shell = tokio::time::timeout(timeout, connection.open_shell_channel(init_command))
+                .await
+                .map_err(|_| "sampler shell open timed out".to_string())?
+                .map_err(|error| error.to_string())?;
+            Ok(Box::new(into_dedicated_monitor_shell(shell)) as Box<dyn ResourceSampleShell>)
+        })
+    }
+}
 
 struct DedicatedMonitorShell {
     reader: russh::ChannelStreamReader<russh::client::Msg>,

@@ -3,7 +3,7 @@ use super::*;
 use gpui::Task;
 use oxideterm_connection_monitor::ResourceSampler;
 use oxideterm_editor_core::utf16::replace_utf16;
-use oxideterm_ssh::monitor_shell::connect_monitor_sampler;
+use oxideterm_ssh::reconnectable_monitor_sampler;
 use oxideterm_topology::ConnectionTopologySnapshot;
 
 /// Owns Host Tools sampling state independently from WorkspaceApp and SSH nodes.
@@ -1644,10 +1644,11 @@ impl HostToolsEntity {
                             .ensure_os_type(&monitor_connection_id)
                             .await
                             .map_err(|error| error.to_string())?;
-                        let sampler =
-                            connect_monitor_sampler(config, keepalive_interval, keepalive_data)
-                                .await
-                                .map_err(|error| error.to_string())?;
+                        let sampler = reconnectable_monitor_sampler(
+                            config,
+                            keepalive_interval,
+                            keepalive_data,
+                        );
                         Ok::<_, String>((os_type, sampler))
                     })
                     .await
@@ -1731,10 +1732,11 @@ impl HostToolsEntity {
                             .ensure_os_type(&monitor_connection_id)
                             .await
                             .map_err(|error| error.to_string())?;
-                        let sampler =
-                            connect_monitor_sampler(config, keepalive_interval, keepalive_data)
-                                .await
-                                .map_err(|error| error.to_string())?;
+                        let sampler = reconnectable_monitor_sampler(
+                            config,
+                            keepalive_interval,
+                            keepalive_data,
+                        );
                         Ok::<_, String>((os_type, sampler))
                     })
                     .await

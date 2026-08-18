@@ -1564,6 +1564,15 @@ impl SshTransportClient {
         Ok(std::sync::Arc::new(DedicatedMonitorConnection::new(pooled)))
     }
 
+    /// Establish an independent SSH connection and return the concrete
+    /// dedicated monitor connection so callers can open fresh shells.
+    pub(crate) async fn connect_for_monitor_raw(
+        self,
+    ) -> Result<DedicatedMonitorConnection, SshTransportError> {
+        let pooled = self.connect_authenticated_connection().await?;
+        Ok(DedicatedMonitorConnection::new(pooled))
+    }
+
     /// Open one raw shell channel on a dedicated connection for the
     /// single-channel monitor shell session.
     pub(crate) async fn connect_for_monitor_channel(
