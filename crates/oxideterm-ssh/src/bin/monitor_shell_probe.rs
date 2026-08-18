@@ -164,6 +164,22 @@ async fn run() -> Result<(), String> {
     }
     println!("PASS profiler sample read ({} bytes)", sampled.len());
 
+    // Appliance diagnosis: run the exact tmux snapshot script used by the
+    // host tools page and print its raw output when it reports an error.
+    let tmux_command = oxideterm_connection_monitor::build_tmux_snapshot_command("Linux").command;
+    let (tmux_output, _) = session
+        .run_command(&tmux_command, Duration::from_secs(15), 64 * 1024)
+        .await
+        .map_err(|error| format!("tmux snapshot probe: {error:?}"))?;
+    if String::from_utf8_lossy(&tmux_output).contains("__OXIDE_TMUX_ERROR__") {
+        println!(
+            "TMUX SNAPSHOT ERROR OUTPUT:\n{}",
+            String::from_utf8_lossy(&tmux_output)
+        );
+        return Err("tmux snapshot reported an error marker".to_string());
+    }
+    println!("PASS tmux snapshot read ({} bytes)", tmux_output.len());
+
     println!("ALL PROBE SCENARIOS PASSED");
     Ok(())
 }
