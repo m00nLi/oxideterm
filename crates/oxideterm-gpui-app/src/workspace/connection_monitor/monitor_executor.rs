@@ -163,11 +163,32 @@ impl MonitorCommandExecutor {
                 .expect("monitor session map poisoned")
                 .remove(connection_id);
         }
-        result.map(|(stdout, truncated)| SshCommandOutput {
-            stdout: String::from_utf8_lossy(&stdout).into_owned(),
-            stderr: String::new(),
-            exit_code: None,
-            truncated,
-        })
+        result.map(|(stdout, truncated)| monitor_shell_output(stdout, truncated))
+    }
+}
+
+fn monitor_shell_output(stdout: Vec<u8>, truncated: bool) -> SshCommandOutput {
+    SshCommandOutput {
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::new(),
+        // Receiving the END marker means the command line ran to completion
+        // and the serial shell resynchronized. The marker framing cannot carry
+        // the remote exit status, and every host-tool snapshot script ends
+        // with a successful echo, so report success instead of leaving a
+        // `None` that tmux capture strictly rejects.
+        exit_code: Some(0),
+        truncated,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn monitor_shell_success_reports_zero_exit_code_for_tmux_parsing() {
+        let output = monitor_shell_output(b"===TMUX===...".to_vec(), false);
+        assert_eq!(output.exit_code, Some(0));
+        assert_eq!(output.stdout, "===TMUX===...");
     }
 }
