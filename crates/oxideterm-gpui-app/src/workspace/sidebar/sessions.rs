@@ -678,7 +678,7 @@ impl WorkspaceApp {
             .py_2()
             .border_b_1()
             .border_color(rgba((theme.border << 8) | SESSION_FOCUS_DIVIDER_ALPHA))
-            .text_size(px(SESSION_TREE_META_TEXT_SIZE))
+            .text_size(px(self.tokens.metrics.ui_text_2xs))
             .text_color(rgb(theme.text_muted))
             .flex()
             .flex_row()
@@ -748,7 +748,7 @@ impl WorkspaceApp {
             )))
             .child(
                 div()
-                    .text_size(px(SESSION_FOCUS_EMPTY_TITLE_TEXT_SIZE))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .text_color(rgb(theme.text_muted))
                     .child(self.render_display_text_with_role(
                         SelectableTextRole::PlainDocument,
@@ -762,7 +762,7 @@ impl WorkspaceApp {
             .child(
                 div()
                     .mt_1()
-                    .text_size(px(SESSION_FOCUS_EMPTY_SUBTITLE_TEXT_SIZE))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .text_color(rgba(
                         (theme.text_muted << 8)
                             | (SESSION_FOCUS_EMPTY_SUBTITLE_ALPHA * 255.0).round() as u32,
@@ -894,7 +894,7 @@ impl WorkspaceApp {
                                 div()
                                     .min_w(px(0.0))
                                     .truncate()
-                                    .text_size(px(SESSION_TREE_TEXT_SIZE))
+                                    .text_size(px(self.tokens.metrics.ui_text_xs))
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(rgb(status.text_color))
                                     .child(self.render_row_safe_selectable_display_text_in_group(
@@ -912,7 +912,7 @@ impl WorkspaceApp {
                                 div()
                                     .min_w(px(0.0))
                                     .truncate()
-                                    .text_size(px(SESSION_TREE_META_TEXT_SIZE))
+                                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                                     .text_color(rgb(theme.text_muted))
                                     .child(self.render_row_safe_selectable_display_text_in_group(
                                         selection_group_id,
@@ -940,7 +940,7 @@ impl WorkspaceApp {
                                     (SESSION_FOCUS_EMERALD << 8)
                                         | SESSION_FOCUS_TERMINAL_BADGE_BG_ALPHA,
                                 ))
-                                .text_size(px(SESSION_TREE_META_TEXT_SIZE))
+                                .text_size(px(self.tokens.metrics.ui_text_2xs))
                                 .text_color(rgb(SESSION_FOCUS_EMERALD))
                                 .child(Self::render_lucide_icon(
                                     LucideIcon::Terminal,
@@ -1088,7 +1088,7 @@ impl WorkspaceApp {
                 div()
                     .flex_1()
                     .truncate()
-                    .text_size(px(SESSION_TREE_META_TEXT_SIZE))
+                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                     .child(self.render_row_safe_selectable_display_text_in_group(
                         crate::workspace::selectable_text::selectable_text_id(
                             "session-focus-terminal",
@@ -1563,7 +1563,7 @@ impl WorkspaceApp {
                     .min_w(px(0.0))
                     .flex_1()
                     .truncate()
-                    .text_size(px(SESSION_TREE_TEXT_SIZE))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .text_color(rgb(status.text_color))
                     .child(row.title),
             )
@@ -1708,7 +1708,7 @@ impl WorkspaceApp {
                     .min_w(px(0.0))
                     .flex_1()
                     .truncate()
-                    .text_size(px(SESSION_TREE_TEXT_SIZE))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .font_weight(if selected {
                         gpui::FontWeight::MEDIUM
                     } else {
@@ -1730,7 +1730,7 @@ impl WorkspaceApp {
                 row.child(
                     div()
                         .ml_2()
-                        .text_size(px(SESSION_TREE_META_TEXT_SIZE))
+                        .text_size(px(self.tokens.metrics.ui_text_2xs))
                         .text_color(muted_text)
                         .child(self.render_row_safe_selectable_display_text_in_group(
                             selection_group_id,
@@ -1752,7 +1752,7 @@ impl WorkspaceApp {
                         .flex_row()
                         .items_center()
                         .gap(px(2.0))
-                        .text_size(px(SESSION_TREE_META_TEXT_SIZE))
+                        .text_size(px(self.tokens.metrics.ui_text_2xs))
                         .text_color(muted_text)
                         .child(Self::render_lucide_icon(
                             LucideIcon::Terminal,
@@ -1871,7 +1871,7 @@ impl WorkspaceApp {
                         .min_w(px(0.0))
                         .flex_1()
                         .truncate()
-                        .text_size(px(SESSION_TREE_TEXT_SIZE))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .font_weight(if active {
                             gpui::FontWeight::MEDIUM
                         } else {
@@ -1959,7 +1959,7 @@ impl WorkspaceApp {
                 .gap(px(6.0))
                 .rounded(px(self.tokens.radii.md))
                 .px_2()
-                .text_size(px(SESSION_TREE_TEXT_SIZE))
+                .text_size(px(self.tokens.metrics.ui_text_xs))
                 .text_color(rgb(text_color))
                 .cursor_pointer()
                 .hover(move |row| row.bg(rgb(hover_bg)))

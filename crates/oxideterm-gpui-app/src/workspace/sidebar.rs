@@ -6,8 +6,6 @@ use oxideterm_gpui_ui::{IconButtonOptions, TreeBranchMetrics, tree_child};
 // to a compact desktop connection list than to a settings or form surface.
 const SESSION_TREE_NODE_HEIGHT: f32 = 28.0;
 const SESSION_TREE_ITEM_HEIGHT: f32 = 24.0;
-const SESSION_TREE_TEXT_SIZE: f32 = 12.0;
-const SESSION_TREE_META_TEXT_SIZE: f32 = 10.0;
 const SESSION_TREE_ICON_SIZE: f32 = 14.0;
 const SESSION_TREE_CHILD_ICON_SIZE: f32 = 12.0;
 // Primary sidebar content needs a small inset below the header divider so the
@@ -30,8 +28,6 @@ const SESSION_FOCUS_DIVIDER_ALPHA: u32 = 0x4d;
 // `text-sm`, `text-xs`, and `opacity-60` for the helper text.
 const SESSION_FOCUS_EMPTY_ICON_SIZE: f32 = 32.0;
 const SESSION_FOCUS_EMPTY_ICON_ALPHA: u32 = 0x4d;
-const SESSION_FOCUS_EMPTY_TITLE_TEXT_SIZE: f32 = 14.0;
-const SESSION_FOCUS_EMPTY_SUBTITLE_TEXT_SIZE: f32 = 12.0;
 const SESSION_FOCUS_EMPTY_SUBTITLE_ALPHA: f32 = 0.6;
 const SESSION_FOCUS_EMERALD: u32 = 0x10b981;
 // Tauri EventLogPanel rows use `min-h-[24px]` with `px-3 py-1`; keep the
