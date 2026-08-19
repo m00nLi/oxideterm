@@ -343,7 +343,7 @@ impl WorkspaceApp {
                         .flex_1()
                         .min_w(px(0.0))
                         .truncate()
-                        .text_size(px(13.0))
+                        .text_size(px(self.tokens.metrics.ui_text_sm))
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(rgb(theme.text))
                         .child(self.render_display_text_with_role(
@@ -1190,7 +1190,7 @@ impl WorkspaceApp {
                                             .min_w(px(0.0))
                                             .flex_1()
                                             .truncate()
-                                            .text_size(px(12.0))
+                                            .text_size(px(self.tokens.metrics.ui_text_xs))
                                             .font_weight(if status_unread {
                                                 gpui::FontWeight::SEMIBOLD
                                             } else {
@@ -1222,7 +1222,7 @@ impl WorkspaceApp {
                                 body.child(
                                     div()
                                         .mt_1()
-                                        .text_size(px(11.0))
+                                        .text_size(px(self.tokens.metrics.ui_text_caption))
                                         .text_color(rgb(theme.text_muted))
                                         .child(self.render_selectable_text_scoped(
                                             "notification-body",
@@ -1237,7 +1237,7 @@ impl WorkspaceApp {
                                 div()
                                     .mt_1()
                                     .truncate()
-                                    .text_size(px(10.0))
+                                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                                     .text_color(rgb(theme.text_muted))
                                     .child(self.render_selectable_text_scoped(
                                         "notification-meta",
@@ -1327,7 +1327,7 @@ impl WorkspaceApp {
             .px_3()
             .py_1()
             .overflow_hidden()
-            .text_size(px(12.0))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .font_family(settings_mono_font_family(self.settings_store.settings()))
             .bg(rgb(theme.bg))
             .hover(move |row| row.bg(rgb(theme.bg_hover)))
@@ -1412,7 +1412,7 @@ impl WorkspaceApp {
             .py(px(2.0))
             .rounded(px(self.tokens.radii.md))
             .bg(rgba((bg << 8) | 0x26))
-            .text_size(px(10.0))
+            .text_size(px(self.tokens.metrics.ui_text_2xs))
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(rgb(text))
             .child(self.render_display_text_with_role(
