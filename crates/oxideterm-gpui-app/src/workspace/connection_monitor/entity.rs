@@ -1217,6 +1217,9 @@ impl HostToolsEntity {
         let Some(runtime) = self.lifecycle_runtime.clone() else {
             return;
         };
+        if self.profiler_registry.refresh(&connection_id) {
+            return;
+        }
         self.start_profiler(connection_id, self.sampling_config, runtime, cx);
     }
 

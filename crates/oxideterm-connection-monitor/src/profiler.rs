@@ -193,6 +193,7 @@ struct ConnectionProfilerEntry {
     snapshot: ConnectionProfilerSnapshot,
     config: ResourceSamplingConfig,
     stop_tx: Option<oneshot::Sender<()>>,
+    refresh_tx: Option<mpsc::UnboundedSender<()>>,
     task: Option<JoinHandle<()>>,
 }
 
@@ -243,6 +244,7 @@ impl ProfilerRegistry {
                 snapshot: running_snapshot(),
                 config: ResourceSamplingConfig::default(),
                 stop_tx: None,
+                refresh_tx: None,
                 task: None,
             },
         );
@@ -317,6 +319,7 @@ impl ProfilerRegistry {
         let connection_id = connection_id.into();
         let os_type = os_type.into();
         let (stop_tx, stop_rx) = oneshot::channel();
+        let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
         {
             let mut profilers = lock(&self.profilers);
             if matches!(
@@ -338,6 +341,7 @@ impl ProfilerRegistry {
                     snapshot: running_snapshot(),
                     config,
                     stop_tx: Some(stop_tx),
+                    refresh_tx: Some(refresh_tx),
                     task: None,
                 },
             );
@@ -354,6 +358,7 @@ impl ProfilerRegistry {
                 config,
                 update_tx,
                 stop_rx,
+                refresh_rx,
             )
             .await;
         };
@@ -367,6 +372,19 @@ impl ProfilerRegistry {
             spawn_profiler_thread(task_future);
         }
         true
+    }
+
+    /// Ask the running sample loop to take one sample immediately instead of
+    /// waiting for the next interval tick. Returns false when the connection
+    /// has no sampler-backed profiler.
+    pub fn refresh(&self, connection_id: &str) -> bool {
+        let refresh_tx = lock(&self.profilers)
+            .get(connection_id)
+            .and_then(|entry| entry.refresh_tx.clone());
+        match refresh_tx {
+            Some(sender) => sender.send(()).is_ok(),
+            None => false,
+        }
     }
 
     pub fn stop(&self, connection_id: &str) -> bool {
@@ -664,6 +682,7 @@ async fn sample_loop(
     config: ResourceSamplingConfig,
     update_tx: Option<mpsc::UnboundedSender<ProfilerUpdate>>,
     mut stop_rx: oneshot::Receiver<()>,
+    mut refresh_rx: mpsc::UnboundedReceiver<()>,
 ) {
     let initial_command = build_sample_command_for(&os_type, config);
     let live_command = build_live_sample_command(&os_type, config);
@@ -698,129 +717,155 @@ async fn sample_loop(
         }
     };
 
+    enum SampleTrigger {
+        Tick,
+        Refresh,
+    }
+
     loop {
-        tokio::select! {
+        let trigger = tokio::select! {
             _ = &mut stop_rx => {
                 let _ = shell.close().await;
                 break;
             }
-            _ = interval.tick() => {
-                let command = if system_info_sampled {
-                    &live_command
-                } else {
-                    &initial_command
-                };
-                let started = Instant::now();
-                match shell
-                    .sample_until(
-                        command,
-                        RESOURCE_END_MARKER,
-                        RESOURCE_SAMPLE_TIMEOUT,
-                        RESOURCE_MAX_OUTPUT_SIZE,
-                    )
-                    .await
-                {
-                    Ok(output) => {
-                        let elapsed_ms = started.elapsed().as_millis();
-                        let timestamp_ms = now_ms();
-                        let mut metrics =
-                            parse_resource_metrics(&output, previous_sample.as_ref(), timestamp_ms);
-                        if !system_info_sampled {
-                            system_info_sampled = true;
-                            if let Some(system_info) = metrics.system_info.clone() {
-                                cached_system_info = Some(CachedSystemInfo {
-                                    value: system_info,
-                                    sampled_at_ms: timestamp_ms,
-                                });
-                            }
-                        } else if metrics.system_info.is_none() {
-                            metrics.system_info = cached_system_info
-                                .as_ref()
-                                .map(|cached| cached.snapshot_at(timestamp_ms));
+            _ = interval.tick() => SampleTrigger::Tick,
+            refreshed = refresh_rx.recv() => match refreshed {
+                Some(()) => SampleTrigger::Refresh,
+                None => {
+                    let _ = shell.close().await;
+                    break;
+                }
+            },
+        };
+
+        // A manual refresh lands on the wrapper-cache miss half the time on
+        // the appliance, so retry once immediately after an incomplete
+        // refresh sample instead of waiting for the next 10-second tick.
+        let mut refresh_retry = matches!(trigger, SampleTrigger::Refresh);
+        loop {
+            let command = if system_info_sampled {
+                &live_command
+            } else {
+                &initial_command
+            };
+            let started = Instant::now();
+            match shell
+                .sample_until(
+                    command,
+                    RESOURCE_END_MARKER,
+                    RESOURCE_SAMPLE_TIMEOUT,
+                    RESOURCE_MAX_OUTPUT_SIZE,
+                )
+                .await
+            {
+                Ok(output) => {
+                    let elapsed_ms = started.elapsed().as_millis();
+                    let timestamp_ms = now_ms();
+                    let mut metrics =
+                        parse_resource_metrics(&output, previous_sample.as_ref(), timestamp_ms);
+                    if !system_info_sampled {
+                        system_info_sampled = true;
+                        if let Some(system_info) = metrics.system_info.clone() {
+                            cached_system_info = Some(CachedSystemInfo {
+                                value: system_info,
+                                sampled_at_ms: timestamp_ms,
+                            });
                         }
-                        if sample_is_incomplete(&metrics, config) {
-                            // Wrapped `ps`/`docker` binaries on some
-                            // appliances return before their real output is
-                            // produced, yielding a completed sample with zero
-                            // processes. Every live host has processes, so
-                            // treat the sample as incomplete: keep the last
-                            // good data instead of blanking the tables.
-                            consecutive_incomplete =
-                                consecutive_incomplete.saturating_add(1);
-                            consecutive_failures = consecutive_failures.saturating_add(1);
-                            debug!(
-                                connection_id,
-                                bytes = output.len(),
-                                elapsed_ms,
-                                consecutive_incomplete,
-                                "profiler sample incomplete (no processes); keeping last data"
-                            );
-                            if consecutive_incomplete >= INCOMPLETE_SAMPLE_REOPEN_THRESHOLD {
-                                warn!(
-                                    connection_id,
-                                    consecutive_incomplete,
-                                    "profiler sampler shell reopening after repeated incomplete samples"
-                                );
-                                if let Ok(new_shell) =
-                                    open_resource_sample_shell(sampler.as_ref(), &os_type).await
-                                {
-                                    shell = new_shell;
-                                    debug!(connection_id, "profiler sampler shell reopened");
-                                } else {
-                                    debug!(connection_id, "profiler sampler shell reopen failed");
-                                }
-                                consecutive_incomplete = 0;
-                            }
-                        } else {
-                            consecutive_incomplete = 0;
-                            if matches!(
-                                metrics.source,
-                                MetricsSource::RttOnly | MetricsSource::Unsupported
-                            ) {
-                                consecutive_failures = consecutive_failures.saturating_add(1);
-                            } else {
-                                consecutive_failures = 0;
-                            }
-                            debug!(
-                                connection_id,
-                                bytes = output.len(),
-                                elapsed_ms,
-                                consecutive_failures,
-                                source = ?metrics.source,
-                                docker_section = output.contains("===DOCKER==="),
-                                docker_containers = metrics.docker.containers.len(),
-                                processes = metrics.top_processes.len(),
-                                "profiler sample ok"
-                            );
-                            previous_sample = previous_sample_from_metrics(&metrics, &output);
-                            record_and_emit(&registry, &update_tx, connection_id.clone(), metrics);
-                        }
+                    } else if metrics.system_info.is_none() {
+                        metrics.system_info = cached_system_info
+                            .as_ref()
+                            .map(|cached| cached.snapshot_at(timestamp_ms));
                     }
-                    Err(error) => {
+                    if sample_is_incomplete(&metrics, config) {
+                        // Wrapped `ps`/`docker` binaries on some appliances
+                        // return before their real output is produced,
+                        // yielding a completed sample with zero processes.
+                        // Every live host has processes, so treat the sample
+                        // as incomplete: keep the last good data instead of
+                        // blanking the tables.
+                        consecutive_incomplete = consecutive_incomplete.saturating_add(1);
                         consecutive_failures = consecutive_failures.saturating_add(1);
-                        let elapsed_ms = started.elapsed().as_millis();
-                        warn!(
+                        debug!(
                             connection_id,
-                            error = %error,
+                            bytes = output.len(),
+                            elapsed_ms,
+                            consecutive_incomplete,
+                            "profiler sample incomplete (no processes); keeping last data"
+                        );
+                        if refresh_retry {
+                            refresh_retry = false;
+                            debug!(
+                                connection_id,
+                                "refresh sample incomplete; sampling again immediately"
+                            );
+                            continue;
+                        }
+                        if consecutive_incomplete >= INCOMPLETE_SAMPLE_REOPEN_THRESHOLD {
+                            warn!(
+                                connection_id,
+                                consecutive_incomplete,
+                                "profiler sampler shell reopening after repeated incomplete samples"
+                            );
+                            if let Ok(new_shell) =
+                                open_resource_sample_shell(sampler.as_ref(), &os_type).await
+                            {
+                                shell = new_shell;
+                                debug!(connection_id, "profiler sampler shell reopened");
+                            } else {
+                                debug!(connection_id, "profiler sampler shell reopen failed");
+                            }
+                            consecutive_incomplete = 0;
+                        }
+                    } else {
+                        consecutive_incomplete = 0;
+                        if matches!(
+                            metrics.source,
+                            MetricsSource::RttOnly | MetricsSource::Unsupported
+                        ) {
+                            consecutive_failures = consecutive_failures.saturating_add(1);
+                        } else {
+                            consecutive_failures = 0;
+                        }
+                        debug!(
+                            connection_id,
+                            bytes = output.len(),
                             elapsed_ms,
                             consecutive_failures,
-                            "profiler sample failed; keeping last data and reopening the shell"
+                            source = ?metrics.source,
+                            docker_section = output.contains("===DOCKER==="),
+                            docker_containers = metrics.docker.containers.len(),
+                            processes = metrics.top_processes.len(),
+                            "profiler sample ok"
                         );
-                        // Keep the last good sample visible and reopen the
-                        // shell once. The next tick retries on either shell,
-                        // so a flaky transport self-heals without blanking
-                        // the page or permanently degrading the profiler.
-                        if let Ok(new_shell) =
-                            open_resource_sample_shell(sampler.as_ref(), &os_type).await
-                        {
-                            shell = new_shell;
-                            debug!(connection_id, "profiler sampler shell reopened");
-                        } else {
-                            debug!(connection_id, "profiler sampler shell reopen failed");
-                        }
+                        previous_sample = previous_sample_from_metrics(&metrics, &output);
+                        record_and_emit(&registry, &update_tx, connection_id.clone(), metrics);
+                    }
+                }
+                Err(error) => {
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    let elapsed_ms = started.elapsed().as_millis();
+                    warn!(
+                        connection_id,
+                        error = %error,
+                        elapsed_ms,
+                        consecutive_failures,
+                        "profiler sample failed; keeping last data and reopening the shell"
+                    );
+                    // Keep the last good sample visible and reopen the shell
+                    // once. The next tick retries on either shell, so a flaky
+                    // transport self-heals without blanking the page or
+                    // permanently degrading the profiler.
+                    if let Ok(new_shell) =
+                        open_resource_sample_shell(sampler.as_ref(), &os_type).await
+                    {
+                        shell = new_shell;
+                        debug!(connection_id, "profiler sampler shell reopened");
+                    } else {
+                        debug!(connection_id, "profiler sampler shell reopen failed");
                     }
                 }
             }
+            break;
         }
     }
 }
@@ -901,6 +946,18 @@ mod tests {
         assert!(registry.start("conn-1"));
         assert!(!registry.start("conn-1"));
         assert_eq!(registry.state("conn-1"), Some(ProfilerState::Running));
+    }
+
+    #[test]
+    fn refresh_signals_only_sampler_backed_profilers() {
+        let registry = ProfilerRegistry::new();
+        assert!(!registry.refresh("conn-1"));
+
+        // Plain start entries have no sample loop to poke.
+        assert!(registry.start("conn-1"));
+        assert!(!registry.refresh("conn-1"));
+        registry.stop("conn-1");
+        assert!(!registry.refresh("conn-1"));
     }
 
     #[test]
@@ -1165,6 +1222,7 @@ mod tests {
         assert!(
             registry.start_with_sampler("conn-1", Arc::new(FailingSampler), "Linux", Some(tx),)
         );
+        assert!(registry.refresh("conn-1"));
 
         let update = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
