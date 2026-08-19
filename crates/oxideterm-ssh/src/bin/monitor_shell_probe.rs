@@ -14,6 +14,7 @@ use std::{env, time::Duration};
 use oxideterm_ssh::{
     AuthMethod, SshConfig,
     monitor_probe::{connect_probe, connect_sampler_probe},
+    reconnectable_monitor_sampler,
 };
 
 #[tokio::main]
@@ -142,7 +143,7 @@ async fn run() -> Result<(), String> {
 
     // Dedicated sampler connection: validates the profiler/GPU read path on
     // the same single-channel server with one shell channel.
-    let sampler = connect_sampler_probe(config.clone(), keepalive_interval, keepalive_data)
+    let sampler = connect_sampler_probe(config.clone(), keepalive_interval, keepalive_data.clone())
         .await
         .map_err(|error| error.to_string())?;
     let sampled = sampler
@@ -171,17 +172,108 @@ async fn run() -> Result<(), String> {
         .run_command(&tmux_command, Duration::from_secs(15), 64 * 1024)
         .await
         .map_err(|error| format!("tmux snapshot probe: {error:?}"))?;
-    if String::from_utf8_lossy(&tmux_output).contains("__OXIDE_TMUX_ERROR__") {
-        println!(
-            "TMUX SNAPSHOT ERROR OUTPUT:\n{}",
-            String::from_utf8_lossy(&tmux_output)
-        );
-        return Err("tmux snapshot reported an error marker".to_string());
+    let tmux_text = String::from_utf8_lossy(&tmux_output);
+    println!("TMUX RAW OUTPUT ({} bytes):", tmux_output.len());
+    println!("{}", debug_escape(&tmux_text));
+    let tmux_snapshot = oxideterm_connection_monitor::parse_tmux_snapshot(&tmux_text);
+    println!("TMUX PARSE STATUS: {:?}", tmux_snapshot.status);
+    println!(
+        "TMUX PARSE ROWS: {} sessions, {} windows, {} panes",
+        tmux_snapshot.sessions.len(),
+        tmux_snapshot.windows.len(),
+        tmux_snapshot.panes.len()
+    );
+    if matches!(
+        tmux_snapshot.status,
+        oxideterm_connection_monitor::ResourceTmuxStatus::Error { .. }
+    ) {
+        return Err("tmux snapshot parsed with an error status".to_string());
     }
     println!("PASS tmux snapshot read ({} bytes)", tmux_output.len());
 
+    // GPU diagnosis: time each vendor tool independently so a single hung
+    // probe is visible instead of masking every vendor behind one 30-second
+    // page timeout, then run the exact full GPU command through the sampler.
+    let vendor_timing = concat!(
+        "probe_tool() { name=$1; shift; ",
+        "if ! command -v \"$name\" >/dev/null 2>&1; then echo \"$name absent\"; return; fi; ",
+        "start=$(date +%s%N); ",
+        "if command -v timeout >/dev/null 2>&1; then timeout 8 \"$@\" >/dev/null 2>&1; rc=$?; ",
+        "else \"$@\" >/dev/null 2>&1; rc=$?; fi; ",
+        "end=$(date +%s%N); echo \"$name rc=$rc wall_ms=$(( (end - start) / 1000000 ))\"; }; ",
+        "probe_tool nvidia-smi --query-gpu=index,name --format=csv,noheader,nounits; ",
+        "probe_tool nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader,nounits; ",
+        "probe_tool npu-smi info; ",
+        "probe_tool amd-smi --json; ",
+        "probe_tool rocm-smi; ",
+        "probe_tool cnmon info; ",
+        "probe_tool hy-smi; ",
+        "probe_tool xpu-smi discovery -j; ",
+        "probe_tool mthreads-gmi"
+    );
+    let (timing_output, timing_truncated) = session
+        .run_command(vendor_timing, Duration::from_secs(100), 64 * 1024)
+        .await
+        .map_err(|error| format!("vendor timing probe: {error:?}"))?;
+    if timing_truncated {
+        println!("VENDOR TIMING TRUNCATED");
+    }
+    println!("VENDOR TIMING:\n{}", String::from_utf8_lossy(&timing_output));
+
+    // Replay the exact app path: the app's GPU page uses the reconnecting
+    // sampler, which opens a brand-new connection per shell. The persistent
+    // probe sampler above would reuse one transport and trigger the server's
+    // second-channel kill instead of exercising the vendor command.
+    let gpu_command = oxideterm_connection_monitor::build_gpu_sample_command("Linux");
+    let gpu_sampler =
+        reconnectable_monitor_sampler(config.clone(), keepalive_interval, keepalive_data.clone());
+    let mut gpu_shell = gpu_sampler
+        .open_shell("", Duration::from_secs(10))
+        .await
+        .map_err(|error| format!("GPU sampler shell open: {error}"))?;
+    let sampled = gpu_shell
+        .sample_until(
+            &gpu_command,
+            oxideterm_connection_monitor::GPU_END_MARKER,
+            Duration::from_secs(45),
+            512 * 1024,
+        )
+        .await
+        .map_err(|error| format!("full GPU sample: {error}"))?;
+    println!(
+        "FULL GPU SAMPLE: {} bytes, end marker {}",
+        sampled.len(),
+        if sampled.contains(oxideterm_connection_monitor::GPU_END_MARKER) {
+            "present"
+        } else {
+            "MISSING"
+        }
+    );
+    if !sampled.contains(oxideterm_connection_monitor::GPU_END_MARKER) {
+        println!(
+            "FULL GPU SAMPLE TAIL:\n{}",
+            String::from_utf8_lossy(&sampled.as_bytes()[sampled.len().saturating_sub(2048)..])
+        );
+    }
+
     println!("ALL PROBE SCENARIOS PASSED");
     Ok(())
+}
+
+fn debug_escape(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    for character in input.chars() {
+        match character {
+            '\t' => output.push_str("\\t"),
+            '\n' => output.push_str("\\n\n"),
+            '\r' => output.push_str("\\r"),
+            character if character.is_control() => {
+                output.push_str(&format!("\\u{{{:x}}}", character as u32));
+            }
+            character => output.push(character),
+        }
+    }
+    output
 }
 
 enum Expected {

@@ -875,6 +875,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tmux_3_2a_session_rows_parse() {
+        let output = concat!(
+            "===TMUX===\n",
+            "__OXIDE_TMUX_CAPABILITY__\tfull\ttmux_cli\ttmux 3.2a\n",
+            "SESSION\t|\t$0\t|\ttest\t|\t1\t|\t1\t|\t1787118693\t|\t1787118693\n",
+            "WINDOW\t|\t$0\t|\t@0\t|\t0\t|\tzsh\t|\t1\t|\t1\t|\tb43d,170x42,0,0,0\t|\t1787118696\n",
+            "PANE\t|\t$0\t|\t@0\t|\t%0\t|\t0\t|\tzsh\t|\t/home/cxl\t|\t1\t|\t1395278\t|\t170x42\n",
+            "===TMUX_END===\n",
+        );
+        let snapshot = tmux_capture_snapshot(output, "", Some(0));
+        assert!(
+            matches!(snapshot.status, ResourceTmuxStatus::Available { .. }),
+            "unexpected status: {:?}",
+            snapshot.status
+        );
+        assert_eq!(snapshot.sessions.len(), 1);
+        assert_eq!(snapshot.windows.len(), 1);
+        assert_eq!(snapshot.panes.len(), 1);
+    }
+
+    #[test]
     fn tmux_capture_failure_prefers_stderr_then_stdout() {
         let stderr_snapshot = tmux_capture_snapshot("stdout reason", "stderr reason", Some(2));
         assert!(
