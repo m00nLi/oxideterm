@@ -18,7 +18,10 @@ use super::{
 };
 
 pub const GPU_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
-pub const GPU_SAMPLE_TIMEOUT: Duration = Duration::from_secs(30);
+// Stalled sampler connections on single-channel appliances are detected and
+// rebuilt faster than a full 30-second wait; healthy vendor queries finish in
+// a few seconds.
+pub const GPU_SAMPLE_TIMEOUT: Duration = Duration::from_secs(15);
 pub const GPU_CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 // Multi-accelerator hosts can return sizeable per-process and per-tile data,
 // while the cap still prevents an unbounded remote command response.
@@ -108,6 +111,7 @@ async fn sample_loop(
         }
     };
     let command = build_gpu_sample_command(&os_type);
+    let mut last_good: Option<GpuSnapshot> = None;
     let mut interval = tokio::time::interval(GPU_SAMPLE_INTERVAL);
     // Vendor tools run serially in one registry-owned shell. Skip missed ticks
     // so a slow provider never causes back-to-back catch-up samples.
@@ -131,6 +135,7 @@ async fn sample_loop(
                 {
                     Ok(output) => {
                         let snapshot = parse_gpu_snapshot(&output, now_ms());
+                        last_good = Some(snapshot.clone());
                         let sampling_complete = matches!(
                             snapshot.status,
                             GpuSnapshotStatus::Unavailable | GpuSnapshotStatus::NoDevices
@@ -149,7 +154,12 @@ async fn sample_loop(
                             error = %error,
                             "gpu sampler sample failed; reopening shell"
                         );
-                        emit_error(&update_tx, &connection_id, &error);
+                        // A stalled transport must not blank a populated
+                        // panel. Keep the last good snapshot visible and only
+                        // surface the error when there is nothing to show.
+                        if last_good.is_none() {
+                            emit_error(&update_tx, &connection_id, &error);
+                        }
                         let _ = shell.close().await;
                         match open_gpu_shell(sampler.as_ref(), &os_type).await {
                             Ok(reopened) => {
@@ -162,7 +172,9 @@ async fn sample_loop(
                                     error = %open_error,
                                     "gpu sampler shell reopen failed"
                                 );
-                                emit_error(&update_tx, &connection_id, &open_error);
+                                if last_good.is_none() {
+                                    emit_error(&update_tx, &connection_id, &open_error);
+                                }
                                 break;
                             }
                         }

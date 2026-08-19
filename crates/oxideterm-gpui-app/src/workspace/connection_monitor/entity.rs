@@ -5,7 +5,7 @@ use oxideterm_connection_monitor::ResourceSampler;
 use oxideterm_editor_core::utf16::replace_utf16;
 use oxideterm_ssh::reconnectable_monitor_sampler;
 use oxideterm_topology::ConnectionTopologySnapshot;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Owns Host Tools sampling state independently from WorkspaceApp and SSH nodes.
 pub(in crate::workspace) struct HostToolsEntity {
@@ -1644,7 +1644,7 @@ impl HostToolsEntity {
             let runtime_handle = runtime.clone();
             cx.spawn(async move |this, cx| -> Result<(), String> {
                 let monitor_connection_id = connection_id.clone();
-                let (os_type, sampler) = runtime_handle
+                let prepared = runtime_handle
                     .spawn(async move {
                         let os_type = executor
                             .ensure_os_type(&monitor_connection_id)
@@ -1658,7 +1658,35 @@ impl HostToolsEntity {
                         Ok::<_, String>((os_type, sampler))
                     })
                     .await
-                    .map_err(|join| join.to_string())??;
+                    .map_err(|join| join.to_string());
+                let (os_type, sampler) = match prepared {
+                    Ok(Ok(prepared)) => prepared,
+                    Ok(Err(error)) | Err(error) => {
+                        warn!(
+                            connection_id,
+                            error = %error,
+                            "gpu sampling failed to prepare; showing error state"
+                        );
+                        let timestamp_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|duration| duration.as_millis() as u64)
+                            .unwrap_or_default();
+                        this.update(cx, |entity, cx| {
+                            entity.host_gpu.snapshot_connection_id = Some(connection_id.clone());
+                            entity.host_gpu.snapshot = Some(GpuSnapshot {
+                                timestamp_ms,
+                                status: oxideterm_connection_monitor::GpuSnapshotStatus::Error(
+                                    error,
+                                ),
+                                devices: Vec::new(),
+                                processes: Vec::new(),
+                            });
+                            cx.notify();
+                        })
+                        .ok();
+                        return Ok(());
+                    }
+                };
                 this.update(cx, |entity, cx| {
                     entity.profiler_registry.start_with_sampler_on_config(
                         connection_id.clone(),
