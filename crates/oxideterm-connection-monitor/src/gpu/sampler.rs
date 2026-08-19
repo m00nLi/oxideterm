@@ -8,6 +8,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
 };
+use tracing::warn;
 
 use crate::{ResourceSampleShell, ResourceSampler, shell_init_command};
 
@@ -143,11 +144,24 @@ async fn sample_loop(
                         }
                     }
                     Err(error) => {
+                        warn!(
+                            connection_id,
+                            error = %error,
+                            "gpu sampler sample failed; reopening shell"
+                        );
                         emit_error(&update_tx, &connection_id, &error);
                         let _ = shell.close().await;
                         match open_gpu_shell(sampler.as_ref(), &os_type).await {
-                            Ok(reopened) => shell = reopened,
+                            Ok(reopened) => {
+                                warn!(connection_id, "gpu sampler shell reopened");
+                                shell = reopened;
+                            }
                             Err(open_error) => {
+                                warn!(
+                                    connection_id,
+                                    error = %open_error,
+                                    "gpu sampler shell reopen failed"
+                                );
                                 emit_error(&update_tx, &connection_id, &open_error);
                                 break;
                             }

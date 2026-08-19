@@ -5,6 +5,7 @@ use oxideterm_connection_monitor::ResourceSampler;
 use oxideterm_editor_core::utf16::replace_utf16;
 use oxideterm_ssh::reconnectable_monitor_sampler;
 use oxideterm_topology::ConnectionTopologySnapshot;
+use tracing::debug;
 
 /// Owns Host Tools sampling state independently from WorkspaceApp and SSH nodes.
 pub(in crate::workspace) struct HostToolsEntity {
@@ -1606,6 +1607,7 @@ impl HostToolsEntity {
     }
 
     pub(super) fn stop_profiler_sampling(&self) {
+        debug!("stopping profiler sampling");
         self.profiler_registry.stop_all();
     }
 
@@ -1632,6 +1634,7 @@ impl HostToolsEntity {
             return;
         };
         if handle.skip_remote_env_detection() {
+            debug!(connection_id, "starting profiler sampler");
             let config = handle.ssh_config();
             let executor = self.monitor_executor.clone();
             let (keepalive_interval, keepalive_data) = executor.keepalive_snapshot();
@@ -1696,6 +1699,7 @@ impl HostToolsEntity {
     ) {
         if !enabled_and_visible {
             if let Some(task) = self.host_gpu.sampling_task.take() {
+                debug!("stopping gpu sampling");
                 task.stop();
             }
             return;
@@ -1713,12 +1717,14 @@ impl HostToolsEntity {
             return;
         }
         if let Some(task) = self.host_gpu.sampling_task.take() {
+            debug!("replacing gpu sampling task");
             task.stop();
         }
         let Some(handle) = self.ssh_registry.get(&connection_id) else {
             return;
         };
         if handle.skip_remote_env_detection() {
+            debug!(connection_id, "starting gpu sampling");
             let config = handle.ssh_config();
             let executor = self.monitor_executor.clone();
             let (keepalive_interval, keepalive_data) = executor.keepalive_snapshot();

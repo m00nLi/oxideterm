@@ -1,4 +1,5 @@
 use super::*;
+use tracing::debug;
 
 fn is_host_tools_tab_kind(tab_kind: &TabKind) -> bool {
     matches!(
@@ -117,6 +118,7 @@ impl HostToolsEntity {
             .collect::<HashSet<_>>();
         for connection_id in self.profiler_connection_ids() {
             if !live_connection_ids.contains(connection_id.as_str()) {
+                debug!(connection_id, "removing profiler connection");
                 self.remove_profiler_connection(&connection_id);
             }
         }
