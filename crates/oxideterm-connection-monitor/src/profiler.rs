@@ -31,6 +31,7 @@ pub const RESOURCE_CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 pub const RESOURCE_MAX_OUTPUT_SIZE: usize = 256 * 1024;
 pub const RESOURCE_MAX_CONSECUTIVE_FAILURES: u32 = 3;
 pub const RESOURCE_END_MARKER: &str = "===END===";
+const INCOMPLETE_SAMPLE_REOPEN_THRESHOLD: u32 = 3;
 
 const SYSTEM_INFO_COMMAND_LINUX: &str = concat!(
     "echo '===SYSTEM_INFO==='; ",
@@ -670,6 +671,7 @@ async fn sample_loop(
     let mut cached_system_info: Option<CachedSystemInfo> = None;
     let mut previous_sample: Option<PreviousResourceSample> = None;
     let mut consecutive_failures = 0_u32;
+    let mut consecutive_incomplete = 0_u32;
     let mut interval = tokio::time::interval(RESOURCE_SAMPLE_INTERVAL);
     interval.tick().await;
 
@@ -736,27 +738,63 @@ async fn sample_loop(
                                 .as_ref()
                                 .map(|cached| cached.snapshot_at(timestamp_ms));
                         }
-                        if matches!(
-                            metrics.source,
-                            MetricsSource::RttOnly | MetricsSource::Unsupported
-                        ) {
+                        if sample_is_incomplete(&metrics, config) {
+                            // Wrapped `ps`/`docker` binaries on some
+                            // appliances return before their real output is
+                            // produced, yielding a completed sample with zero
+                            // processes. Every live host has processes, so
+                            // treat the sample as incomplete: keep the last
+                            // good data instead of blanking the tables.
+                            consecutive_incomplete =
+                                consecutive_incomplete.saturating_add(1);
                             consecutive_failures = consecutive_failures.saturating_add(1);
+                            debug!(
+                                connection_id,
+                                bytes = output.len(),
+                                elapsed_ms,
+                                consecutive_incomplete,
+                                "profiler sample incomplete (no processes); keeping last data"
+                            );
+                            if consecutive_incomplete >= INCOMPLETE_SAMPLE_REOPEN_THRESHOLD {
+                                warn!(
+                                    connection_id,
+                                    consecutive_incomplete,
+                                    "profiler sampler shell reopening after repeated incomplete samples"
+                                );
+                                if let Ok(new_shell) =
+                                    open_resource_sample_shell(sampler.as_ref(), &os_type).await
+                                {
+                                    shell = new_shell;
+                                    debug!(connection_id, "profiler sampler shell reopened");
+                                } else {
+                                    debug!(connection_id, "profiler sampler shell reopen failed");
+                                }
+                                consecutive_incomplete = 0;
+                            }
                         } else {
-                            consecutive_failures = 0;
+                            consecutive_incomplete = 0;
+                            if matches!(
+                                metrics.source,
+                                MetricsSource::RttOnly | MetricsSource::Unsupported
+                            ) {
+                                consecutive_failures = consecutive_failures.saturating_add(1);
+                            } else {
+                                consecutive_failures = 0;
+                            }
+                            debug!(
+                                connection_id,
+                                bytes = output.len(),
+                                elapsed_ms,
+                                consecutive_failures,
+                                source = ?metrics.source,
+                                docker_section = output.contains("===DOCKER==="),
+                                docker_containers = metrics.docker.containers.len(),
+                                processes = metrics.top_processes.len(),
+                                "profiler sample ok"
+                            );
+                            previous_sample = previous_sample_from_metrics(&metrics, &output);
+                            record_and_emit(&registry, &update_tx, connection_id.clone(), metrics);
                         }
-                        debug!(
-                            connection_id,
-                            bytes = output.len(),
-                            elapsed_ms,
-                            consecutive_failures,
-                            source = ?metrics.source,
-                            docker_section = output.contains("===DOCKER==="),
-                            docker_containers = metrics.docker.containers.len(),
-                            processes = metrics.top_processes.len(),
-                            "profiler sample ok"
-                        );
-                        previous_sample = previous_sample_from_metrics(&metrics, &output);
-                        record_and_emit(&registry, &update_tx, connection_id.clone(), metrics);
                     }
                     Err(error) => {
                         consecutive_failures = consecutive_failures.saturating_add(1);
@@ -796,6 +834,19 @@ async fn open_resource_sample_shell(
         .await
 }
 
+fn sample_is_incomplete(metrics: &ResourceMetrics, config: ResourceSamplingConfig) -> bool {
+    // Every live host has processes, so a completed sample with an empty
+    // process table came from a command that returned before producing its
+    // real output. Unsupported sources legitimately carry no table and must
+    // keep flowing through the existing degradation accounting.
+    config.processes
+        && metrics.top_processes.is_empty()
+        && !matches!(
+            metrics.source,
+            MetricsSource::RttOnly | MetricsSource::Unsupported
+        )
+}
+
 fn record_and_emit(
     registry: &ProfilerRegistry,
     update_tx: &Option<mpsc::UnboundedSender<ProfilerUpdate>>,
@@ -828,6 +879,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::ResourceTopProcess;
 
     fn empty_metrics_with_cached_system_info(
         timestamp_ms: u64,
@@ -1045,6 +1098,57 @@ mod tests {
         assert_eq!(system_info.system_name.as_deref(), Some("Ubuntu"));
         assert_eq!(system_info.uptime_seconds, Some(65));
         assert_eq!(metrics.source, MetricsSource::Failed);
+    }
+
+    #[test]
+    fn empty_process_table_marks_requested_samples_incomplete() {
+        let full_without_processes = ResourceMetrics::empty(1, MetricsSource::Full);
+        assert!(sample_is_incomplete(
+            &full_without_processes,
+            ResourceSamplingConfig {
+                processes: true,
+                ..ResourceSamplingConfig::default()
+            }
+        ));
+
+        // Unsupported/RttOnly samples legitimately carry no process table and
+        // must not be hidden behind the last good sample.
+        assert!(!sample_is_incomplete(
+            &ResourceMetrics::empty(1, MetricsSource::Unsupported),
+            ResourceSamplingConfig::default(),
+        ));
+        assert!(!sample_is_incomplete(
+            &ResourceMetrics::empty(1, MetricsSource::RttOnly),
+            ResourceSamplingConfig::default(),
+        ));
+
+        // Process sampling disabled: an empty table is expected and trusted.
+        assert!(!sample_is_incomplete(
+            &full_without_processes,
+            ResourceSamplingConfig {
+                processes: false,
+                ..ResourceSamplingConfig::default()
+            }
+        ));
+
+        let mut with_processes = ResourceMetrics::empty(1, MetricsSource::Full);
+        with_processes.top_processes.push(ResourceTopProcess {
+            pid: "1".into(),
+            ppid: Some("0".into()),
+            user: Some("root".into()),
+            state: Some("S".into()),
+            cpu_percent: Some(0.0),
+            memory_percent: 0.0,
+            rss_bytes: Some(0),
+            vsz_bytes: Some(0),
+            elapsed: None,
+            command: "init".into(),
+            full_command: None,
+        });
+        assert!(!sample_is_incomplete(
+            &with_processes,
+            ResourceSamplingConfig::default(),
+        ));
     }
 
     #[test]
