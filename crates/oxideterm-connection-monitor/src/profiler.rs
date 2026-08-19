@@ -452,7 +452,7 @@ pub fn build_sample_command_for(os_type: &str, config: ResourceSamplingConfig) -
     build_sample_command_with_system_info(os_type, config, true)
 }
 
-fn build_live_sample_command(os_type: &str, config: ResourceSamplingConfig) -> String {
+pub fn build_live_sample_command(os_type: &str, config: ResourceSamplingConfig) -> String {
     build_sample_command_with_system_info(os_type, config, false)
 }
 

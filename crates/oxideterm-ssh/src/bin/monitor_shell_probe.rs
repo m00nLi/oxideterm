@@ -9,7 +9,10 @@
 //! - `OXIDE_PROBE_PASSWORD` (fallback password auth, optional)
 //! Otherwise SSH agent authentication is attempted.
 
-use std::{env, time::Duration};
+use std::{
+    env,
+    time::{Duration, Instant},
+};
 
 use oxideterm_ssh::{
     AuthMethod, SshConfig,
@@ -257,6 +260,74 @@ async fn run() -> Result<(), String> {
             "FULL GPU SAMPLE TAIL:\n{}",
             String::from_utf8_lossy(&sampled.as_bytes()[sampled.len().saturating_sub(2048)..])
         );
+    }
+
+    // Profiler cadence diagnosis: replay the app's 10-second sampling loop on
+    // one fresh shell (initial command with system info, then live commands),
+    // reopening the shell after failures exactly like the profiler does.
+    let sampling_config = oxideterm_connection_monitor::ResourceSamplingConfig::default();
+    let initial_command =
+        oxideterm_connection_monitor::build_sample_command_for("Linux", sampling_config);
+    let live_command =
+        oxideterm_connection_monitor::build_live_sample_command("Linux", sampling_config);
+    let mut cadence_shell = gpu_sampler
+        .open_shell(
+            oxideterm_connection_monitor::shell_init_command("Linux"),
+            oxideterm_connection_monitor::RESOURCE_CHANNEL_OPEN_TIMEOUT,
+        )
+        .await
+        .map_err(|error| format!("profiler cadence shell open: {error}"))?;
+    println!(
+        "PROFILER CADENCE: 5 iterations, {}s interval, {}s timeout",
+        oxideterm_connection_monitor::RESOURCE_SAMPLE_INTERVAL.as_secs(),
+        oxideterm_connection_monitor::RESOURCE_SAMPLE_TIMEOUT.as_secs()
+    );
+    for iteration in 0..5 {
+        let command = if iteration == 0 {
+            &initial_command
+        } else {
+            &live_command
+        };
+        let started = Instant::now();
+        let result = cadence_shell
+            .sample_until(
+                command,
+                oxideterm_connection_monitor::RESOURCE_END_MARKER,
+                oxideterm_connection_monitor::RESOURCE_SAMPLE_TIMEOUT,
+                oxideterm_connection_monitor::RESOURCE_MAX_OUTPUT_SIZE,
+            )
+            .await;
+        let elapsed_ms = started.elapsed().as_millis();
+        match result {
+            Ok(output) => println!(
+                "PROFILER iteration {iteration}: OK bytes={} elapsed_ms={} end_marker={} docker_section={}",
+                output.len(),
+                elapsed_ms,
+                output.contains(oxideterm_connection_monitor::RESOURCE_END_MARKER),
+                output.contains("===DOCKER===")
+            ),
+            Err(error) => {
+                println!(
+                    "PROFILER iteration {iteration}: FAIL {error} elapsed_ms={elapsed_ms}; reopening shell"
+                );
+                match gpu_sampler
+                    .open_shell(
+                        oxideterm_connection_monitor::shell_init_command("Linux"),
+                        oxideterm_connection_monitor::RESOURCE_CHANNEL_OPEN_TIMEOUT,
+                    )
+                    .await
+                {
+                    Ok(new_shell) => cadence_shell = new_shell,
+                    Err(open_error) => {
+                        println!("PROFILER iteration {iteration}: reopen FAILED {open_error}");
+                        break;
+                    }
+                }
+            }
+        }
+        if iteration < 4 {
+            tokio::time::sleep(oxideterm_connection_monitor::RESOURCE_SAMPLE_INTERVAL).await;
+        }
     }
 
     println!("ALL PROBE SCENARIOS PASSED");
