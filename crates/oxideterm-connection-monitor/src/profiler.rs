@@ -750,6 +750,9 @@ async fn sample_loop(
                             elapsed_ms,
                             consecutive_failures,
                             source = ?metrics.source,
+                            docker_section = output.contains("===DOCKER==="),
+                            docker_containers = metrics.docker.containers.len(),
+                            processes = metrics.top_processes.len(),
                             "profiler sample ok"
                         );
                         previous_sample = previous_sample_from_metrics(&metrics, &output);
