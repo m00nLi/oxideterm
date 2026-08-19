@@ -1142,7 +1142,9 @@ impl HostToolsEntity {
     }
 
     fn refresh_host_docker_snapshot(&mut self, connection_id: String, cx: &mut Context<Self>) {
-        self.profiler_registry().stop(&connection_id);
+        // Keep the running sampler and its last good data; the refresh
+        // channel makes the live loop take one sample immediately. Stopping
+        // here would blank the tables and restart on a wrapper-cache miss.
         self.request_profiler_refresh(connection_id, cx);
     }
 
