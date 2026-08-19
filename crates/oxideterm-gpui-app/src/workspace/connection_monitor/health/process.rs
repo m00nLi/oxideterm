@@ -157,7 +157,7 @@ impl HostToolsEntity {
             .flex()
             .items_center()
             .rounded(px(tokens.radii.sm))
-            .text_size(px(11.0))
+            .text_size(px(tokens.metrics.ui_text_caption))
             .cursor_pointer()
             .bg(if active {
                 rgb(theme.bg_hover)
@@ -206,7 +206,7 @@ impl HostToolsEntity {
             .justify_between()
             .gap_2()
             .min_w_0()
-            .text_size(px(11.0))
+            .text_size(px(tokens.metrics.ui_text_caption))
             .text_color(rgb(tokens.ui.text_muted))
             .child(div().flex_none().child(format!(
                 "{} {}",

@@ -19,6 +19,7 @@ struct SettingsNavigationDrag {
     background: Rgba,
     border: Rgba,
     text: Rgba,
+    text_size: f32,
 }
 
 impl SettingsNavigationDrag {
@@ -42,7 +43,7 @@ impl Render for SettingsNavigationDrag {
                 .border_color(self.border)
                 .bg(self.background)
                 .text_color(self.text)
-                .text_size(px(13.0))
+                .text_size(px(self.text_size))
                 .shadow_lg()
                 .child(self.label.clone()),
         )
@@ -102,6 +103,7 @@ impl WorkspaceApp {
             background: rgb(self.tokens.ui.bg_panel),
             border: rgb(self.tokens.ui.accent),
             text: rgb(self.tokens.ui.text),
+            text_size: self.tokens.metrics.ui_text_sm,
         }
     }
 

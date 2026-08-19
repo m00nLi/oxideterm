@@ -462,7 +462,7 @@ impl HostToolsEntity {
             .justify_between()
             .gap_2()
             .min_w_0()
-            .text_size(px(11.0))
+            .text_size(px(tokens.metrics.ui_text_caption))
             .text_color(rgb(theme.text_muted))
             .child(div().min_w_0().flex_1().truncate().child(format!(
                 "{} {} · {}",
@@ -696,14 +696,14 @@ impl HostToolsEntity {
                     .gap_1()
                     .child(
                         div()
-                            .text_size(px(14.0))
+                            .text_size(px(tokens.metrics.ui_text_sm))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(rgb(theme.text))
                             .child(i18n.t(host_tmux_input_title_key(&kind))),
                     )
                     .child(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(px(tokens.metrics.ui_text_caption))
                             .text_color(rgb(theme.text_muted))
                             .child(description),
                     ),
@@ -1374,7 +1374,7 @@ impl HostToolsEntity {
                     .child(
                         div()
                             .flex_none()
-                            .text_size(px(10.0))
+                            .text_size(px(tokens.metrics.ui_text_2xs))
                             .text_color(rgb(theme.text_muted))
                             .child(format!(
                                 "{} {}",

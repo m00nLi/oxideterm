@@ -271,7 +271,7 @@ impl HostToolsEntity {
                 .flex_col()
                 .gap(px(1.0))
                 .font_family(mono_font_family)
-                .text_size(px(11.0))
+                .text_size(px(tokens.metrics.ui_text_caption))
                 .text_color(rgb(theme.text));
             for (index, line) in output.lines().enumerate() {
                 let line = if line.is_empty() {
@@ -322,7 +322,7 @@ impl HostToolsEntity {
                                         .gap_1()
                                         .child(
                                             div()
-                                                .text_size(px(14.0))
+                                                .text_size(px(tokens.metrics.ui_text_sm))
                                                 .font_weight(gpui::FontWeight::MEDIUM)
                                                 .text_color(rgb(theme.text))
                                                 .child(
@@ -337,7 +337,7 @@ impl HostToolsEntity {
                                         .child(
                                             div()
                                                 .truncate()
-                                                .text_size(px(11.0))
+                                                .text_size(px(tokens.metrics.ui_text_caption))
                                                 .text_color(rgb(theme.text_muted))
                                                 .child(dialog.request.description.clone()),
                                         ),
@@ -601,7 +601,7 @@ impl HostToolsEntity {
             .justify_between()
             .gap_2()
             .min_w_0()
-            .text_size(px(11.0))
+            .text_size(px(tokens.metrics.ui_text_caption))
             .text_color(rgb(theme.text_muted))
             .child(div().flex_none().child(format!(
                 "{} {} · {}",

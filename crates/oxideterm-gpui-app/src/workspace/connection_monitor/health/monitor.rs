@@ -59,7 +59,7 @@ impl HostToolsEntity {
             .rounded(px(render.tokens.radii.md))
             .border_1()
             .border_color(rgba((render.tokens.ui.border << 8) | MONITOR_BORDER_ALPHA))
-            .text_size(px(12.0))
+            .text_size(px(render.tokens.metrics.ui_text_xs))
             .cursor_pointer()
             .hover(|button| button.bg(rgb(render.tokens.ui.bg_hover)))
             .child(Self::render_monitor_text_with_role(
@@ -117,19 +117,17 @@ impl HostToolsEntity {
                             rgb(render.tokens.ui.text_muted),
                         )),
                 )
-                .child(
-                    div()
-                        .text_size(px(14.0))
-                        .child(Self::render_monitor_text_with_role(
-                            render,
-                            SelectableTextRole::PlainDocument,
-                            "host-monitor-empty",
-                            "no-connection",
-                            render.i18n.t("profiler.panel.no_connection"),
-                            render.tokens.ui.text_muted,
-                            cx,
-                        )),
-                )
+                .child(div().text_size(px(render.tokens.metrics.ui_text_sm)).child(
+                    Self::render_monitor_text_with_role(
+                        render,
+                        SelectableTextRole::PlainDocument,
+                        "host-monitor-empty",
+                        "no-connection",
+                        render.i18n.t("profiler.panel.no_connection"),
+                        render.tokens.ui.text_muted,
+                        cx,
+                    ),
+                ))
                 .into_any_element();
         }
 
@@ -182,17 +180,20 @@ impl HostToolsEntity {
                                     rgb(render.tokens.ui.text_muted),
                                 )),
                         )
-                        .child(div().mb_3().text_size(px(14.0)).child(
-                            Self::render_monitor_text_with_role(
-                                render,
-                                SelectableTextRole::PlainDocument,
-                                "host-monitor-profiler",
-                                "disabled",
-                                render.i18n.t("profiler.panel.disabled"),
-                                render.tokens.ui.text_muted,
-                                cx,
-                            ),
-                        ))
+                        .child(
+                            div()
+                                .mb_3()
+                                .text_size(px(render.tokens.metrics.ui_text_sm))
+                                .child(Self::render_monitor_text_with_role(
+                                    render,
+                                    SelectableTextRole::PlainDocument,
+                                    "host-monitor-profiler",
+                                    "disabled",
+                                    render.i18n.t("profiler.panel.disabled"),
+                                    render.tokens.ui.text_muted,
+                                    cx,
+                                )),
+                        )
                         // Settings persistence stays in the transient workspace-owned control.
                         .child(enable_control),
                 )
@@ -218,7 +219,7 @@ impl HostToolsEntity {
                                     rgb(render.tokens.ui.text_muted),
                                 )),
                         )
-                        .child(div().text_size(px(12.0)).child(
+                        .child(div().text_size(px(render.tokens.metrics.ui_text_xs)).child(
                             Self::render_monitor_text_with_role(
                                 render,
                                 SelectableTextRole::PlainDocument,
@@ -242,17 +243,20 @@ impl HostToolsEntity {
                         .items_center()
                         .py_6()
                         .text_color(rgb(render.tokens.ui.text_muted))
-                        .child(div().opacity(0.6).text_size(px(12.0)).child(
-                            Self::render_monitor_text_with_role(
-                                render,
-                                SelectableTextRole::PlainDocument,
-                                "host-monitor-profiler",
-                                "no-data",
-                                render.i18n.t("profiler.panel.no_data"),
-                                render.tokens.ui.text_muted,
-                                cx,
-                            ),
-                        )),
+                        .child(
+                            div()
+                                .opacity(0.6)
+                                .text_size(px(render.tokens.metrics.ui_text_xs))
+                                .child(Self::render_monitor_text_with_role(
+                                    render,
+                                    SelectableTextRole::PlainDocument,
+                                    "host-monitor-profiler",
+                                    "no-data",
+                                    render.i18n.t("profiler.panel.no_data"),
+                                    render.tokens.ui.text_muted,
+                                    cx,
+                                )),
+                        ),
                 )
                 .into_any_element();
         };
@@ -337,7 +341,7 @@ impl HostToolsEntity {
             .rounded(px(tokens.radii.md))
             .border_1()
             .border_color(rgba((tokens.ui.border << 8) | MONITOR_BORDER_ALPHA))
-            .text_size(px(12.0))
+            .text_size(px(tokens.metrics.ui_text_xs))
             .text_color(rgb(tokens.ui.text_muted))
             .cursor_pointer()
             .hover(|button| button.bg(rgb(tokens.ui.bg_hover)))
@@ -499,7 +503,7 @@ impl HostToolsEntity {
             .items_center()
             .justify_between()
             .gap_2()
-            .text_size(px(12.0))
+            .text_size(px(render.tokens.metrics.ui_text_xs))
             .child(
                 div()
                     .min_w_0()
@@ -557,7 +561,7 @@ impl HostToolsEntity {
                 .flex_col()
                 .justify_center()
                 .gap_1()
-                .text_size(px(12.0))
+                .text_size(px(render.tokens.metrics.ui_text_xs))
                 .child(
                     div()
                         .flex()
@@ -610,7 +614,7 @@ impl HostToolsEntity {
             .items_center()
             .justify_between()
             .gap_2()
-            .text_size(px(12.0))
+            .text_size(px(render.tokens.metrics.ui_text_xs))
             .child(
                 div()
                     .min_w_0()
@@ -673,7 +677,7 @@ impl HostToolsEntity {
             .items_center()
             .gap(px(6.0))
             .min_w_0()
-            .text_size(px(12.0))
+            .text_size(px(render.tokens.metrics.ui_text_xs))
             .text_color(rgb(theme.text_muted))
             .child(WorkspaceApp::render_lucide_icon(
                 icon,
@@ -701,7 +705,7 @@ impl HostToolsEntity {
             .items_center()
             .min_w_0()
             .px(px(COMPACT_MONITOR_ROW_SIDE_PADDING))
-            .text_size(px(11.0))
+            .text_size(px(render.tokens.metrics.ui_text_caption))
             .font_family(render.mono_font_family.clone())
             .child(
                 div()
@@ -756,7 +760,7 @@ impl HostToolsEntity {
                 .justify_center()
                 .gap_1()
                 .font_family(render.mono_font_family.clone())
-                .text_size(px(11.0))
+                .text_size(px(render.tokens.metrics.ui_text_caption))
                 .child(
                     div()
                         .min_w_0()

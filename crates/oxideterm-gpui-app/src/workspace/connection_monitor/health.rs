@@ -179,7 +179,7 @@ impl HostToolsEntity {
                     .min_w(px(0.0))
                     .truncate()
                     .whitespace_nowrap()
-                    .text_size(px(13.0))
+                    .text_size(px(tokens.metrics.ui_text_sm))
                     .font_family(mono_font_family.clone())
                     .text_color(rgb(theme.text))
                     .child(selectable_text.render_display_text_with_role_in_group(
@@ -706,7 +706,7 @@ impl WorkspaceApp {
             .child(
                 div()
                     .mb_3()
-                    .text_size(px(14.0))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .child(self.render_display_text_with_role(
                         SelectableTextRole::PlainDocument,
                         "host-tool-monitoring-disabled",
@@ -723,7 +723,7 @@ impl WorkspaceApp {
                     .rounded(px(self.tokens.radii.md))
                     .border_1()
                     .border_color(rgba((self.tokens.ui.border << 8) | MONITOR_BORDER_ALPHA))
-                    .text_size(px(12.0))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .cursor_pointer()
                     .hover(|button| button.bg(rgb(self.tokens.ui.bg_hover)))
                     .child(self.render_display_text_with_role(
@@ -1067,7 +1067,7 @@ impl WorkspaceApp {
         ))
         .child(
             div()
-                .text_size(px(12.0))
+                .text_size(px(self.tokens.metrics.ui_text_xs))
                 .whitespace_nowrap()
                 .truncate()
                 .child(self.render_display_text_with_role(

@@ -230,7 +230,7 @@ impl HostToolsEntity {
             .justify_between()
             .gap_2()
             .min_w_0()
-            .text_size(px(11.0))
+            .text_size(px(tokens.metrics.ui_text_caption))
             .text_color(rgb(theme.text_muted))
             .child(div().min_w_0().flex_1().truncate().child(format!(
                 "{} {} · {}",
@@ -766,7 +766,7 @@ impl HostToolsEntity {
                     .items_center()
                     .rounded(px(10.0))
                     .bg(rgba((color << 8) | MONITOR_TINT_ALPHA))
-                    .text_size(px(10.0))
+                    .text_size(px(tokens.metrics.ui_text_2xs))
                     .text_color(rgb(color))
                     .child(i18n.t(key)),
             );

@@ -1293,7 +1293,7 @@ impl WorkspaceApp {
             } else {
                 rgba(0x00000000)
             })
-            .text_size(px(12.0))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .text_color(rgb(self.tokens.ui.accent_text))
             .child(if checked { "✓" } else { "" })
             .into_any_element()
@@ -1305,7 +1305,7 @@ impl WorkspaceApp {
             .py(px(2.0))
             .rounded(px(self.tokens.radii.sm))
             .bg(rgba((self.tokens.ui.accent << 8) | 0x20))
-            .text_size(px(10.0))
+            .text_size(px(self.tokens.metrics.ui_text_2xs))
             .text_color(rgb(self.tokens.ui.accent_secondary))
             .child(
                 self.i18n
@@ -1889,7 +1889,7 @@ impl WorkspaceApp {
             .py(px(2.0))
             .rounded(px(self.tokens.radii.sm))
             .bg(rgba((self.tokens.ui.accent << 8) | 0x20))
-            .text_size(px(10.0))
+            .text_size(px(self.tokens.metrics.ui_text_2xs))
             .text_color(rgb(self.tokens.ui.accent))
             .child(self.i18n.t("settings_view.connections.importers.duplicate"))
             .into_any_element()

@@ -548,7 +548,7 @@ impl WorkspaceApp {
                 .gap(px(4.0))
                 .rounded(px(self.tokens.radii.md))
                 .px(px(6.0))
-                .text_size(px(12.0))
+                .text_size(px(self.tokens.metrics.ui_text_xs))
                 .font_weight(if root_active {
                     gpui::FontWeight::MEDIUM
                 } else {
@@ -608,7 +608,7 @@ impl WorkspaceApp {
                         .rounded(px(self.tokens.radii.md))
                         .px(px(6.0))
                         .truncate()
-                        .text_size(px(12.0))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .font_weight(if is_last {
                             gpui::FontWeight::MEDIUM
                         } else {
@@ -964,7 +964,7 @@ impl WorkspaceApp {
                                 .rounded(px(self.tokens.radii.md))
                                 .px(px(8.0))
                                 .py(px(4.0))
-                                .text_size(px(11.0))
+                                .text_size(px(self.tokens.metrics.ui_text_caption))
                                 .text_color(rgb(SESSION_FOCUS_EMERALD))
                                 .bg(rgba(
                                     (SESSION_FOCUS_EMERALD << 8)
@@ -1210,7 +1210,7 @@ impl WorkspaceApp {
             .gap(px(4.0))
             .rounded(px(self.tokens.radii.md))
             .px(px(7.0))
-            .text_size(px(11.0))
+            .text_size(px(self.tokens.metrics.ui_text_caption))
             .text_color(rgb(text_color))
             .bg(background)
             .hover(move |chip| chip.bg(hover_background))

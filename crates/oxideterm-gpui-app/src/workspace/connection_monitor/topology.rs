@@ -44,7 +44,7 @@ impl WorkspaceApp {
                     )
                     .child(
                         div()
-                            .text_size(px(14.0))
+                            .text_size(px(self.tokens.metrics.ui_text_sm))
                             .text_color(rgb(theme.text_muted))
                             .child(self.render_display_text_with_role(
                                 SelectableTextRole::PlainDocument,
@@ -122,16 +122,20 @@ impl WorkspaceApp {
                             cx,
                         )),
                 )
-                .child(div().mt_2().text_size(px(14.0)).opacity(0.7).child(
-                    self.render_display_text_with_role(
-                        SelectableTextRole::PlainDocument,
-                        "topology-empty",
-                        "hint",
-                        self.i18n.t("topology.page.connect_hint"),
-                        theme.text_muted,
-                        cx,
-                    ),
-                ))
+                .child(
+                    div()
+                        .mt_2()
+                        .text_size(px(self.tokens.metrics.ui_text_sm))
+                        .opacity(0.7)
+                        .child(self.render_display_text_with_role(
+                            SelectableTextRole::PlainDocument,
+                            "topology-empty",
+                            "hint",
+                            self.i18n.t("topology.page.connect_hint"),
+                            theme.text_muted,
+                            cx,
+                        )),
+                )
                 .into_any_element();
         }
 
@@ -305,7 +309,7 @@ impl WorkspaceApp {
                     .border_1()
                     .border_color(rgb(theme.border))
                     .bg(rgba((theme.bg_panel << 8) | 0xcc))
-                    .text_size(px(12.0))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .font_family(settings_mono_font_family(self.settings_store.settings()))
                     .text_color(rgb(theme.text_muted))
                     .shadow_sm()
@@ -323,7 +327,7 @@ impl WorkspaceApp {
                     .absolute()
                     .bottom(px(16.0))
                     .left(px(16.0))
-                    .text_size(px(10.0))
+                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                     .font_family(settings_mono_font_family(self.settings_store.settings()))
                     .text_color(rgba(
                         (theme.text_muted << 8) | TOPOLOGY_INSTRUCTION_ALPHA_60,
@@ -589,7 +593,7 @@ impl WorkspaceApp {
                     div()
                         .max_w(px(TOPOLOGY_MENU_WIDTH - 24.0))
                         .truncate()
-                        .text_size(px(12.0))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(rgb(theme.text))
                         .child(self.render_display_text_with_role(
@@ -604,7 +608,7 @@ impl WorkspaceApp {
                 .child(
                     div()
                         .font_family(settings_mono_font_family(self.settings_store.settings()))
-                        .text_size(px(10.0))
+                        .text_size(px(self.tokens.metrics.ui_text_2xs))
                         .text_color(rgb(theme.text_muted))
                         .child(self.render_display_text_with_role(
                             SelectableTextRole::PlainDocument,
@@ -628,7 +632,7 @@ impl WorkspaceApp {
                 .rounded_b(px(rounded_shell_child_radius(self.tokens.radii.lg)))
                 .bg(rgba((theme.bg << 8) | 0x4d))
                 .text_align(gpui::TextAlign::Center)
-                .text_size(px(10.0))
+                .text_size(px(self.tokens.metrics.ui_text_2xs))
                 .text_color(rgb(theme.text_muted))
                 .child(self.render_display_text_with_role(
                     SelectableTextRole::PlainDocument,
@@ -663,7 +667,7 @@ impl WorkspaceApp {
             .flex()
             .items_center()
             .gap_2()
-            .text_size(px(14.0))
+            .text_size(px(self.tokens.metrics.ui_text_sm))
             .text_color(rgb(theme.text_muted))
             .child(Self::render_lucide_icon(icon, 16.0, rgb(icon_color)))
             .child(self.render_display_text_with_role(

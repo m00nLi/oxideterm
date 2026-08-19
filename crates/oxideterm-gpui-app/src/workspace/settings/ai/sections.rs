@@ -21,7 +21,7 @@ impl WorkspaceApp {
             .px(px(10.0))
             .flex()
             .items_center()
-            .text_size(px(12.0))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .text_color(rgb(self.tokens.ui.text_muted))
             .child(div().min_w(px(0.0)).truncate().child(label))
             .into_any_element()
@@ -98,7 +98,7 @@ impl WorkspaceApp {
                 .child(
                     div()
                         .py(px(12.0))
-                        .text_size(px(12.0))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .text_color(rgb(self.tokens.ui.text_muted))
                         .child(self.i18n.t("settings_view.ai.acp_agents_empty")),
                 )
@@ -154,7 +154,7 @@ impl WorkspaceApp {
                                 let error_label = self.i18n.t(acp_agent_error_kind_key(error));
                                 row.child(
                                     div()
-                                        .text_size(px(10.0))
+                                        .text_size(px(self.tokens.metrics.ui_text_2xs))
                                         .text_color(rgb(self.tokens.ui.text_muted))
                                         .child(self.ai_i18n_error(
                                             "settings_view.ai.acp_agent_last_error",
@@ -332,7 +332,7 @@ impl WorkspaceApp {
             .gap(px(4.0))
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(self.i18n.t(label_key)),
             )
@@ -387,7 +387,7 @@ impl WorkspaceApp {
             .bg(rgba((self.tokens.ui.bg << 8) | 0x80))
             .px(px(8.0))
             .py(px(4.0))
-            .text_size(px(10.0))
+            .text_size(px(self.tokens.metrics.ui_text_2xs))
             .text_color(rgb(self.tokens.ui.text_muted))
             .child(
                 self.i18n
@@ -486,7 +486,7 @@ impl WorkspaceApp {
             .gap(px(8.0))
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .text_color(rgb(self.tokens.ui.text))
                     .child(self.i18n.t("settings_view.ai.acp_agent_capabilities")),
             )
@@ -530,7 +530,7 @@ impl WorkspaceApp {
             )
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(self.i18n.t("settings_view.ai.acp_agent_capabilities_hint")),
             )
@@ -1184,7 +1184,7 @@ impl WorkspaceApp {
                             )
                             .child(
                                 div()
-                                    .text_size(px(10.0))
+                                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                                     .text_color(rgb(self.tokens.ui.text_muted))
                                     .child(format!("{} · {}", self.i18n.t(scope_key), source)),
                             ),

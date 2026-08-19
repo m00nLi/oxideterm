@@ -772,7 +772,7 @@ impl WorkspaceApp {
             .pt_3()
             .border_t_1()
             .border_color(rgba((theme.border << 8) | MONITOR_BORDER_ALPHA))
-            .text_size(px(12.0))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .text_color(rgb(theme.text_muted))
             .child(
                 self.i18n

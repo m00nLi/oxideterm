@@ -240,7 +240,7 @@ impl HostToolsEntity {
             .gap(px(2.0))
             .child(
                 div()
-                    .text_size(px(10.0))
+                    .text_size(px(tokens.metrics.ui_text_2xs))
                     .text_color(rgb(theme.text_muted))
                     .child(i18n.t(label_key)),
             )
@@ -248,7 +248,7 @@ impl HostToolsEntity {
                 div()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(12.0))
+                    .text_size(px(tokens.metrics.ui_text_xs))
                     .text_color(rgb(theme.text))
                     .child(value),
             )
@@ -270,7 +270,7 @@ impl HostToolsEntity {
             .justify_between()
             .gap_2()
             .min_w_0()
-            .text_size(px(11.0))
+            .text_size(px(tokens.metrics.ui_text_caption))
             .text_color(rgb(theme.text_muted))
             .child(div().min_w_0().flex_1().truncate().child(format!(
                 "{} {} · {}",
@@ -461,7 +461,7 @@ impl HostToolsEntity {
                                 div()
                                     .min_w_0()
                                     .truncate()
-                                    .text_size(px(12.0))
+                                    .text_size(px(tokens.metrics.ui_text_xs))
                                     .text_color(rgb(theme.text))
                                     .child(format!(
                                         "{device_kind} {} · {}",
@@ -472,7 +472,7 @@ impl HostToolsEntity {
                                 div()
                                     .min_w_0()
                                     .truncate()
-                                    .text_size(px(10.0))
+                                    .text_size(px(tokens.metrics.ui_text_2xs))
                                     .text_color(rgb(theme.text_muted))
                                     .child(device.pci_bus_id.clone()),
                             ),
@@ -481,7 +481,7 @@ impl HostToolsEntity {
                         div()
                             .flex_none()
                             .w(px(HOST_GPU_UTILIZATION_COLUMN_WIDTH))
-                            .text_size(px(11.0))
+                            .text_size(px(tokens.metrics.ui_text_caption))
                             .text_color(rgb(theme.text))
                             .child(utilization),
                     )
@@ -490,7 +490,7 @@ impl HostToolsEntity {
                             .flex_none()
                             .w(px(HOST_GPU_MEMORY_COLUMN_WIDTH))
                             .truncate()
-                            .text_size(px(10.0))
+                            .text_size(px(tokens.metrics.ui_text_2xs))
                             .text_color(rgb(theme.text))
                             .child(memory),
                     ),
@@ -520,7 +520,7 @@ impl HostToolsEntity {
             .flex()
             .flex_col()
             .gap_2()
-            .text_size(px(10.0))
+            .text_size(px(tokens.metrics.ui_text_2xs))
             .text_color(rgb(theme.text_muted))
             .child(Self::render_host_gpu_detail_line(
                 "sidebar.host_gpu.details.uuid",
@@ -570,7 +570,7 @@ impl HostToolsEntity {
             .child(
                 div()
                     .mt_1()
-                    .text_size(px(11.0))
+                    .text_size(px(tokens.metrics.ui_text_caption))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(rgb(theme.text))
                     .child(i18n.t("sidebar.host_gpu.processes.title")),
