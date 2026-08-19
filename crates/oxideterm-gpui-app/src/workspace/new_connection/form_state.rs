@@ -2439,17 +2439,44 @@ mod tests {
                 ),
                 NewConnectionField::Group
             );
-            assert_eq!(
-                next_connection_field(
-                    NewConnectionField::Group,
-                    SshAuthTab::Password,
-                    transport,
-                    NewConnectionUpstreamProxyPolicy::UseGlobal,
-                    NewConnectionUpstreamProxyAuth::None,
-                    true,
-                ),
-                NewConnectionField::Host
-            );
+            // SSH keeps Notes in the basic information tab order; the MOSH
+            // flow removes Notes before extending its own fields.
+            if transport == NewConnectionTransport::Ssh {
+                assert_eq!(
+                    next_connection_field(
+                        NewConnectionField::Group,
+                        SshAuthTab::Password,
+                        transport,
+                        NewConnectionUpstreamProxyPolicy::UseGlobal,
+                        NewConnectionUpstreamProxyAuth::None,
+                        true,
+                    ),
+                    NewConnectionField::Notes
+                );
+                assert_eq!(
+                    next_connection_field(
+                        NewConnectionField::Notes,
+                        SshAuthTab::Password,
+                        transport,
+                        NewConnectionUpstreamProxyPolicy::UseGlobal,
+                        NewConnectionUpstreamProxyAuth::None,
+                        true,
+                    ),
+                    NewConnectionField::Host
+                );
+            } else {
+                assert_eq!(
+                    next_connection_field(
+                        NewConnectionField::Group,
+                        SshAuthTab::Password,
+                        transport,
+                        NewConnectionUpstreamProxyPolicy::UseGlobal,
+                        NewConnectionUpstreamProxyAuth::None,
+                        true,
+                    ),
+                    NewConnectionField::Host
+                );
+            }
         }
     }
 
