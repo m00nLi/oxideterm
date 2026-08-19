@@ -8,7 +8,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
 };
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::{ResourceSampleShell, ResourceSampler, shell_init_command};
 
@@ -135,6 +135,21 @@ async fn sample_loop(
                 {
                     Ok(output) => {
                         let snapshot = parse_gpu_snapshot(&output, now_ms());
+                        // A vendor query killed by its own deadline parses
+                        // into an empty device table. Never let such a
+                        // degraded sample blank a populated panel; keep the
+                        // last good snapshot and try again on the next tick.
+                        let degraded_without_devices = snapshot.devices.is_empty()
+                            && last_good
+                                .as_ref()
+                                .is_some_and(|good| !good.devices.is_empty());
+                        if degraded_without_devices {
+                            debug!(
+                                connection_id,
+                                "gpu sample degraded (no devices); keeping last snapshot"
+                            );
+                            continue;
+                        }
                         last_good = Some(snapshot.clone());
                         let sampling_complete = matches!(
                             snapshot.status,
