@@ -121,7 +121,7 @@ impl WorkspaceApp {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .text_size(px(SFTP_TEXT_XS))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .text_color(rgb(theme.text_muted))
                     .child(
                         div()
@@ -213,7 +213,7 @@ impl WorkspaceApp {
                             .flex()
                             .items_center()
                             .gap(px(4.0))
-                            .text_size(px(SFTP_TEXT_XS))
+                            .text_size(px(self.tokens.metrics.ui_text_xs))
                             .text_color(rgb(SFTP_ORANGE))
                             .hover(|style| {
                                 style.bg(rgba((SFTP_ORANGE << 8) | SFTP_EDITOR_RETRY_HOVER_ALPHA))
@@ -258,7 +258,7 @@ impl WorkspaceApp {
     pub(in crate::workspace::sftp) fn render_sftp_preview_text(&self, text: String) -> AnyElement {
         div()
             .font_family(settings_mono_font_family(self.settings_store.settings()))
-            .text_size(px(SFTP_TEXT_XS))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .child(text)
             .into_any_element()
     }

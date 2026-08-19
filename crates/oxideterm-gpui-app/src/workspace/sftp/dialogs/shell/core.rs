@@ -174,7 +174,7 @@ impl WorkspaceApp {
                                     .flex()
                                     .items_center()
                                     .gap(px(8.0))
-                                    .text_size(px(SFTP_TEXT_SM))
+                                    .text_size(px(self.tokens.metrics.ui_text_sm))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(rgb(theme.text_heading))
                                     .when(matches!(&dialog, SftpDialog::Conflict), |row| {
@@ -210,9 +210,9 @@ impl WorkspaceApp {
                                         .mt(px(6.0))
                                         .text_size(px(
                                             if matches!(&dialog, SftpDialog::Diff { .. }) {
-                                                SFTP_TEXT_XS
+                                                self.tokens.metrics.ui_text_xs
                                             } else {
-                                                SFTP_TEXT_SM
+                                                self.tokens.metrics.ui_text_sm
                                             },
                                         ))
                                         .text_color(rgb(theme.text_muted))
@@ -340,7 +340,7 @@ impl WorkspaceApp {
                         .min_w(px(0.0))
                         .px(px(8.0))
                         .truncate()
-                        .text_size(px(SFTP_TEXT_XS))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .text_color(rgb(theme.text_muted))
                         .child(path),
                 )
@@ -439,7 +439,7 @@ impl WorkspaceApp {
                         .min_w(px(0.0))
                         .px(px(8.0))
                         .truncate()
-                        .text_size(px(SFTP_TEXT_XS))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .text_color(rgb(theme.text_muted))
                         .child(path),
                 )
@@ -509,7 +509,7 @@ impl WorkspaceApp {
                         .items_center()
                         .flex_1()
                         .min_w(px(0.0))
-                        .text_size(px(SFTP_TEXT_XS))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .text_color(rgb(theme.text_muted))
                         .child(
                             self.i18n

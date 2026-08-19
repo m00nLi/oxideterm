@@ -59,6 +59,7 @@ struct SftpTransferRowLabels {
 struct SftpTransferRowRenderer {
     sftp: Entity<SftpWorkspaceEntity>,
     theme: AppUiColors,
+    metrics: oxideterm_theme::UiMetrics,
     radius: f32,
     mono_font: SharedString,
     labels: SftpTransferRowLabels,
@@ -300,7 +301,7 @@ impl SftpTransferRowRenderer {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(px(SFTP_TEXT_XS))
+                            .text_size(px(self.metrics.ui_text_xs))
                             .text_color(rgb(self.theme.text))
                             .child(transfer.name.clone()),
                     )
@@ -308,7 +309,7 @@ impl SftpTransferRowRenderer {
                         div()
                             .max_w(px(96.0))
                             .truncate()
-                            .text_size(px(SFTP_TEXT_10))
+                            .text_size(px(self.metrics.ui_text_2xs))
                             .font_family(self.mono_font.clone())
                             .text_color(rgb(status_color))
                             .child(status_text),
@@ -342,7 +343,7 @@ impl SftpTransferRowRenderer {
                         div()
                             .flex()
                             .justify_between()
-                            .text_size(px(SFTP_TEXT_10))
+                            .text_size(px(self.metrics.ui_text_2xs))
                             .text_color(rgb(self.theme.text_muted))
                             .child(if indeterminate {
                                 format_file_size(transfer.transferred)
@@ -419,7 +420,7 @@ impl SftpTransferRowRenderer {
                         SFTP_PANEL_80_ALPHA,
                     ))
                     .hover(move |row| row.border_color(rgb(theme.border)))
-                    .text_size(px(SFTP_TEXT_SM))
+                    .text_size(px(self.metrics.ui_text_sm))
                     .child(
                         div()
                             .w(px(16.0))
@@ -446,7 +447,7 @@ impl SftpTransferRowRenderer {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(SFTP_TEXT_10))
+                                    .text_size(px(self.metrics.ui_text_2xs))
                                     .text_color(rgb(theme.text_muted))
                                     .child(format!("{protocol_label} · {destination_path}")),
                             ),
@@ -486,7 +487,7 @@ impl SftpTransferRowRenderer {
                                 div()
                                     .flex()
                                     .justify_between()
-                                    .text_size(px(SFTP_TEXT_10))
+                                    .text_size(px(self.metrics.ui_text_2xs))
                                     .text_color(rgb(theme.text_muted))
                                     .child(if indeterminate {
                                         format_file_size(transfer.transferred)
@@ -506,7 +507,7 @@ impl SftpTransferRowRenderer {
                         div()
                             .w(px(96.0))
                             .text_align(gpui::TextAlign::Right)
-                            .text_size(px(SFTP_TEXT_XS))
+                            .text_size(px(self.metrics.ui_text_xs))
                             .font_family(self.mono_font.clone())
                             .text_color(rgb(status_color))
                             .child(status_text),
@@ -572,7 +573,7 @@ impl SftpTransferRowRenderer {
                             (SFTP_YELLOW << 8) | SFTP_TRANSFER_INCOMPLETE_HOVER_BORDER_ALPHA,
                         ))
                     })
-                    .text_size(px(SFTP_TEXT_XS))
+                    .text_size(px(self.metrics.ui_text_xs))
                     .child(
                         div()
                             .w(px(16.0))
@@ -593,7 +594,7 @@ impl SftpTransferRowRenderer {
                                 div()
                                     .flex()
                                     .gap(px(8.0))
-                                    .text_size(px(SFTP_TEXT_10))
+                                    .text_size(px(self.metrics.ui_text_2xs))
                                     .text_color(rgb(theme.text_muted))
                                     .child(format!("{transfer_type} · {protocol}"))
                                     .child("•")
@@ -608,7 +609,7 @@ impl SftpTransferRowRenderer {
                             .when_some(transfer.error.clone(), |row, error| {
                                 row.child(
                                     div()
-                                        .text_size(px(SFTP_TEXT_10))
+                                        .text_size(px(self.metrics.ui_text_2xs))
                                         .text_color(rgb(SFTP_RED))
                                         .truncate()
                                         .child(error),
@@ -617,7 +618,7 @@ impl SftpTransferRowRenderer {
                     )
                     .child(
                         div()
-                            .text_size(px(SFTP_TEXT_10))
+                            .text_size(px(self.metrics.ui_text_2xs))
                             .text_color(rgb(theme.text_muted))
                             .child(status),
                     )
@@ -645,7 +646,7 @@ impl SftpTransferRowRenderer {
                     .items_center()
                     .justify_center()
                     .gap(px(8.0))
-                    .text_size(px(SFTP_TEXT_XS))
+                    .text_size(px(self.metrics.ui_text_xs))
                     .text_color(rgb(self.theme.text_muted))
                     .child(WorkspaceApp::render_lucide_icon(
                         LucideIcon::RefreshCw,
@@ -663,6 +664,7 @@ impl WorkspaceApp {
         SftpTransferRowRenderer {
             sftp: self.sftp_view.clone(),
             theme: self.tokens.ui,
+            metrics: self.tokens.metrics,
             radius: self.tokens.radii.sm,
             mono_font: settings_mono_font_family(self.settings_store.settings()),
             labels: SftpTransferRowLabels {
@@ -739,7 +741,7 @@ impl WorkspaceApp {
                         .items_center()
                         .gap_2()
                         .px_2()
-                        .text_size(px(SFTP_TEXT_XS))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(rgb(theme.text_muted))
                         .child(self.queue_title(active_count))
@@ -748,7 +750,7 @@ impl WorkspaceApp {
                                 .rounded_full()
                                 .bg(rgb(theme.bg_panel))
                                 .px_2()
-                                .text_size(px(SFTP_TEXT_10))
+                                .text_size(px(self.tokens.metrics.ui_text_2xs))
                                 .font_weight(gpui::FontWeight::NORMAL)
                                 .child(transfer_count.to_string()),
                         ),
@@ -821,7 +823,7 @@ impl WorkspaceApp {
                             .flex_row()
                             .items_center()
                             .gap(px(8.0))
-                            .text_size(px(SFTP_TEXT_XS))
+                            .text_size(px(self.tokens.metrics.ui_text_xs))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(theme.text_muted))
                             .child(self.render_selectable_display_text(
@@ -884,7 +886,7 @@ impl WorkspaceApp {
                                     ButtonRadius::Sm,
                                     24.0,
                                     8.0,
-                                    SFTP_TEXT_XS,
+                                    self.tokens.metrics.ui_text_xs,
                                 )
                             },
                             cx.listener(|this, _event, _window, cx| {
@@ -913,7 +915,7 @@ impl WorkspaceApp {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .text_size(px(SFTP_TEXT_SM))
+                                .text_size(px(self.tokens.metrics.ui_text_sm))
                                 .text_color(rgb(theme.text_muted))
                                 .child(self.render_selectable_display_text(
                                     "sftp-queue-empty",
@@ -994,7 +996,7 @@ impl WorkspaceApp {
             div()
                 .px(px(8.0))
                 .py(px(4.0))
-                .text_size(px(SFTP_TEXT_10))
+                .text_size(px(self.tokens.metrics.ui_text_2xs))
                 .text_color(rgb(theme.text_muted))
                 .child(self.render_selectable_display_text(
                     "sftp-incomplete-title",

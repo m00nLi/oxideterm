@@ -49,7 +49,7 @@ impl WorkspaceApp {
                 div()
                     .max_w(px(448.0))
                     .truncate()
-                    .text_size(px(SFTP_TEXT_SM))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .text_color(rgb(theme.text_muted))
                     .child(self.render_selectable_display_text(
                         "sftp-preview-audio-name",
@@ -110,7 +110,7 @@ impl WorkspaceApp {
                     .child(
                         div()
                             .min_w(px(92.0))
-                            .text_size(px(SFTP_TEXT_XS))
+                            .text_size(px(self.tokens.metrics.ui_text_xs))
                             .text_color(rgb(theme.text_muted))
                             .child(self.render_selectable_display_text(
                                 "sftp-preview-audio-time",
@@ -138,7 +138,7 @@ impl WorkspaceApp {
                                     ButtonRadius::Sm,
                                     24.0,
                                     8.0,
-                                    SFTP_TEXT_XS,
+                                    self.tokens.metrics.ui_text_xs,
                                 )
                             },
                             cx.listener(move |this, _event, _window, cx| {
@@ -161,7 +161,7 @@ impl WorkspaceApp {
                                     ButtonRadius::Sm,
                                     24.0,
                                     8.0,
-                                    SFTP_TEXT_XS,
+                                    self.tokens.metrics.ui_text_xs,
                                 )
                             },
                             cx.listener(move |this, _event, _window, cx| {
@@ -179,7 +179,7 @@ impl WorkspaceApp {
                     .when_some(snapshot.error, |row, error| {
                         row.child(
                             div()
-                                .text_size(px(SFTP_TEXT_XS))
+                                .text_size(px(self.tokens.metrics.ui_text_xs))
                                 .text_color(rgb(SFTP_RED))
                                 .child(self.render_selectable_display_text(
                                     "sftp-preview-audio-error",
@@ -193,7 +193,7 @@ impl WorkspaceApp {
             )
             .child(
                 div()
-                    .text_size(px(SFTP_TEXT_XS))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .text_color(rgb(theme.text_muted))
                     .child(self.render_selectable_display_text(
                         "sftp-preview-audio-mime",
@@ -286,11 +286,11 @@ impl WorkspaceApp {
             .border_1()
             .border_color(rgb(theme.border))
             .bg(rgb(theme.bg_panel))
-            .text_size(px(SFTP_TEXT_XS))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .text_color(rgb(theme.text_muted))
             .child(
                 div()
-                    .text_size(px(SFTP_TEXT_SM))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .text_color(rgb(theme.text))
                     .child(self.render_selectable_text_scoped(
                         "sftp-native-asset-title",
@@ -375,6 +375,7 @@ impl WorkspaceApp {
         fallback_label: String,
     ) -> AnyElement {
         let theme = self.tokens.ui;
+        let fallback_text_size = self.tokens.metrics.ui_text_sm;
         gpui::img(source)
             .w_full()
             .h(px(456.0))
@@ -386,7 +387,7 @@ impl WorkspaceApp {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(SFTP_TEXT_SM))
+                    .text_size(px(fallback_text_size))
                     .text_color(rgb(theme.text_muted))
                     .child(fallback_label.clone())
                     .into_any_element()

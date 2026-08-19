@@ -78,7 +78,7 @@ impl WorkspaceApp {
                     .border_1()
                     .border_color(rgb(theme.border))
                     .bg(rgb(theme.bg_panel))
-                    .text_size(px(SFTP_TEXT_SM))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(
                         div()
@@ -96,7 +96,7 @@ impl WorkspaceApp {
                         div()
                             .mt(px(4.0))
                             .truncate()
-                            .text_size(px(SFTP_TEXT_XS))
+                            .text_size(px(self.tokens.metrics.ui_text_xs))
                             .font_weight(gpui::FontWeight::NORMAL)
                             .text_color(rgb(theme.text_muted))
                             .child(target_path),
@@ -163,7 +163,7 @@ impl WorkspaceApp {
                         )
                         .child(
                             div()
-                                .text_size(px(SFTP_TEXT_SM))
+                                .text_size(px(self.tokens.metrics.ui_text_sm))
                                 .text_color(rgb(theme.text_muted))
                                 .cursor_pointer()
                                 .child(
@@ -215,7 +215,7 @@ impl WorkspaceApp {
                     .mb(px(8.0))
                     .flex()
                     .items_center()
-                    .text_size(px(SFTP_TEXT_XS))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(rgb(theme.text_muted))
                     .child(self.i18n.t(label_key).to_uppercase())
@@ -232,7 +232,7 @@ impl WorkspaceApp {
                 div()
                     .flex()
                     .gap(px(8.0))
-                    .text_size(px(SFTP_TEXT_SM))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .text_color(rgb(theme.text))
                     .child(Self::render_lucide_icon(
                         LucideIcon::HardDrive,
@@ -246,7 +246,7 @@ impl WorkspaceApp {
                     .mt(px(6.0))
                     .flex()
                     .gap(px(8.0))
-                    .text_size(px(SFTP_TEXT_SM))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .text_color(rgb(theme.text))
                     .child(Self::render_lucide_icon(
                         LucideIcon::Clock,

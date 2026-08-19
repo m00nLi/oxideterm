@@ -229,7 +229,7 @@ impl WorkspaceApp {
             .px(px(12.0))
             .py(px(6.0))
             .rounded(px(self.tokens.radii.xs))
-            .text_size(px(SFTP_TEXT_XS))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .text_color(rgb(color))
             .child(Self::render_lucide_icon(icon, SFTP_ICON_SM, rgb(color)))
             .child(div().truncate().child(self.render_display_text_with_role(

@@ -72,7 +72,7 @@ impl WorkspaceApp {
                             )
                             .child(
                                 div()
-                                    .text_size(px(SFTP_TEXT_SM))
+                                    .text_size(px(self.tokens.metrics.ui_text_sm))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(rgb(theme.text))
                                     .text_center()
@@ -94,7 +94,7 @@ impl WorkspaceApp {
                                         (theme.border << 8) | SFTP_DIALOG_DIVIDER_ALPHA,
                                     ))
                                     .text_center()
-                                    .text_size(px(SFTP_TEXT_SM))
+                                    .text_size(px(self.tokens.metrics.ui_text_sm))
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(rgb(theme.text_muted))
                                     .hover(move |button| {
@@ -120,7 +120,7 @@ impl WorkspaceApp {
                                     .flex_1()
                                     .py(px(10.0))
                                     .text_center()
-                                    .text_size(px(SFTP_TEXT_SM))
+                                    .text_size(px(self.tokens.metrics.ui_text_sm))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(rgb(theme.accent))
                                     .hover(move |button| {

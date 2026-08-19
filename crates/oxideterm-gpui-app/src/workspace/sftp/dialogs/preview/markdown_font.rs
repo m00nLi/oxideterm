@@ -92,7 +92,7 @@ impl WorkspaceApp {
                         div()
                             .w(px(52.0))
                             .text_center()
-                            .text_size(px(SFTP_TEXT_XS))
+                            .text_size(px(self.tokens.metrics.ui_text_xs))
                             .text_color(rgb(theme.text_muted))
                             .child(format!("{font_size:.0}px")),
                     )
@@ -126,7 +126,7 @@ impl WorkspaceApp {
                             .ml(px(8.0))
                             .min_w(px(0.0))
                             .truncate()
-                            .text_size(px(SFTP_TEXT_XS))
+                            .text_size(px(self.tokens.metrics.ui_text_xs))
                             .text_color(rgb(theme.text_muted))
                             .child(font_family),
                     ),
@@ -232,7 +232,7 @@ impl WorkspaceApp {
                     28.0,
                     28.0,
                     8.0,
-                    SFTP_TEXT_XS,
+                    self.tokens.metrics.ui_text_xs,
                 )
             },
             on_click,
@@ -262,7 +262,7 @@ impl WorkspaceApp {
                             .ui_font_family
                             .as_str(),
                     ))
-                    .text_size(px(SFTP_TEXT_XS))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .text_color(rgb(theme.text_muted))
                     .child(title),
             )

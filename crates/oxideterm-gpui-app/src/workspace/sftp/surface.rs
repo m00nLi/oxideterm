@@ -98,14 +98,14 @@ impl WorkspaceApp {
                 .child(Self::render_lucide_icon(icon, 20.0, rgb(theme.accent)))
                 .child(
                     div()
-                        .text_size(px(SFTP_TEXT_SM))
+                        .text_size(px(self.tokens.metrics.ui_text_sm))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(rgb(theme.text))
                         .child(self.i18n.t(title_key)),
                 )
                 .child(
                     div()
-                        .text_size(px(SFTP_TEXT_XS))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .text_color(rgb(theme.text_muted))
                         .child(self.i18n.t(description_key)),
                 )
@@ -151,7 +151,7 @@ impl WorkspaceApp {
                         )
                         .child(
                             div()
-                                .text_size(px(SFTP_TEXT_SM))
+                                .text_size(px(self.tokens.metrics.ui_text_sm))
                                 .text_color(rgb(theme.text_muted))
                                 .child(self.i18n.t("sftp.presentation.description")),
                         )
@@ -176,7 +176,7 @@ impl WorkspaceApp {
                         )
                         .child(
                             div()
-                                .text_size(px(SFTP_TEXT_XS))
+                                .text_size(px(self.tokens.metrics.ui_text_xs))
                                 .text_color(rgb(theme.text_muted))
                                 .child(self.i18n.t("sftp.presentation.remember_hint")),
                         ),
@@ -201,7 +201,7 @@ impl WorkspaceApp {
                 .justify_center()
                 .gap_2()
                 .px_4()
-                .text_size(px(SFTP_TEXT_XS))
+                .text_size(px(self.tokens.metrics.ui_text_xs))
                 .text_color(rgb(theme.text_muted))
                 .child(Self::render_lucide_icon(
                     LucideIcon::FolderOpen,
@@ -224,7 +224,7 @@ impl WorkspaceApp {
                 .justify_center()
                 .gap_2()
                 .px_4()
-                .text_size(px(SFTP_TEXT_XS))
+                .text_size(px(self.tokens.metrics.ui_text_xs))
                 .text_color(rgb(theme.text_muted))
                 .child(self.i18n.t("sftp.sidebar.active_tab_notice"))
                 .into_any_element();
@@ -277,7 +277,7 @@ impl WorkspaceApp {
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
-                                    .text_size(px(SFTP_TEXT_XS))
+                                    .text_size(px(self.tokens.metrics.ui_text_xs))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .child(node_title),
                             )
@@ -454,7 +454,7 @@ impl WorkspaceApp {
                     div()
                         .min_w(px(0.0))
                         .truncate()
-                        .text_size(px(SFTP_TEXT_10))
+                        .text_size(px(self.tokens.metrics.ui_text_2xs))
                         .text_color(rgb(theme.text_muted))
                         .child(path.to_string()),
                 )
@@ -805,7 +805,7 @@ impl WorkspaceApp {
             .child(
                 div()
                     .min_w(px(SFTP_PANE_HEADER_TITLE_MIN_WIDTH))
-                    .text_size(px(SFTP_TEXT_XS))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(theme.text_muted))
                     .child(self.render_display_text_with_role(
@@ -1131,7 +1131,7 @@ impl WorkspaceApp {
             .items_center()
             .overflow_hidden()
             .track_scroll(&scroll_handle)
-            .text_size(px(SFTP_TEXT_SM))
+            .text_size(px(self.tokens.metrics.ui_text_sm))
             .on_scroll_wheel(
                 cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
                     this.handle_sftp_breadcrumb_scroll(pane, event, cx);
@@ -1162,7 +1162,7 @@ impl WorkspaceApp {
             .bg(sftp_panel_bg(self.tokens.ui.bg_panel, has_background, 0xff))
             .border_b_1()
             .border_color(sftp_border(self.tokens.ui.border, has_background))
-            .text_size(px(SFTP_TEXT_XS))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .text_color(rgb(self.tokens.ui.text_muted))
             .child(self.render_sftp_sort_header(
                 pane,
@@ -1318,7 +1318,7 @@ impl WorkspaceApp {
             .when(!filter.is_empty(), |row| {
                 row.child(
                     div()
-                        .text_size(px(SFTP_TEXT_XS))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .text_color(rgb(theme.text_muted))
                         .hover(move |x| x.text_color(rgb(theme.text)))
                         .cursor_pointer()
@@ -1390,7 +1390,7 @@ impl WorkspaceApp {
             .px(px(0.0))
             .border_0()
             .bg(rgba(0x00000000))
-            .text_size(px(SFTP_TEXT_XS))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {

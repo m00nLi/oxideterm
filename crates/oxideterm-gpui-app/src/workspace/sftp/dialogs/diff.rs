@@ -30,7 +30,7 @@ impl WorkspaceApp {
                     .flex()
                     .border_b_1()
                     .border_color(rgb(theme.border))
-                    .text_size(px(SFTP_TEXT_XS))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .child(
                         div()
                             .flex_1()
@@ -137,7 +137,7 @@ impl WorkspaceApp {
                     .flex_1()
                     .selectable_overflow_y_scroll(&self.sftp_view.read(cx).diff_document_scroll)
                     .font_family(settings_mono_font_family(self.settings_store.settings()))
-                    .text_size(px(SFTP_TEXT_XS))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                     .when(line_count == 0, |body| {
                         body.child(

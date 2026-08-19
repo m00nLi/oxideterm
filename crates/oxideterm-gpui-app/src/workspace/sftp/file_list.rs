@@ -62,6 +62,7 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.tokens.ui;
+        let row_text_size = self.tokens.metrics.ui_text_xs;
         let compact = self.sftp_view.read(cx).current_surface_id == Some(SftpSurfaceId::Sidebar);
         let drag_over = self.sftp_view.read(cx).drag_over_pane == Some(pane);
         let list = div()
@@ -163,7 +164,7 @@ impl WorkspaceApp {
                         .items_center()
                         .justify_center()
                         .gap(px(8.0))
-                        .text_size(px(SFTP_TEXT_XS))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .text_color(rgb(theme.text_muted))
                         .child(self.render_loading_icon(
                             ("sftp-file-list-loading", pane as usize),
@@ -192,7 +193,7 @@ impl WorkspaceApp {
                         .flex_col()
                         .items_center()
                         .justify_center()
-                        .text_size(px(SFTP_TEXT_XS))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .text_color(rgb(theme.text_muted))
                         .child(
                             div()
@@ -270,7 +271,7 @@ impl WorkspaceApp {
                             .py(px(4.0))
                             .border_b_1()
                             .border_color(rgba(theme.border << 8))
-                            .text_size(px(SFTP_TEXT_XS))
+                            .text_size(px(row_text_size))
                             .text_color(if is_selected {
                                 rgb(theme.accent)
                             } else {

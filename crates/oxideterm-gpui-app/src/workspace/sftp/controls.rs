@@ -17,7 +17,7 @@ impl WorkspaceApp {
             .bg(rgba((SFTP_YELLOW << 8) | 0x1a))
             .px(px(12.0))
             .py(px(8.0))
-            .text_size(px(SFTP_TEXT_XS))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .text_color(rgb(self.tokens.ui.text))
             .child(
                 self.render_selectable_text_scoped(
@@ -160,7 +160,7 @@ impl WorkspaceApp {
                     ButtonRadius::Sm,
                     24.0,
                     8.0,
-                    SFTP_TEXT_XS,
+                    self.tokens.metrics.ui_text_xs,
                 )
             },
             cx.listener(move |this, _event, _window, cx| {
@@ -239,7 +239,7 @@ impl WorkspaceApp {
                     ButtonRadius::Md,
                     32.0,
                     12.0,
-                    SFTP_TEXT_XS,
+                    self.tokens.metrics.ui_text_xs,
                 )
             },
             listener,

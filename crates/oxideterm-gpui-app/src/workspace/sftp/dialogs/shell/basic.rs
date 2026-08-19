@@ -61,7 +61,7 @@ impl WorkspaceApp {
                                             .flex()
                                             .items_center()
                                             .gap(px(6.0))
-                                            .text_size(px(SFTP_TEXT_SM))
+                                            .text_size(px(self.tokens.metrics.ui_text_sm))
                                             .font_weight(gpui::FontWeight::MEDIUM)
                                             .text_color(rgb(theme.text))
                                             .child(drive.name)
@@ -71,7 +71,10 @@ impl WorkspaceApp {
                                                         .rounded(px(self.tokens.radii.xs))
                                                         .px(px(4.0))
                                                         .py(px(2.0))
-                                                        .text_size(px(SFTP_TEXT_10))
+                                                        .text_size(px(self
+                                                            .tokens
+                                                            .metrics
+                                                            .ui_text_2xs))
                                                         .bg(rgba(
                                                             (SFTP_YELLOW << 8)
                                                                 | SFTP_READONLY_BADGE_BG_ALPHA,
@@ -86,14 +89,14 @@ impl WorkspaceApp {
                                     .child(
                                         div()
                                             .mt(px(2.0))
-                                            .text_size(px(SFTP_TEXT_XS))
+                                            .text_size(px(self.tokens.metrics.ui_text_xs))
                                             .text_color(rgb(theme.text_muted))
                                             .child(path.clone()),
                                     )
                                     .child(
                                         div()
                                             .mt(px(2.0))
-                                            .text_size(px(SFTP_TEXT_10))
+                                            .text_size(px(self.tokens.metrics.ui_text_2xs))
                                             .text_color(rgb(theme.text_muted))
                                             .child(format!(
                                                 "{} {} / {}",
@@ -139,7 +142,7 @@ impl WorkspaceApp {
                     .rounded(px(self.tokens.radii.sm))
                     .bg(rgb(theme.bg_sunken))
                     .p(px(8.0))
-                    .text_size(px(SFTP_TEXT_XS))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .text_color(rgb(theme.text_muted))
                     .children(files.into_iter().map(|file| div().child(file))),
             )
