@@ -17,7 +17,7 @@ use std::{
 use oxideterm_ssh::{
     AuthMethod, SshConfig,
     monitor_probe::{connect_probe, connect_sampler_probe},
-    reconnectable_monitor_sampler,
+    probe_reconnecting_monitor_sampler, reconnectable_monitor_sampler,
 };
 
 #[tokio::main]
@@ -328,6 +328,35 @@ async fn run() -> Result<(), String> {
         if iteration < 4 {
             tokio::time::sleep(oxideterm_connection_monitor::RESOURCE_SAMPLE_INTERVAL).await;
         }
+    }
+
+    // Deferred-output diagnosis: run the live sample once, then keep reading
+    // the raw channel to timestamp bytes that arrive after the end marker.
+    let tail_sampler = probe_reconnecting_monitor_sampler(
+        config.clone(),
+        keepalive_interval,
+        keepalive_data.clone(),
+    );
+    let (sampled, tail) = tail_sampler
+        .probe_sample_with_tail(
+            "",
+            &live_command,
+            oxideterm_connection_monitor::RESOURCE_END_MARKER,
+            Duration::from_millis(400),
+            Duration::from_secs(12),
+        )
+        .await
+        .map_err(|error| format!("tail probe sample: {error}"))?;
+    println!(
+        "TAIL PROBE: sample bytes={} docker_section={} end_marker={}; tail chunks={}",
+        sampled.len(),
+        sampled.contains("===DOCKER==="),
+        sampled.contains(oxideterm_connection_monitor::RESOURCE_END_MARKER),
+        tail.len(),
+    );
+    for (offset_ms, chunk) in tail {
+        let preview = String::from_utf8_lossy(&chunk[..chunk.len().min(120)]);
+        println!("TAIL +{offset_ms}ms {} bytes: {:?}", chunk.len(), preview);
     }
 
     println!("ALL PROBE SCENARIOS PASSED");

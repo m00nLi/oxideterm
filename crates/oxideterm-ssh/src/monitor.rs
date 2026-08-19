@@ -1,7 +1,10 @@
 // Copyright (C) 2026 AnalyseDeCircuit
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use oxideterm_connection_monitor::{ResourceSampleShell, ResourceSampler, ResourceSamplerFuture};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -174,40 +177,118 @@ impl ResourceSampler for ReconnectingMonitorSampler {
         timeout: Duration,
     ) -> ResourceSamplerFuture<'a, Result<Box<dyn ResourceSampleShell>, String>> {
         Box::pin(async move {
-            debug!(
-                host = %self.config.host,
-                "reconnecting monitor sampler connecting"
-            );
-            let mut client = SshTransportClient::new(self.config.clone());
-            if self.keepalive_interval_secs > 0 && !self.keepalive_data.is_empty() {
-                client = client
-                    .with_keepalive(self.keepalive_interval_secs, self.keepalive_data.clone());
-            }
-            let connection = tokio::time::timeout(timeout, client.connect_for_monitor_raw())
-                .await
-                .map_err(|_| "sampler connect timed out".to_string())?
-                .map_err(|error| error.to_string())?;
-            debug!(
-                host = %self.config.host,
-                "reconnecting monitor sampler connected, opening shell"
-            );
-            let shell = tokio::time::timeout(timeout, connection.open_shell_channel(init_command))
-                .await
-                .map_err(|_| "sampler shell open timed out".to_string())?
-                .map_err(|error| error.to_string())?;
-            debug!(
-                host = %self.config.host,
-                "reconnecting monitor sampler shell opened"
-            );
-            Ok(Box::new(into_dedicated_monitor_shell(shell)) as Box<dyn ResourceSampleShell>)
+            let shell = self.open_concrete(init_command, timeout).await?;
+            Ok(Box::new(shell) as Box<dyn ResourceSampleShell>)
         })
     }
+}
+
+impl ReconnectingMonitorSampler {
+    async fn open_concrete(
+        &self,
+        init_command: &str,
+        timeout: Duration,
+    ) -> Result<DedicatedMonitorShell, String> {
+        debug!(
+            host = %self.config.host,
+            "reconnecting monitor sampler connecting"
+        );
+        let mut client = SshTransportClient::new(self.config.clone());
+        if self.keepalive_interval_secs > 0 && !self.keepalive_data.is_empty() {
+            client =
+                client.with_keepalive(self.keepalive_interval_secs, self.keepalive_data.clone());
+        }
+        let connection = tokio::time::timeout(timeout, client.connect_for_monitor_raw())
+            .await
+            .map_err(|_| "sampler connect timed out".to_string())?
+            .map_err(|error| error.to_string())?;
+        debug!(
+            host = %self.config.host,
+            "reconnecting monitor sampler connected, opening shell"
+        );
+        let shell = tokio::time::timeout(timeout, connection.open_shell_channel(init_command))
+            .await
+            .map_err(|_| "sampler shell open timed out".to_string())?
+            .map_err(|error| error.to_string())?;
+        debug!(
+            host = %self.config.host,
+            "reconnecting monitor sampler shell opened"
+        );
+        Ok(into_dedicated_monitor_shell(shell))
+    }
+
+    /// Probe-only: run one sample and then keep reading the raw channel to
+    /// timestamp output that arrives after the end marker. Single-channel
+    /// appliances with wrapped `docker`/`ps` binaries can defer their real
+    /// output past the marker, which makes it leak into the next sample.
+    #[cfg(feature = "monitor-probe")]
+    pub async fn probe_sample_with_tail(
+        &self,
+        init_command: &str,
+        command: &str,
+        end_marker: &str,
+        quiet_window: Duration,
+        total: Duration,
+    ) -> Result<(String, Vec<(u128, Vec<u8>)>), String> {
+        let mut shell = self
+            .open_concrete(init_command, Duration::from_secs(10))
+            .await?;
+        let output = shell
+            .sample_until(command, end_marker, Duration::from_secs(20), 256 * 1024)
+            .await?;
+        let tail = shell.drain_tail_for_probe(quiet_window, total).await;
+        Ok((output, tail))
+    }
+}
+
+/// Construct the concrete reconnecting sampler for probe scenarios that need
+/// to inspect output arriving after the sample end marker.
+#[cfg(feature = "monitor-probe")]
+pub fn probe_reconnecting_monitor_sampler(
+    config: SshConfig,
+    keepalive_interval_secs: u32,
+    keepalive_data: Vec<u8>,
+) -> Arc<ReconnectingMonitorSampler> {
+    Arc::new(ReconnectingMonitorSampler {
+        config,
+        keepalive_interval_secs,
+        keepalive_data,
+    })
 }
 
 struct DedicatedMonitorShell {
     reader: russh::ChannelStreamReader<russh::client::Msg>,
     writer: Arc<tokio::sync::Mutex<russh::ChannelStreamWriter<russh::client::Msg>>>,
     keepalive_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl DedicatedMonitorShell {
+    #[cfg(feature = "monitor-probe")]
+    async fn drain_tail_for_probe(
+        &mut self,
+        quiet_window: Duration,
+        total: Duration,
+    ) -> Vec<(u128, Vec<u8>)> {
+        let started = Instant::now();
+        let deadline = started + total;
+        let mut chunks = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining.min(quiet_window), self.reader.read(&mut buffer))
+                .await
+            {
+                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(read)) => {
+                    chunks.push((started.elapsed().as_millis(), buffer[..read].to_vec()))
+                }
+            }
+        }
+        chunks
+    }
 }
 
 impl ResourceSampleShell for DedicatedMonitorShell {

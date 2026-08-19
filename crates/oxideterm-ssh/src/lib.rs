@@ -49,6 +49,8 @@ pub use host_key::{
     HostKeyStatus, check_host_key, check_host_key_with_upstream_proxy, remove_host_key,
 };
 pub use monitor::reconnectable_monitor_sampler;
+#[cfg(feature = "monitor-probe")]
+pub use monitor::{ReconnectingMonitorSampler, probe_reconnecting_monitor_sampler};
 pub use oxideterm_connection_monitor::ConnectionPoolMonitorStats;
 pub use oxideterm_sftp::{
     DEFAULT_SFTP_CONCURRENT_TRANSFERS, DEFAULT_SFTP_DIRECTORY_PARALLELISM, FileInfo, FileType,
