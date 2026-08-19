@@ -147,7 +147,7 @@ impl WorkspaceApp {
             })
             .child(
                 div()
-                    .text_size(px(FILE_MANAGER_TEXT_SM))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(rgb(theme.text))
                     .child(self.render_selectable_display_text(
@@ -392,7 +392,7 @@ impl WorkspaceApp {
                         ))
                         .child(
                             div()
-                                .text_size(px(FILE_MANAGER_TEXT_XS))
+                                .text_size(px(self.tokens.metrics.ui_text_xs))
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(rgb(theme.text))
                                 .child(self.render_display_text_with_role(
@@ -450,7 +450,7 @@ impl WorkspaceApp {
             .items_center()
             .justify_between()
             .px(px(12.0))
-            .text_size(px(FILE_MANAGER_TEXT_XS))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .font_weight(gpui::FontWeight::SEMIBOLD)
             .text_color(rgb(theme.text_muted))
             .child(title)
@@ -507,7 +507,7 @@ impl WorkspaceApp {
                     .flex_1()
                     .min_w(px(0.0))
                     .truncate()
-                    .text_size(px(FILE_MANAGER_TEXT_SM))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .text_color(if active {
                         rgb(theme.accent)
                     } else {
@@ -561,7 +561,7 @@ impl WorkspaceApp {
                     .flex_1()
                     .min_w(px(0.0))
                     .truncate()
-                    .text_size(px(FILE_MANAGER_TEXT_SM))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .text_color(if active {
                         rgb(theme.accent)
                     } else {
@@ -832,7 +832,7 @@ impl WorkspaceApp {
             .child(
                 div()
                     .min_w(px(FILE_MANAGER_HEADER_TITLE_MIN_WIDTH))
-                    .text_size(px(FILE_MANAGER_TEXT_XS))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(theme.text_muted))
                     .child(self.render_selectable_display_text(
@@ -1070,7 +1070,7 @@ impl WorkspaceApp {
             .items_center()
             .overflow_hidden()
             .track_scroll(&self.file_manager.read(cx).path_scroll)
-            .text_size(px(FILE_MANAGER_TEXT_SM))
+            .text_size(px(self.tokens.metrics.ui_text_sm))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
                 this.handle_file_manager_breadcrumb_scroll(event, cx);
             }))
@@ -1108,7 +1108,7 @@ impl WorkspaceApp {
             .px(px(0.0))
             .border_0()
             .bg(rgba(0x00000000))
-            .text_size(px(FILE_MANAGER_TEXT_XS))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
@@ -1223,7 +1223,7 @@ impl WorkspaceApp {
             .flex()
             .items_center()
             .gap(px(4.0))
-            .text_size(px(FILE_MANAGER_TEXT_XS))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .text_color(if active {
                 rgb(self.tokens.ui.accent)
             } else {
@@ -1374,7 +1374,7 @@ impl WorkspaceApp {
                         .items_center()
                         .justify_center()
                         .gap(px(8.0))
-                        .text_size(px(FILE_MANAGER_TEXT_XS))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .text_color(rgb(theme.text_muted))
                         .child(self.render_loading_icon(
                             "file-manager-list-loading",
@@ -1401,7 +1401,7 @@ impl WorkspaceApp {
                         .border_1()
                         .border_color(rgba((FILE_MANAGER_RED << 8) | 0x80))
                         .bg(rgba((FILE_MANAGER_RED << 8) | 0x14))
-                        .text_size(px(FILE_MANAGER_TEXT_XS))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .text_color(rgb(FILE_MANAGER_RED))
                         .child(self.render_selectable_text_scoped(
                             "file-manager-list-error",
@@ -1423,7 +1423,7 @@ impl WorkspaceApp {
                         .flex_col()
                         .items_center()
                         .justify_center()
-                        .text_size(px(FILE_MANAGER_TEXT_XS))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .text_color(rgb(theme.text_muted))
                         .child(
                             div()
@@ -1447,6 +1447,7 @@ impl WorkspaceApp {
         }
 
         let file_manager = self.file_manager.clone();
+        let row_text_size = self.tokens.metrics.ui_text_xs;
         let row_count = files.len();
         let list_items = files;
         let row_items = rows;
@@ -1479,7 +1480,7 @@ impl WorkspaceApp {
                                 .py(px(4.0))
                                 .border_b_1()
                                 .border_color(rgba(theme.border << 8))
-                                .text_size(px(FILE_MANAGER_TEXT_XS))
+                                .text_size(px(row_text_size))
                                 .text_color(if selected {
                                     rgb(theme.accent)
                                 } else {
@@ -1648,7 +1649,7 @@ impl WorkspaceApp {
                     .items_center()
                     .justify_between()
                     .gap(px(8.0))
-                    .text_size(px(FILE_MANAGER_TEXT_XS))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .text_color(rgb(theme.text_muted))
                     .child(div().max_w(relative(0.7)).truncate().child(
                         self.render_selectable_display_text(

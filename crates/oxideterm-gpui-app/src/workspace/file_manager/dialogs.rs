@@ -420,7 +420,7 @@ impl WorkspaceApp {
             .px(px(12.0))
             .py(px(6.0))
             .rounded(px(self.tokens.radii.xs))
-            .text_size(px(FILE_MANAGER_TEXT_XS))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .text_color(rgb(color))
             .child(Self::render_lucide_icon(
                 icon,
@@ -582,7 +582,7 @@ impl WorkspaceApp {
                                 div()
                                     .flex_1()
                                     .truncate()
-                                    .text_size(px(FILE_MANAGER_TEXT_SM))
+                                    .text_size(px(self.tokens.metrics.ui_text_sm))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .child(self.render_display_text_with_role(
                                         SelectableTextRole::PlainDocument,
@@ -770,7 +770,7 @@ impl WorkspaceApp {
                                     .flex_1()
                                     .min_w(px(0.0))
                                     .truncate()
-                                    .text_size(px(FILE_MANAGER_TEXT_SM))
+                                    .text_size(px(self.tokens.metrics.ui_text_sm))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(rgb(theme.text))
                                     .child(self.render_selectable_display_text(
@@ -831,7 +831,7 @@ impl WorkspaceApp {
                                         ButtonRadius::Sm,
                                         28.0,
                                         12.0,
-                                        FILE_MANAGER_TEXT_XS,
+                                        self.tokens.metrics.ui_text_xs,
                                     )
                                 },
                                 cx.listener(|this, _event, _window, cx| {
@@ -941,7 +941,7 @@ impl WorkspaceApp {
             .gap(px(12.0))
             .child(
                 div()
-                    .text_size(px(FILE_MANAGER_TEXT_XS))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(self.render_display_text_with_role(
                         SelectableTextRole::PlainDocument,
@@ -997,7 +997,7 @@ impl WorkspaceApp {
                     .flex()
                     .flex_col()
                     .gap(px(4.0))
-                    .text_size(px(FILE_MANAGER_TEXT_XS))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .child(div().text_color(rgb(self.tokens.ui.text_muted)).child(
                         self.render_display_text_with_role(
                             SelectableTextRole::PlainDocument,
@@ -1040,7 +1040,7 @@ impl WorkspaceApp {
             .flex()
             .flex_col()
             .gap(px(12.0))
-            .text_size(px(FILE_MANAGER_TEXT_SM))
+            .text_size(px(self.tokens.metrics.ui_text_sm))
             .child(
                 self.i18n
                     .t("fileManager.confirmDeleteDesc")
@@ -1142,7 +1142,7 @@ impl WorkspaceApp {
                             )
                             .child(
                                 div()
-                                    .text_size(px(FILE_MANAGER_TEXT_XS))
+                                    .text_size(px(self.tokens.metrics.ui_text_xs))
                                     .text_color(rgb(self.tokens.ui.text_muted))
                                     .child(drive.drive_type.clone()),
                             ),
@@ -1150,7 +1150,7 @@ impl WorkspaceApp {
                     .child(
                         div()
                             .mt(px(4.0))
-                            .text_size(px(FILE_MANAGER_TEXT_XS))
+                            .text_size(px(self.tokens.metrics.ui_text_xs))
                             .text_color(rgb(self.tokens.ui.text_muted))
                             .child(self.render_display_text_with_role(
                                 SelectableTextRole::PlainDocument,
@@ -1171,7 +1171,7 @@ impl WorkspaceApp {
                         row.child(
                             div()
                                 .mt(px(4.0))
-                                .text_size(px(FILE_MANAGER_TEXT_XS))
+                                .text_size(px(self.tokens.metrics.ui_text_xs))
                                 .text_color(rgb(FILE_MANAGER_ORANGE))
                                 .child(self.render_display_text_with_role(
                                     SelectableTextRole::PlainDocument,
@@ -1389,7 +1389,7 @@ impl WorkspaceApp {
             .items_start()
             .gap(px(12.0))
             .py(px(6.0))
-            .text_size(px(FILE_MANAGER_TEXT_XS))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .child(
                 div()
                     .min_w(px(104.0))

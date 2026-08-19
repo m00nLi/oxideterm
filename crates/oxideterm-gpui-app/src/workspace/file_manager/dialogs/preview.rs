@@ -20,6 +20,7 @@ fn render_file_manager_archive_row(
     background_panel: u32,
     text_color: u32,
     muted_text_color: u32,
+    text_size: f32,
 ) -> AnyElement {
     let depth = entry
         .path
@@ -37,7 +38,7 @@ fn render_file_manager_archive_row(
         } else {
             rgba(0)
         })
-        .text_size(px(FILE_MANAGER_TEXT_XS))
+        .text_size(px(text_size))
         .child(
             div()
                 .flex()
@@ -185,7 +186,7 @@ impl WorkspaceApp {
                                 div()
                                     .w(px(48.0))
                                     .text_center()
-                                    .text_size(px(FILE_MANAGER_TEXT_XS))
+                                    .text_size(px(self.tokens.metrics.ui_text_xs))
                                     .text_color(rgb(theme.text_muted))
                                     .child(self.render_display_text_with_role(
                                         SelectableTextRole::NonSelectable,
@@ -227,7 +228,7 @@ impl WorkspaceApp {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(FILE_MANAGER_TEXT_SM))
+                                    .text_size(px(self.tokens.metrics.ui_text_sm))
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .child(self.render_selectable_display_text(
                                         "file-manager-preview-title",
@@ -240,7 +241,7 @@ impl WorkspaceApp {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(FILE_MANAGER_TEXT_XS))
+                                    .text_size(px(self.tokens.metrics.ui_text_xs))
                                     .text_color(rgb(theme.text_muted))
                                     .child(self.render_selectable_display_text(
                                         "file-manager-preview-path",
@@ -357,7 +358,7 @@ impl WorkspaceApp {
                     // card and must not paint a rectangular shadow at the edge.
                     .bg(file_manager_panel_bg(theme.bg_card, has_background, 0xff))
                     .rounded_b(px(shell_radius))
-                    .text_size(px(FILE_MANAGER_TEXT_XS))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .text_color(rgb(theme.text_muted))
                     .child(if can_navigate {
                         self.i18n.t("fileManager.quickLookHintNav")
@@ -475,6 +476,7 @@ impl WorkspaceApp {
             .preview_image_zoom
             .clamp(FILE_MANAGER_PREVIEW_MIN_ZOOM, FILE_MANAGER_PREVIEW_MAX_ZOOM);
         let height = 560.0 * zoom;
+        let fallback_text_size = self.tokens.metrics.ui_text_sm;
         let rotation = file_manager.preview_image_rotation.rem_euclid(360);
         let image = if rotation == 0 {
             self.clear_rotated_file_manager_preview_image(window, cx);
@@ -499,7 +501,7 @@ impl WorkspaceApp {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(FILE_MANAGER_TEXT_SM))
+                    .text_size(px(fallback_text_size))
                     .child(fallback_label.clone())
                     .into_any_element()
             })
@@ -618,7 +620,7 @@ impl WorkspaceApp {
                 div()
                     .max_w(px(448.0))
                     .truncate()
-                    .text_size(px(FILE_MANAGER_TEXT_SM))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .text_color(rgb(theme.text_muted))
                     .child(self.render_display_text_with_role(
                         SelectableTextRole::PlainDocument,
@@ -679,7 +681,7 @@ impl WorkspaceApp {
                     .child(
                         div()
                             .min_w(px(92.0))
-                            .text_size(px(FILE_MANAGER_TEXT_XS))
+                            .text_size(px(self.tokens.metrics.ui_text_xs))
                             .text_color(rgb(theme.text_muted))
                             .child(self.render_display_text_with_role(
                                 SelectableTextRole::PlainDocument,
@@ -731,7 +733,7 @@ impl WorkspaceApp {
                     .when_some(snapshot.error, |row, error| {
                         row.child(
                             div()
-                                .text_size(px(FILE_MANAGER_TEXT_XS))
+                                .text_size(px(self.tokens.metrics.ui_text_xs))
                                 .text_color(rgb(FILE_MANAGER_RED))
                                 .child(self.render_display_text_with_role(
                                     SelectableTextRole::PlainDocument,
@@ -746,7 +748,7 @@ impl WorkspaceApp {
             )
             .child(
                 div()
-                    .text_size(px(FILE_MANAGER_TEXT_XS))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .text_color(rgb(theme.text_muted))
                     .child(self.render_display_text_with_role(
                         SelectableTextRole::PlainDocument,
@@ -847,7 +849,7 @@ impl WorkspaceApp {
                         div()
                             .w(px(52.0))
                             .text_center()
-                            .text_size(px(FILE_MANAGER_TEXT_XS))
+                            .text_size(px(self.tokens.metrics.ui_text_xs))
                             .text_color(rgb(theme.text_muted))
                             .child(self.render_selectable_display_text(
                                 "file-manager-font-size",
@@ -887,7 +889,7 @@ impl WorkspaceApp {
                     .child(
                         div()
                             .ml_auto()
-                            .text_size(px(FILE_MANAGER_TEXT_XS))
+                            .text_size(px(self.tokens.metrics.ui_text_xs))
                             .text_color(rgb(theme.text_muted))
                             .child(self.render_selectable_display_text(
                                 "file-manager-font-mime",
@@ -911,7 +913,7 @@ impl WorkspaceApp {
                     .gap(px(20.0))
                     .child(
                         div()
-                            .text_size(px(FILE_MANAGER_TEXT_XS))
+                            .text_size(px(self.tokens.metrics.ui_text_xs))
                             .text_color(rgb(theme.text_muted))
                             .child(self.render_selectable_display_text(
                                 "file-manager-font-family",
@@ -990,7 +992,7 @@ impl WorkspaceApp {
                     ButtonRadius::Sm,
                     24.0,
                     8.0,
-                    FILE_MANAGER_TEXT_XS,
+                    self.tokens.metrics.ui_text_xs,
                 )
             },
             on_click,
@@ -1026,7 +1028,7 @@ impl WorkspaceApp {
                     28.0,
                     28.0,
                     8.0,
-                    FILE_MANAGER_TEXT_XS,
+                    self.tokens.metrics.ui_text_xs,
                 )
             },
             on_click,
@@ -1056,11 +1058,11 @@ impl WorkspaceApp {
             .border_1()
             .border_color(rgb(theme.border))
             .bg(rgb(theme.bg_panel))
-            .text_size(px(FILE_MANAGER_TEXT_XS))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .text_color(rgb(theme.text_muted))
             .child(
                 div()
-                    .text_size(px(FILE_MANAGER_TEXT_SM))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .text_color(rgb(theme.text))
                     .child(self.render_display_text_with_role(
                         SelectableTextRole::PlainDocument,
@@ -1126,7 +1128,7 @@ impl WorkspaceApp {
                             ButtonRadius::Md,
                             32.0,
                             12.0,
-                            FILE_MANAGER_TEXT_XS,
+                            self.tokens.metrics.ui_text_xs,
                         )
                     },
                     cx.listener(move |this, _event, _window, cx| {
@@ -1428,7 +1430,7 @@ impl WorkspaceApp {
                     .flex()
                     .items_center()
                     .gap(px(16.0))
-                    .text_size(px(FILE_MANAGER_TEXT_XS))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(self.render_selectable_display_text(
                         "file-manager-archive-folders",
@@ -1485,6 +1487,7 @@ impl WorkspaceApp {
             .clone();
         let spec = self.file_manager_archive_entry_list_spec();
         let theme = self.tokens.ui;
+        let archive_row_text_size = self.tokens.metrics.ui_text_xs;
         let has_background_for_rows = has_background;
         let entries = info.entries.clone();
         let list_height = entries.len() as f32 * FILE_MANAGER_ARCHIVE_ROW_HEIGHT;
@@ -1502,6 +1505,7 @@ impl WorkspaceApp {
                     theme.bg_panel,
                     theme.text,
                     theme.text_muted,
+                    archive_row_text_size,
                 )
             },
         )));
@@ -1548,7 +1552,7 @@ impl WorkspaceApp {
                 has_background,
                 FILE_MANAGER_PANEL_80_ALPHA,
             ))
-            .text_size(px(FILE_MANAGER_TEXT_XS))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(rgb(self.tokens.ui.text_muted))
             .child(
@@ -1607,7 +1611,7 @@ impl WorkspaceApp {
             .grid_cols(4)
             .gap_x(px(24.0))
             .gap_y(px(8.0))
-            .text_size(px(FILE_MANAGER_TEXT_XS));
+            .text_size(px(self.tokens.metrics.ui_text_xs));
         grid = grid.child(self.render_file_manager_metadata_item(
             LucideIcon::HardDrive,
             self.i18n.t("fileManager.size"),
@@ -1794,7 +1798,7 @@ impl WorkspaceApp {
             } else {
                 Self::render_lucide_icon(icon, 40.0, rgb(self.tokens.ui.text_muted))
             })
-            .child(div().text_size(px(FILE_MANAGER_TEXT_SM)).child(
+            .child(div().text_size(px(self.tokens.metrics.ui_text_sm)).child(
                 self.render_selectable_text_scoped(
                     "file-manager-preview-status-title",
                     &title,
@@ -1808,7 +1812,7 @@ impl WorkspaceApp {
                     div()
                         .max_w(px(520.0))
                         .text_center()
-                        .text_size(px(FILE_MANAGER_TEXT_XS))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .child(self.render_selectable_text_scoped(
                             "file-manager-preview-status-description",
                             &title,
@@ -1831,7 +1835,7 @@ impl WorkspaceApp {
             .flex()
             .items_center()
             .justify_center()
-            .text_size(px(FILE_MANAGER_TEXT_SM))
+            .text_size(px(self.tokens.metrics.ui_text_sm))
             .text_color(rgb(self.tokens.ui.text_muted))
             .child(self.render_selectable_text_scoped(
                 "file-manager-preview-text-status",
