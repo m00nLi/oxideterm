@@ -5,7 +5,7 @@ use std::{sync::Arc, time::Duration};
 
 use oxideterm_connection_monitor::{ResourceSampleShell, ResourceSampler, ResourceSamplerFuture};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::DedicatedMonitorConnection;
 use crate::transport::SamplerStreamDecoder;
@@ -174,6 +174,10 @@ impl ResourceSampler for ReconnectingMonitorSampler {
         timeout: Duration,
     ) -> ResourceSamplerFuture<'a, Result<Box<dyn ResourceSampleShell>, String>> {
         Box::pin(async move {
+            debug!(
+                host = %self.config.host,
+                "reconnecting monitor sampler connecting"
+            );
             let mut client = SshTransportClient::new(self.config.clone());
             if self.keepalive_interval_secs > 0 && !self.keepalive_data.is_empty() {
                 client = client
@@ -183,10 +187,18 @@ impl ResourceSampler for ReconnectingMonitorSampler {
                 .await
                 .map_err(|_| "sampler connect timed out".to_string())?
                 .map_err(|error| error.to_string())?;
+            debug!(
+                host = %self.config.host,
+                "reconnecting monitor sampler connected, opening shell"
+            );
             let shell = tokio::time::timeout(timeout, connection.open_shell_channel(init_command))
                 .await
                 .map_err(|_| "sampler shell open timed out".to_string())?
                 .map_err(|error| error.to_string())?;
+            debug!(
+                host = %self.config.host,
+                "reconnecting monitor sampler shell opened"
+            );
             Ok(Box::new(into_dedicated_monitor_shell(shell)) as Box<dyn ResourceSampleShell>)
         })
     }

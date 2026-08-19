@@ -6,7 +6,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex, MutexGuard},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
 };
+use tracing::{debug, warn};
 
 use crate::{
     MetricsSource, PreviousResourceSample, RESOURCE_HISTORY_CAPACITY, ResourceMetrics,
@@ -663,20 +664,6 @@ async fn sample_loop(
     update_tx: Option<mpsc::UnboundedSender<ProfilerUpdate>>,
     mut stop_rx: oneshot::Receiver<()>,
 ) {
-    let mut shell = match open_resource_sample_shell(sampler.as_ref(), &os_type).await {
-        Ok(shell) => shell,
-        Err(_) => {
-            registry.mark_degraded(&connection_id);
-            record_and_emit(
-                &registry,
-                &update_tx,
-                connection_id,
-                ResourceMetrics::empty(now_ms(), MetricsSource::RttOnly),
-            );
-            return;
-        }
-    };
-
     let initial_command = build_sample_command_for(&os_type, config);
     let live_command = build_live_sample_command(&os_type, config);
     let mut system_info_sampled = false;
@@ -686,6 +673,29 @@ async fn sample_loop(
     let mut interval = tokio::time::interval(RESOURCE_SAMPLE_INTERVAL);
     interval.tick().await;
 
+    let mut shell = loop {
+        match open_resource_sample_shell(sampler.as_ref(), &os_type).await {
+            Ok(shell) => break shell,
+            Err(error) => {
+                warn!(
+                    connection_id,
+                    error = %error,
+                    "profiler sampler shell open failed; keeping last data and retrying"
+                );
+                record_and_emit(
+                    &registry,
+                    &update_tx,
+                    connection_id.clone(),
+                    ResourceMetrics::empty(now_ms(), MetricsSource::RttOnly),
+                );
+                tokio::select! {
+                    _ = &mut stop_rx => return,
+                    _ = interval.tick() => {}
+                }
+            }
+        }
+    };
+
     loop {
         tokio::select! {
             _ = &mut stop_rx => {
@@ -693,28 +703,12 @@ async fn sample_loop(
                 break;
             }
             _ = interval.tick() => {
-                if consecutive_failures >= RESOURCE_MAX_CONSECUTIVE_FAILURES {
-                    registry.mark_degraded(&connection_id);
-                    let timestamp_ms = now_ms();
-                    record_and_emit(
-                        &registry,
-                        &update_tx,
-                        connection_id.clone(),
-                        empty_metrics_with_cached_system_info(
-                            timestamp_ms,
-                            MetricsSource::Unsupported,
-                            cached_system_info.as_ref(),
-                        ),
-                        );
-                    let _ = shell.close().await;
-                    break;
-                    }
-
                 let command = if system_info_sampled {
                     &live_command
                 } else {
                     &initial_command
                 };
+                let started = Instant::now();
                 match shell
                     .sample_until(
                         command,
@@ -725,6 +719,7 @@ async fn sample_loop(
                     .await
                 {
                     Ok(output) => {
+                        let elapsed_ms = started.elapsed().as_millis();
                         let timestamp_ms = now_ms();
                         let mut metrics =
                             parse_resource_metrics(&output, previous_sample.as_ref(), timestamp_ms);
@@ -749,78 +744,44 @@ async fn sample_loop(
                         } else {
                             consecutive_failures = 0;
                         }
-                        if consecutive_failures >= RESOURCE_MAX_CONSECUTIVE_FAILURES {
-                            registry.mark_degraded(&connection_id);
-                            let timestamp_ms = now_ms();
-                            record_and_emit(
-                                &registry,
-                                &update_tx,
-                                connection_id.clone(),
-                                empty_metrics_with_cached_system_info(
-                                    timestamp_ms,
-                                    MetricsSource::Unsupported,
-                                    cached_system_info.as_ref(),
-                                ),
-                            );
-                            let _ = shell.close().await;
-                            break;
-                        }
+                        debug!(
+                            connection_id,
+                            bytes = output.len(),
+                            elapsed_ms,
+                            consecutive_failures,
+                            source = ?metrics.source,
+                            "profiler sample ok"
+                        );
                         previous_sample = previous_sample_from_metrics(&metrics, &output);
                         record_and_emit(&registry, &update_tx, connection_id.clone(), metrics);
                     }
-                    Err(_) => {
+                    Err(error) => {
                         consecutive_failures = consecutive_failures.saturating_add(1);
-                        if consecutive_failures >= RESOURCE_MAX_CONSECUTIVE_FAILURES {
-                            registry.mark_degraded(&connection_id);
-                            let timestamp_ms = now_ms();
-                            record_and_emit(
-                                &registry,
-                                &update_tx,
-                                connection_id.clone(),
-                                empty_metrics_with_cached_system_info(
-                                    timestamp_ms,
-                                    MetricsSource::Unsupported,
-                                    cached_system_info.as_ref(),
-                                ),
-                            );
-                            let _ = shell.close().await;
-                            break;
-                        }
-                        // Tauri writes a Failed sample on each transient read
-                        // failure and then tries to reopen the persistent shell
-                        // once. Without that update, the native UI can look
-                        // inert until the profiler finally degrades.
+                        let elapsed_ms = started.elapsed().as_millis();
+                        warn!(
+                            connection_id,
+                            error = %error,
+                            elapsed_ms,
+                            consecutive_failures,
+                            "profiler sample failed; keeping last data and reopening the shell"
+                        );
+                        // Keep the last good sample visible and reopen the
+                        // shell once. The next tick retries on either shell,
+                        // so a flaky transport self-heals without blanking
+                        // the page or permanently degrading the profiler.
                         if let Ok(new_shell) =
                             open_resource_sample_shell(sampler.as_ref(), &os_type).await
                         {
                             shell = new_shell;
+                            debug!(connection_id, "profiler sampler shell reopened");
+                        } else {
+                            debug!(connection_id, "profiler sampler shell reopen failed");
                         }
-                        record_and_emit(
-                            &registry,
-                            &update_tx,
-                            connection_id.clone(),
-                            empty_metrics_with_cached_system_info(
-                                now_ms(),
-                                MetricsSource::Failed,
-                                cached_system_info.as_ref(),
-                            ),
-                        );
                     }
                 }
             }
         }
     }
-}
-
-fn empty_metrics_with_cached_system_info(
-    timestamp_ms: u64,
-    source: MetricsSource,
-    cached_system_info: Option<&CachedSystemInfo>,
-) -> ResourceMetrics {
-    let mut metrics = ResourceMetrics::empty(timestamp_ms, source);
-    // Preserve stable identity metadata when one live sample fails or becomes unsupported.
-    metrics.system_info = cached_system_info.map(|cached| cached.snapshot_at(timestamp_ms));
-    metrics
 }
 
 async fn open_resource_sample_shell(
@@ -864,6 +825,17 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_metrics_with_cached_system_info(
+        timestamp_ms: u64,
+        source: MetricsSource,
+        cached_system_info: Option<&CachedSystemInfo>,
+    ) -> ResourceMetrics {
+        let mut metrics = ResourceMetrics::empty(timestamp_ms, source);
+        // Preserve stable identity metadata when one live sample fails or becomes unsupported.
+        metrics.system_info = cached_system_info.map(|cached| cached.snapshot_at(timestamp_ms));
+        metrics
+    }
     use crate::MetricsSource;
 
     #[test]
@@ -1079,7 +1051,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sampler_open_failure_degrades_and_emits_rtt_only() {
+    async fn sampler_open_failure_emits_rtt_only_and_keeps_retrying() {
         let registry = ProfilerRegistry::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
 
@@ -1094,11 +1066,14 @@ mod tests {
 
         assert_eq!(update.connection_id, "conn-1");
         assert_eq!(update.metrics.source, MetricsSource::RttOnly);
-        assert_eq!(registry.state("conn-1"), Some(ProfilerState::Degraded));
+        // A transient open failure must not permanently degrade the profiler;
+        // the loop keeps retrying so the sampler self-heals on later ticks.
+        assert_eq!(registry.state("conn-1"), Some(ProfilerState::Running));
         assert_eq!(
             registry.latest("conn-1").map(|metrics| metrics.source),
             Some(MetricsSource::RttOnly)
         );
+        assert!(registry.stop("conn-1"));
     }
 
     #[test]
