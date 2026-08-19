@@ -47,7 +47,7 @@ impl WorkspaceApp {
                                 .child(
                                     div()
                                         .flex_1()
-                                        .text_size(px(11.0))
+                                        .text_size(px(self.tokens.metrics.ui_text_caption))
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(rgba((self.tokens.ui.text_muted << 8) | 0x99))
                                         .child(self.render_display_text_with_role_and_alpha(
@@ -70,7 +70,7 @@ impl WorkspaceApp {
                             div()
                                 .px(px(self.tokens.spacing.three))
                                 .pb(px(self.tokens.spacing.two))
-                                .text_size(px(12.0))
+                                .text_size(px(self.tokens.metrics.ui_text_xs))
                                 .line_height(px(19.0))
                                 .text_color(rgba((self.tokens.ui.text_muted << 8) | 0xb3))
                                 .child(self.render_selectable_text(
@@ -150,7 +150,7 @@ impl WorkspaceApp {
             .min_w_0()
             .flex()
             .flex_col()
-            .text_size(px(13.0))
+            .text_size(px(self.tokens.metrics.ui_text_sm))
             .line_height(px(20.0))
             .text_color(rgb(self.tokens.ui.text));
         if let Some(thinking_content) = thinking_content {
@@ -310,7 +310,7 @@ impl WorkspaceApp {
                         div()
                             .min_w(px(28.0))
                             .text_align(gpui::TextAlign::Center)
-                            .text_size(px(10.0))
+                            .text_size(px(self.tokens.metrics.ui_text_2xs))
                             .text_color(rgba((self.tokens.ui.text_muted << 8) | 0x80))
                             .child(self.render_display_text_with_role_and_alpha(
                                 SelectableTextRole::PlainDocument,
@@ -506,7 +506,7 @@ window.focus(&this.focus_handle, cx);
             return div()
                 .w_full()
                 .min_w_0()
-                .text_size(px(13.0))
+                .text_size(px(self.tokens.metrics.ui_text_sm))
                 .line_height(px(20.0))
                 .text_color(rgb(self.tokens.ui.text))
                 .children(
@@ -647,7 +647,7 @@ window.focus(&this.focus_handle, cx);
                     .rounded(px(self.tokens.radii.md))
                     .border_1()
                     .border_color(rgba((self.tokens.ui.border << 8) | 0x4d))
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .text_color(rgba((self.tokens.ui.text_muted << 8) | 0xb3))
                     .cursor_pointer()
                     .hover(|style| {
@@ -864,7 +864,7 @@ window.focus(&this.focus_handle, cx);
                     .flex()
                     .items_center()
                     .gap(px(self.tokens.spacing.one))
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .text_color(rgba((self.tokens.ui.text_muted << 8) | 0x99))
                     .cursor_pointer()
                     .hover(|style| style.text_color(rgb(self.tokens.ui.text_muted)))
@@ -1078,7 +1078,7 @@ window.focus(&this.focus_handle, cx);
                     .py(px(self.tokens.spacing.one))
                     .bg(rgba((self.tokens.ui.bg_hover << 8) | 0x33))
                     .hover(|style| style.bg(rgba((self.tokens.ui.bg_hover << 8) | 0x66)))
-                    .text_size(px(10.0))
+                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                     .text_color(rgba((self.tokens.ui.text_muted << 8) | 0x66))
                     .child(Self::render_lucide_icon(
                         LucideIcon::FileArchive,
@@ -1335,7 +1335,7 @@ window.focus(&this.focus_handle, cx);
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_size(px(10.0))
+                            .text_size(px(self.tokens.metrics.ui_text_2xs))
                             .text_color(rgba((self.tokens.ui.text_muted << 8) | 0xcc))
                             .child(self.i18n.t("ai.tool_use.recoverable_error")),
                         ai_tool_approval_button(
@@ -1374,7 +1374,7 @@ window.focus(&this.focus_handle, cx);
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_size(px(10.0))
+                            .text_size(px(self.tokens.metrics.ui_text_2xs))
                             .text_color(rgba((self.tokens.ui.text_muted << 8) | 0xcc))
                             .child(self.i18n.t("ai.tool_use.approval_required")),
                         ai_tool_approval_button(
@@ -1472,7 +1472,7 @@ window.focus(&this.focus_handle, cx);
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_size(px(10.0))
+                            .text_size(px(self.tokens.metrics.ui_text_2xs))
                             .text_color(rgba((self.tokens.ui.text_muted << 8) | 0xcc))
                             .child(self.i18n.t("ai.tool_use.approval_required")),
                         option_buttons,
@@ -1508,7 +1508,7 @@ window.focus(&this.focus_handle, cx);
                         .py(px(self.tokens.spacing.two))
                         .child(
                             div()
-                                .text_size(px(10.0))
+                                .text_size(px(self.tokens.metrics.ui_text_2xs))
                                 .text_color(rgba((self.tokens.ui.text_muted << 8) | 0xcc))
                                 .child(self.i18n.t("ai.tool_use.choose_target")),
                         )
@@ -1565,7 +1565,7 @@ window.focus(&this.focus_handle, cx);
                                         div()
                                             .flex_1()
                                             .min_w_0()
-                                            .text_size(px(11.0))
+                                            .text_size(px(self.tokens.metrics.ui_text_caption))
                                             .text_color(rgb(self.tokens.ui.text))
                                             .child(label),
                                     )
@@ -1642,7 +1642,7 @@ window.focus(&this.focus_handle, cx);
             .bg(rgba((self.tokens.ui.bg_hover << 8) | 0x33))
             .px(px(self.tokens.spacing.two))
             .py(px(self.tokens.spacing.two))
-            .text_size(px(11.0))
+            .text_size(px(self.tokens.metrics.ui_text_caption))
             .text_color(rgba((self.tokens.ui.text_muted << 8) | 0x99))
             .child(self.render_loading_icon(
                 (
@@ -1810,7 +1810,7 @@ window.focus(&this.focus_handle, cx);
                     .child(
                         div()
                             .flex_none()
-                            .text_size(px(10.0))
+                            .text_size(px(self.tokens.metrics.ui_text_2xs))
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(rgb(self.tokens.ui.text_muted))
                             .child(self.render_display_text_with_role(
@@ -1837,7 +1837,7 @@ window.focus(&this.focus_handle, cx);
                                 .min_w_0()
                                 .cursor_pointer()
                                 .truncate()
-                                .text_size(px(11.0))
+                                .text_size(px(self.tokens.metrics.ui_text_caption))
                                 .text_color(rgba((self.tokens.ui.text_muted << 8) | 0x99))
                                 .hover(|style| style.text_color(rgb(self.tokens.ui.text)))
                                 .child(self.render_display_text_with_role_and_alpha(

@@ -316,7 +316,7 @@ impl WorkspaceApp {
                 div()
                     .p(px(16.0))
                     .text_center()
-                    .text_size(px(13.0))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(self.render_display_text_with_role(
                         SelectableTextRole::PlainDocument,
@@ -413,7 +413,7 @@ impl WorkspaceApp {
             .rounded(px(self.tokens.radii.sm))
             .border_color(rgba((self.tokens.ui.accent << 8) | 0x66))
             .bg(rgba((self.tokens.ui.bg << 8) | 0x80))
-            .text_size(px(12.0))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .font_weight(gpui::FontWeight::BOLD)
             .on_mouse_down(
                 MouseButton::Left,
@@ -451,7 +451,7 @@ impl WorkspaceApp {
                 .min_w_0()
                 .flex_1()
                 .truncate()
-                .text_size(px(12.0))
+                .text_size(px(self.tokens.metrics.ui_text_xs))
                 .font_weight(gpui::FontWeight::BOLD)
                 .text_color(if is_active {
                     rgb(self.tokens.ui.text)
@@ -683,7 +683,7 @@ impl WorkspaceApp {
             .rounded(px(self.tokens.radii.md))
             .px(px(10.0))
             .py(px(7.0))
-            .text_size(px(12.0))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .text_color(if destructive {
                 rgb(self.tokens.ui.error)
             } else {

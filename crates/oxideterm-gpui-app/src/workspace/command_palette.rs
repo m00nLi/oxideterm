@@ -1310,7 +1310,7 @@ impl WorkspaceApp {
                                 .border_color(rgb(self.tokens.ui.border))
                                 .px(px(12.0))
                                 .py(px(8.0))
-                                .text_size(px(12.0))
+                                .text_size(px(self.tokens.metrics.ui_text_xs))
                                 .text_color(rgb(self.tokens.ui.error))
                                 .child(error),
                         )
@@ -1324,7 +1324,7 @@ impl WorkspaceApp {
                             .flex()
                             .items_center()
                             .gap(px(12.0))
-                            .text_size(px(11.0))
+                            .text_size(px(self.tokens.metrics.ui_text_caption))
                             .line_height(px(16.0))
                             .text_color(rgb(self.tokens.ui.text_muted))
                             .child(self.render_display_text_with_role(
@@ -1382,7 +1382,7 @@ impl WorkspaceApp {
             ))
             .px(px(6.0))
             .py(px(2.0))
-            .text_size(px(12.0))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .font_family(settings_mono_font_family(self.settings_store.settings()))
             .font_weight(gpui::FontWeight::SEMIBOLD)
             .text_color(rgb(self.tokens.ui.accent))
@@ -1407,7 +1407,7 @@ impl WorkspaceApp {
             .px(px(12.0))
             .flex()
             .items_center()
-            .text_size(px(12.0))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .line_height(px(16.0))
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(rgb(self.tokens.ui.text_muted))
@@ -1439,7 +1439,7 @@ impl WorkspaceApp {
                     .ml(px(4.0))
                     .min_w_0()
                     .truncate()
-                    .text_size(px(12.0))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .line_height(px(16.0))
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(detail.clone()),
@@ -1496,7 +1496,7 @@ impl WorkspaceApp {
                         .bg(rgb(self.tokens.ui.bg_panel))
                         .px(px(6.0))
                         .py(px(3.0))
-                        .text_size(px(11.0))
+                        .text_size(px(self.tokens.metrics.ui_text_caption))
                         .text_color(rgb(self.tokens.ui.text_muted))
                         .child(self.i18n.t("common.disabled")),
                 )
@@ -1506,7 +1506,7 @@ impl WorkspaceApp {
                     div()
                         .ml_auto()
                         .flex_none()
-                        .text_size(px(12.0))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .line_height(px(16.0))
                         .text_color(rgb(self.tokens.ui.text_muted))
                         .child(shortcut.clone()),
@@ -1535,7 +1535,7 @@ impl WorkspaceApp {
                     .px(px(16.0))
                     .flex()
                     .items_center()
-                    .text_size(px(14.0))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(self.render_selectable_display_text(
                         "command-palette-empty",
@@ -1576,7 +1576,7 @@ impl WorkspaceApp {
             .items_center()
             .min_w_0()
             .truncate()
-            .text_size(px(14.0))
+            .text_size(px(self.tokens.metrics.ui_text_sm))
             .line_height(px(20.0));
         let highlight_set = highlights.iter().copied().collect::<HashSet<_>>();
         for (index, ch) in text.chars().enumerate() {
@@ -1664,7 +1664,7 @@ impl WorkspaceApp {
                                     .font_family(settings_mono_font_family(
                                         self.settings_store.settings(),
                                     ))
-                                    .text_size(px(10.0))
+                                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                                     .text_color(rgb(self.tokens.ui.text_muted))
                                     .child(if cfg!(target_os = "macos") {
                                         "⌘/".to_string()
@@ -1713,7 +1713,7 @@ impl WorkspaceApp {
                             // bottom edge, so it must own the same clipped inner
                             // corners as Tauri's rounded dialog shell.
                             .rounded_b(px(rounded_shell_child_radius(self.tokens.radii.md)))
-                            .text_size(px(11.0))
+                            .text_size(px(self.tokens.metrics.ui_text_caption))
                             .text_color(rgb(self.tokens.ui.text_muted))
                             .child(self.i18n.t("shortcuts_modal.footer_hint"))
                             .child(

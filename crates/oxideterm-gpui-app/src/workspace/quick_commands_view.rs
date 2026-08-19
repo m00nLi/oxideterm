@@ -852,7 +852,7 @@ impl WorkspaceApp {
         // bounds so AI sidebar and window-width changes shrink the panel
         // instead of clipping its left edge.
         .max_w(px(QUICK_COMMANDS_POPOVER_MAX_WIDTH))
-        .text_size(px(12.0))
+        .text_size(px(self.tokens.metrics.ui_text_xs))
         .font_family(settings_mono_font_family(self.settings_store.settings()))
         .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
             cx.stop_propagation();
@@ -910,7 +910,7 @@ impl WorkspaceApp {
                     .justify_between()
                     .child(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(px(self.tokens.metrics.ui_text_caption))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(rgb(theme.text_muted))
                             .child(self.render_display_text_with_role(
@@ -1084,7 +1084,7 @@ impl WorkspaceApp {
                         .border_color(rgba(0xef444480))
                         .bg(rgba(0xef44441a))
                         .p(px(6.0))
-                        .text_size(px(10.0))
+                        .text_size(px(self.tokens.metrics.ui_text_2xs))
                         .text_color(rgba(0xfca5a5ff))
                         .child(error.clone()),
                 )
@@ -1377,7 +1377,7 @@ window.focus(&this.focus_handle, cx);
                     .child(
                         div()
                             .truncate()
-                            .text_size(px(12.0))
+                            .text_size(px(self.tokens.metrics.ui_text_xs))
                             .text_color(rgba((theme.accent << 8) | 0xd9))
                             .child(self.render_row_safe_selectable_display_text_in_group_with_alpha(
                                 selection_group_id,
@@ -1395,7 +1395,7 @@ window.focus(&this.focus_handle, cx);
                         row.child(
                             div()
                                 .truncate()
-                                .text_size(px(11.0))
+                                .text_size(px(self.tokens.metrics.ui_text_caption))
                                 .text_color(rgba((theme.text_muted << 8) | 0xb3))
                                 .child(self.render_row_safe_selectable_display_text_in_group_with_alpha(
                                     selection_group_id,

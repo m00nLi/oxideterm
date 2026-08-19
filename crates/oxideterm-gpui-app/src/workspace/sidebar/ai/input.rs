@@ -84,7 +84,7 @@ impl WorkspaceApp {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .text_size(px(13.0))
+            .text_size(px(self.tokens.metrics.ui_text_sm))
             .line_height(px(20.0))
             .text_color(if showing_placeholder {
                 rgba((self.tokens.ui.text_muted << 8) | 0x4d)
@@ -330,7 +330,7 @@ window.focus(&this.focus_handle, cx);
                             .flex_col()
                             .child(
                                 div()
-                                    .text_size(px(11.0))
+                                    .text_size(px(self.tokens.metrics.ui_text_caption))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(rgb(self.tokens.ui.text))
                                     .child(method.name),
@@ -338,7 +338,7 @@ window.focus(&this.focus_handle, cx);
                             .when_some(method.description, |column, description| {
                                 column.child(
                                     div()
-                                        .text_size(px(10.0))
+                                        .text_size(px(self.tokens.metrics.ui_text_2xs))
                                         .text_color(rgb(self.tokens.ui.text_muted))
                                         .child(description),
                                 )
@@ -346,7 +346,7 @@ window.focus(&this.focus_handle, cx);
                             .when_some(setup_hint, |column, hint| {
                                 column.child(
                                     div()
-                                        .text_size(px(10.0))
+                                        .text_size(px(self.tokens.metrics.ui_text_2xs))
                                         .text_color(rgb(self.tokens.ui.text_muted))
                                         .child(hint),
                                 )
@@ -397,7 +397,7 @@ window.focus(&this.focus_handle, cx);
                 .gap(px(6.0))
                 .child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(px(self.tokens.metrics.ui_text_caption))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(rgb(self.tokens.ui.warning))
                         .child(self.i18n.t("ai.acp.auth_required")),
@@ -476,7 +476,7 @@ window.focus(&this.focus_handle, cx);
                 div()
                     .px(px(self.tokens.spacing.three))
                     .py(px(self.tokens.spacing.one))
-                    .text_size(px(12.0))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(self.render_display_text_with_role(
@@ -520,7 +520,7 @@ window.focus(&this.focus_handle, cx);
                         .gap(px(self.tokens.spacing.two))
                         .px(px(self.tokens.spacing.three))
                         .py(px(self.tokens.spacing.two))
-                        .text_size(px(12.0))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .text_color(rgb(self.tokens.ui.text))
                         .child(
                             div()
@@ -613,7 +613,7 @@ window.focus(&this.focus_handle, cx);
                     .gap(px(self.tokens.spacing.one / 2.0))
                     .child(
                         div()
-                            .text_size(px(12.0))
+                            .text_size(px(self.tokens.metrics.ui_text_xs))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(rgb(title_color))
                             // Safety mode rows are menu items; text must bubble mouse-down like Tauri select-none labels.
@@ -628,7 +628,7 @@ window.focus(&this.focus_handle, cx);
                     )
                     .child(
                         div()
-                            .text_size(px(10.0))
+                            .text_size(px(self.tokens.metrics.ui_text_2xs))
                             .line_height(px(15.0))
                             .text_color(rgb(self.tokens.ui.text_muted))
                             .child(self.render_display_text_with_role(
@@ -906,7 +906,7 @@ window.focus(&this.focus_handle, cx);
                 .min_w_0()
                 .items_center()
                 .gap(px(4.0))
-                .text_size(px(10.0))
+                .text_size(px(self.tokens.metrics.ui_text_2xs))
                 .text_color(rgb(self.tokens.ui.text_muted))
                 .child(Self::render_lucide_icon(
                     LucideIcon::ListChecks,
@@ -963,7 +963,7 @@ window.focus(&this.focus_handle, cx);
                     .child(
                         div()
                             .mb(px(6.0))
-                            .text_size(px(10.0))
+                            .text_size(px(self.tokens.metrics.ui_text_2xs))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(self.tokens.ui.text_muted))
                             .child(self.render_display_text_with_role(
@@ -1003,7 +1003,7 @@ window.focus(&this.focus_handle, cx);
                     .child(
                         div()
                             .mb(px(6.0))
-                            .text_size(px(10.0))
+                            .text_size(px(self.tokens.metrics.ui_text_2xs))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(self.tokens.ui.text_muted))
                             .child(self.render_display_text_with_role(
@@ -1048,7 +1048,7 @@ window.focus(&this.focus_handle, cx);
                                     .rounded(px(self.tokens.radii.md))
                                     .px(px(12.0))
                                     .py(px(6.0))
-                                    .text_size(px(11.0))
+                                    .text_size(px(self.tokens.metrics.ui_text_caption))
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(rgb(self.tokens.ui.text))
                                     .bg(rgba((self.tokens.ui.border << 8) | 0x1a))
@@ -1104,7 +1104,7 @@ window.focus(&this.focus_handle, cx);
             .py(px(2.0))
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(self.render_selectable_text_scoped(
                         "ai-context-breakdown-label",
@@ -1116,7 +1116,7 @@ window.focus(&this.focus_handle, cx);
             )
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .text_color(rgb(self.tokens.ui.text))
                     .child(self.render_selectable_text_scoped(
                         "ai-context-breakdown-value",

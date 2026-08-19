@@ -299,7 +299,7 @@ impl WorkspaceApp {
                                     .font_family(SharedString::from(
                                         FontFamily::Jetbrains.terminal_family_name(""),
                                     ))
-                                    .text_size(px(10.0))
+                                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                                     .text_color(rgb(terminal_theme.foreground))
                                     .child(
                                         div()
@@ -333,7 +333,7 @@ impl WorkspaceApp {
                             .border_color(rgb(self.tokens.ui.border))
                             .rounded_b(px(card_radius))
                             .bg(rgb(self.tokens.ui.bg_card))
-                            .text_size(px(11.0))
+                            .text_size(px(self.tokens.metrics.ui_text_caption))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(rgb(self.tokens.ui.text))
                             .child(format_theme_label(theme_id)),
@@ -396,7 +396,7 @@ impl WorkspaceApp {
                     .when(bundled, |row| {
                         row.child(
                             div()
-                                .text_size(px(10.0))
+                                .text_size(px(self.tokens.metrics.ui_text_2xs))
                                 .text_color(rgb(self.tokens.ui.success))
                                 .child("✓"),
                         )
@@ -837,7 +837,7 @@ impl WorkspaceApp {
                             .when(!path.is_empty(), |column| {
                                 column.child(
                                     div()
-                                        .text_size(px(11.0))
+                                        .text_size(px(self.tokens.metrics.ui_text_caption))
                                         .font_family(SharedString::from(
                                             FontFamily::Jetbrains.terminal_family_name(""),
                                         ))
@@ -976,7 +976,7 @@ impl WorkspaceApp {
         for (title, rows) in groups {
             let mut column = div().flex().flex_col().gap(px(8.0)).child(
                 div()
-                    .text_size(px(10.0))
+                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(self.i18n.t(&format!("onboarding.{title}")).to_uppercase()),
@@ -1019,13 +1019,13 @@ impl WorkspaceApp {
                     .font_family(SharedString::from(
                         FontFamily::Jetbrains.terminal_family_name(""),
                     ))
-                    .text_size(px(10.0))
+                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(key.to_string()),
             )
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .text_color(rgb(self.tokens.ui.text))
                     .child(self.i18n.t(&format!("onboarding.{desc_key}"))),
             )

@@ -233,7 +233,7 @@ impl WorkspaceApp {
                                             .border_1()
                                             .border_color(rgba((theme.accent << 8) | 0x4d))
                                             .bg(rgba((theme.accent << 8) | 0x1a))
-                                            .text_size(px(11.0))
+                                            .text_size(px(self.tokens.metrics.ui_text_caption))
                                             .text_color(rgb(theme.accent))
                                             .child(Self::render_lucide_icon(
                                                 LucideIcon::Radio,
@@ -353,7 +353,7 @@ impl WorkspaceApp {
                                         .justify_center()
                                         .rounded_full()
                                         .bg(rgba((theme.warning << 8) | 0x24))
-                                        .text_size(px(10.0))
+                                        .text_size(px(self.tokens.metrics.ui_text_2xs))
                                         .text_color(rgb(theme.warning))
                                         .child(command_sender_running_count.to_string()),
                                 )
@@ -519,7 +519,7 @@ impl WorkspaceApp {
                                         .border_1()
                                         .border_color(rgba((theme.error << 8) | 0x4d))
                                         .bg(rgba((theme.error << 8) | 0x1a))
-                                        .text_size(px(11.0))
+                                        .text_size(px(self.tokens.metrics.ui_text_caption))
                                         .text_color(rgb(theme.error))
                                         .child(Self::render_lucide_icon(
                                             LucideIcon::Circle,
@@ -669,7 +669,7 @@ impl WorkspaceApp {
                 .bg(rgba((theme.bg_elevated << 8) | 0xf2))
                 .shadow_lg()
                 .p(px(6.0))
-                .text_size(px(12.0));
+                .text_size(px(self.tokens.metrics.ui_text_xs));
             if let Some(left) = anchor_left {
                 menu.left(px(left))
             } else {
@@ -680,7 +680,7 @@ impl WorkspaceApp {
             div()
                 .px(px(6.0))
                 .py(px(4.0))
-                .text_size(px(11.0))
+                .text_size(px(self.tokens.metrics.ui_text_caption))
                 .text_color(rgb(theme.text_muted))
                 .child(self.i18n.t("terminal.broadcast.select_targets")),
         );
@@ -739,7 +739,7 @@ impl WorkspaceApp {
                                 .px(px(5.0))
                                 .py(px(1.0))
                                 .rounded(px(self.tokens.radii.md))
-                                .text_size(px(10.0))
+                                .text_size(px(self.tokens.metrics.ui_text_2xs))
                                 .text_color(rgb(theme.text_muted))
                                 .bg(rgba((theme.bg_panel << 8) | 0x99))
                                 .child(badge),
@@ -751,7 +751,7 @@ impl WorkspaceApp {
                                 .px(px(5.0))
                                 .py(px(1.0))
                                 .rounded(px(self.tokens.radii.md))
-                                .text_size(px(10.0))
+                                .text_size(px(self.tokens.metrics.ui_text_2xs))
                                 .text_color(rgb(theme.accent))
                                 .bg(rgba((theme.accent << 8) | 0x26))
                                 .child(self.i18n.t("terminal.broadcast.current")),
@@ -776,7 +776,7 @@ impl WorkspaceApp {
 
             let select_all_disabled = selectable.is_empty();
             let select_all_label = div()
-                .text_size(px(11.0))
+                .text_size(px(self.tokens.metrics.ui_text_caption))
                 .text_color(rgb(theme.text_muted))
                 .child(if all_selected {
                     self.i18n.t("terminal.broadcast.deselect_all")
@@ -816,7 +816,7 @@ impl WorkspaceApp {
                     .when(broadcast_enabled, |footer| {
                         footer.child(
                             div()
-                                .text_size(px(10.0))
+                                .text_size(px(self.tokens.metrics.ui_text_2xs))
                                 .text_color(rgb(theme.accent))
                                 .child(self.i18n.t("terminal.broadcast.target_count")),
                         )

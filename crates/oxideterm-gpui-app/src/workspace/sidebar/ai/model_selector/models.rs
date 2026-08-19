@@ -57,7 +57,7 @@ impl WorkspaceApp {
             .rounded(px(self.tokens.radii.md))
             .px(px(self.tokens.spacing.one))
             .py(px(self.tokens.spacing.one / 2.0))
-            .text_size(px(10.0))
+            .text_size(px(self.tokens.metrics.ui_text_2xs))
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(if open {
                 rgb(self.tokens.ui.text)
@@ -132,7 +132,7 @@ impl WorkspaceApp {
                 div()
                     .px(px(self.tokens.spacing.three))
                     .py(px(self.tokens.spacing.one))
-                    .text_size(px(12.0))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(self.i18n.t("ai.reasoning.title")),
@@ -152,7 +152,7 @@ impl WorkspaceApp {
                     .rounded(px(self.tokens.radii.md))
                     .px(px(self.tokens.spacing.two))
                     .py(px(self.tokens.spacing.one + self.tokens.spacing.one / 2.0))
-                    .text_size(px(12.0))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .text_color(rgb(self.tokens.ui.text))
                     .bg(if is_selected {
                         rgba((self.tokens.ui.accent << 8) | 0x1a)
@@ -503,7 +503,7 @@ impl WorkspaceApp {
                     .mt(px(self.tokens.spacing.one))
                     .px(px(self.tokens.spacing.two))
                     .py(px(self.tokens.spacing.one))
-                    .text_size(px(10.0))
+                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(self.i18n.t("ai.model_selector.session_mode")),
@@ -553,7 +553,7 @@ impl WorkspaceApp {
                     .mt(px(self.tokens.spacing.one))
                     .px(px(self.tokens.spacing.two))
                     .py(px(self.tokens.spacing.one))
-                    .text_size(px(10.0))
+                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(config_option.name.clone()),

@@ -394,7 +394,7 @@ impl WorkspaceApp {
                     .flex()
                     .flex_col()
                     .gap(px(2.0))
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .text_color(rgb(theme.text_muted))
                     .child(self.active_highlight_source_label(cx))
                     .child(self.i18n.t("terminal.highlight_override.override_hint")),
@@ -465,7 +465,7 @@ impl WorkspaceApp {
                 div()
                     .px(px(8.0))
                     .pb(px(6.0))
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .text_color(rgb(theme.text_muted))
                     .child(
                         self.i18n
@@ -574,7 +574,7 @@ impl WorkspaceApp {
                 .bg(rgba((theme.bg_elevated << 8) | 0xf7))
                 .shadow_lg()
                 .p(px(8.0))
-                .text_size(px(12.0));
+                .text_size(px(self.tokens.metrics.ui_text_xs));
             if let Some(left) = anchor_left {
                 popover.left(px(left))
             } else {
@@ -634,7 +634,7 @@ impl WorkspaceApp {
                 div()
                     .max_w(px(120.0))
                     .truncate()
-                    .text_size(px(10.0))
+                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                     .text_color(rgb(theme.text_muted))
                     .child(summary),
             )

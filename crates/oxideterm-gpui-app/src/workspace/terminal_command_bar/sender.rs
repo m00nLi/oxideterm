@@ -291,7 +291,7 @@ impl WorkspaceApp {
                         rgba(0x00000000)
                     })
                     .cursor_pointer()
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .text_color(foreground)
                     .hover(|tab| tab.bg(rgb(self.tokens.ui.bg_hover)))
                     .child(Self::render_lucide_icon(status_icon, 12.0, foreground))
@@ -781,7 +781,7 @@ impl WorkspaceApp {
                     .px(px(8.0))
                     .flex()
                     .items_center()
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(label),
             )
@@ -811,7 +811,7 @@ impl WorkspaceApp {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .font_family(settings_mono_font_family(self.settings_store.settings()))
                     .child(value),
             )
@@ -1120,7 +1120,7 @@ impl WorkspaceApp {
                     .flex()
                     .items_center()
                     .gap(px(3.0))
-                    .text_size(px(10.0))
+                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(Self::render_lucide_icon(
                         category_icon,

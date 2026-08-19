@@ -401,7 +401,7 @@ impl WorkspaceApp {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_size(px(11.0))
+                        .text_size(px(self.tokens.metrics.ui_text_caption))
                         .text_color(rgb(self.tokens.ui.text_muted))
                         .child(self.render_display_text_with_role(
                             SelectableTextRole::PlainDocument,
@@ -439,7 +439,7 @@ impl WorkspaceApp {
             .child(
                 div()
                     .flex_1()
-                    .text_size(px(10.0))
+                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                     .text_color(rgb(warning_color))
                     .child(
                         self.render_display_text_with_role(
@@ -501,7 +501,7 @@ impl WorkspaceApp {
                         div()
                             .w_full()
                             .min_w_0()
-                            .text_size(px(13.0))
+                            .text_size(px(self.tokens.metrics.ui_text_sm))
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(rgb(self.tokens.ui.text))
                             .child(self.render_display_text_with_role(
@@ -517,7 +517,7 @@ impl WorkspaceApp {
                         div()
                             .w_full()
                             .min_w_0()
-                            .text_size(px(12.0))
+                            .text_size(px(self.tokens.metrics.ui_text_xs))
                             .line_height(px(18.0))
                             .text_color(rgb(self.tokens.ui.text_muted))
                             .child(self.render_display_text_with_role(
@@ -538,7 +538,7 @@ impl WorkspaceApp {
                         .rounded(px(self.tokens.radii.md))
                         .bg(rgb(self.tokens.ui.accent))
                         .text_color(rgb(self.tokens.ui.bg))
-                        .text_size(px(12.0))
+                        .text_size(px(self.tokens.metrics.ui_text_xs))
                         .font_weight(gpui::FontWeight::BOLD)
                         .cursor_pointer()
                         .child(self.render_display_text_with_role(
@@ -578,7 +578,7 @@ impl WorkspaceApp {
                     .w_full()
                     .min_w_0()
                     .mb(px(24.0))
-                    .text_size(px(13.0))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(rgb(self.tokens.ui.text))
                     .whitespace_nowrap()
@@ -642,7 +642,7 @@ impl WorkspaceApp {
             .rounded(px(self.tokens.radii.md))
             .px(px(10.0))
             .py(px(7.0))
-            .text_size(px(12.0))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .text_color(rgb(self.tokens.ui.text_muted))
             .cursor_pointer()
             .hover(|style| {
@@ -737,7 +737,7 @@ window.focus(&this.focus_handle, cx);
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .text_color(rgb(warning_color))
                     .child(self.render_display_text_with_role(
                         SelectableTextRole::PlainDocument,

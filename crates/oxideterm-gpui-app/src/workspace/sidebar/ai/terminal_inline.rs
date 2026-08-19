@@ -253,7 +253,7 @@ impl WorkspaceApp {
                                         .items_center()
                                         .overflow_hidden()
                                         .font_family(settings_mono_font_family(self.settings_store.settings()))
-                                        .text_size(px(13.0))
+                                        .text_size(px(self.tokens.metrics.ui_text_sm))
                                         .text_color(if showing_placeholder {
                                             rgb(theme.text_muted)
                                         } else {
@@ -373,7 +373,7 @@ window.focus(&this.focus_handle, cx);
                                             .py(px(8.0))
                                             .bg(rgb(theme.bg_sunken))
                                             .font_family(settings_mono_font_family(self.settings_store.settings()))
-                                            .text_size(px(13.0))
+                                            .text_size(px(self.tokens.metrics.ui_text_sm))
                                             .line_height(px(20.0))
                                             .text_color(rgb(theme.accent))
                                             .child(if response_command.is_empty() {
@@ -510,7 +510,7 @@ window.focus(&this.focus_handle, cx);
             .flex()
             .items_center()
             .gap(px(6.0))
-            .text_size(px(10.0))
+            .text_size(px(self.tokens.metrics.ui_text_2xs))
             .text_color(rgb(theme.text_muted))
             .when(
                 !response_has_text && !loading && prompt_has_text,
@@ -550,7 +550,7 @@ window.focus(&this.focus_handle, cx);
             .bg(bg)
             .px(px(8.0))
             .py(px(6.0))
-            .text_size(px(12.0))
+            .text_size(px(self.tokens.metrics.ui_text_xs))
             .text_color(fg)
             .child(Self::render_lucide_icon(icon, 14.0, fg))
             .child(div().truncate().child(message))
@@ -578,7 +578,7 @@ window.focus(&this.focus_handle, cx);
             .rounded(px(self.tokens.radii.md))
             .px(px(8.0))
             .py(px(4.0))
-            .text_size(px(11.0))
+            .text_size(px(self.tokens.metrics.ui_text_caption))
             .text_color(fg)
             .bg(if primary {
                 rgb(theme.accent)

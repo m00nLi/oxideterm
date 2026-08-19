@@ -456,7 +456,7 @@ impl LauncherWorkspaceEntity {
                     div()
                         .flex()
                         .items_center()
-                        .text_size(px(14.0))
+                        .text_size(px(tokens.metrics.ui_text_sm))
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(rgb(theme.text))
                         .overflow_hidden()
@@ -818,7 +818,7 @@ impl WorkspaceApp {
             ))
             .child(
                 div()
-                    .text_size(px(14.0))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(rgb(theme.text))
                     .child(self.i18n.t("launcher.wslTitle")),
@@ -827,7 +827,7 @@ impl WorkspaceApp {
             .child(
                 div()
                     .font_family(settings_mono_font_family(self.settings_store.settings()))
-                    .text_size(px(10.0))
+                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                     .text_color(rgb(theme.text_muted))
                     .child(format!("{filtered_count} distros")),
             )
@@ -1070,14 +1070,14 @@ impl WorkspaceApp {
                     .gap(px(8.0))
                     .child(
                         div()
-                            .text_size(px(16.0))
+                            .text_size(px(self.tokens.metrics.ui_text_base))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(theme.text))
                             .child(self.i18n.t("launcher.consentTitle")),
                     )
                     .child(
                         div()
-                            .text_size(px(14.0))
+                            .text_size(px(self.tokens.metrics.ui_text_sm))
                             .line_height(px(20.0))
                             .text_color(rgb(theme.text_secondary))
                             .child(self.i18n.t("launcher.consentDescription")),
@@ -1163,7 +1163,7 @@ impl WorkspaceApp {
             )))
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .line_height(px(18.0))
                     .text_color(rgb(theme.text_muted))
                     .child(label)
@@ -1174,7 +1174,7 @@ impl WorkspaceApp {
                                 .font_family(settings_mono_font_family(
                                     self.settings_store.settings(),
                                 ))
-                                .text_size(px(10.0))
+                                .text_size(px(self.tokens.metrics.ui_text_2xs))
                                 .text_color(rgba(
                                     (theme.text_muted << 8) | LAUNCHER_TEXT_MUTED_60_ALPHA,
                                 ))
@@ -1300,7 +1300,7 @@ impl WorkspaceApp {
             .child(
                 div()
                     .font_family(settings_mono_font_family(self.settings_store.settings()))
-                    .text_size(px(10.0))
+                    .text_size(px(self.tokens.metrics.ui_text_2xs))
                     .text_color(rgba((theme.text_muted << 8) | 0x80))
                     .child(launcher_core::count_label(
                         filtered_count,
@@ -1376,7 +1376,7 @@ impl WorkspaceApp {
             .child(
                 div()
                     .flex_1()
-                    .text_size(px(12.0))
+                    .text_size(px(self.tokens.metrics.ui_text_xs))
                     .text_color(rgb(LAUNCHER_RED_400))
                     .child(self.i18n.t("launcher.disableConfirm")),
             )
@@ -1549,7 +1549,7 @@ impl WorkspaceApp {
             })
             .child(
                 div()
-                    .text_size(px(14.0))
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
                     .text_align(gpui::TextAlign::Center)
                     .text_color(rgba((icon_color << 8) | 0xcc))
                     .child(label),

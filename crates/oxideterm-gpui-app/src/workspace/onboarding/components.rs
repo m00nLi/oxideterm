@@ -132,7 +132,7 @@ impl WorkspaceApp {
                     .when_some(hint_key, |row, key| {
                         row.child(
                             div()
-                                .text_size(px(10.0))
+                                .text_size(px(self.tokens.metrics.ui_text_2xs))
                                 .text_color(rgb(self.tokens.ui.text_muted))
                                 .child(self.i18n.t(key)),
                         )
@@ -200,7 +200,7 @@ impl WorkspaceApp {
             )
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(self.i18n.t(&format!("onboarding.{key}_desc"))),
             )
@@ -268,7 +268,7 @@ impl WorkspaceApp {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(rgb(self.tokens.ui.accent))
                     .child(number.to_string()),
@@ -336,7 +336,7 @@ impl WorkspaceApp {
             ))
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .text_color(rgb(self.tokens.ui.text))
                     .child(self.i18n.t(&format!("onboarding.{key}"))),
             )
@@ -393,7 +393,7 @@ impl WorkspaceApp {
                     )
                     .child(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(px(self.tokens.metrics.ui_text_caption))
                             .text_color(rgb(self.tokens.ui.text_muted))
                             .child(self.i18n.t(hint_key)),
                     ),
@@ -478,7 +478,7 @@ impl WorkspaceApp {
                     .when(!detail.is_empty(), |column| {
                         column.child(
                             div()
-                                .text_size(px(11.0))
+                                .text_size(px(self.tokens.metrics.ui_text_caption))
                                 .text_color(rgb(self.tokens.ui.text_muted))
                                 .child(detail),
                         )
@@ -512,7 +512,7 @@ impl WorkspaceApp {
             .child(
                 div()
                     .flex_1()
-                    .text_size(px(11.0))
+                    .text_size(px(self.tokens.metrics.ui_text_caption))
                     .text_color(rgb(self.tokens.ui.text_muted))
                     .child(text),
             )
