@@ -22,13 +22,16 @@ pub(super) fn sample_command() -> String {
             "echo unavailable; ",
             "else ",
             "echo available; ",
+            // A hung driver query (e.g. compute-apps under heavy vLLM load)
+            // must not stall the whole GPU sample; bound each invocation.
+            "oxide_nv_run() {{ if command -v timeout >/dev/null 2>&1; then timeout 5 \"$@\"; else \"$@\"; fi; }}; ",
             "echo '===NVIDIA_GPUS==='; ",
-            "gpu_output=$(LC_ALL=C nvidia-smi --query-gpu={gpu_fields} --format=csv,noheader,nounits 2>&1); ",
+            "gpu_output=$(oxide_nv_run env LC_ALL=C nvidia-smi --query-gpu={gpu_fields} --format=csv,noheader,nounits 2>&1); ",
             "gpu_exit=$?; printf '%s\\n' \"$gpu_output\"; ",
             "echo '===NVIDIA_GPU_QUERY_EXIT==='; echo \"$gpu_exit\"; ",
             "if [ \"$gpu_exit\" -eq 0 ]; then ",
             "echo '===NVIDIA_PROCESSES==='; ",
-            "LC_ALL=C nvidia-smi --query-compute-apps={process_fields} --format=csv,noheader,nounits 2>/dev/null || true; ",
+            "oxide_nv_run env LC_ALL=C nvidia-smi --query-compute-apps={process_fields} --format=csv,noheader,nounits 2>/dev/null || true; ",
             "else ",
             "echo '===NVIDIA_ERROR==='; printf '%s\\n' \"$gpu_output\"; ",
             "fi; ",
