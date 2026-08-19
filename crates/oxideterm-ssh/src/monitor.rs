@@ -1,10 +1,9 @@
 // Copyright (C) 2026 AnalyseDeCircuit
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+#[cfg(feature = "monitor-probe")]
+use std::time::Instant;
+use std::{sync::Arc, time::Duration};
 
 use oxideterm_connection_monitor::{ResourceSampleShell, ResourceSampler, ResourceSamplerFuture};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

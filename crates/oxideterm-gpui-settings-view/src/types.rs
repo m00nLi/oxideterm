@@ -73,6 +73,9 @@ impl SettingsSelectAnchorExt for SettingsSelect {
             Self::RemoteShellIntegrationMode => SelectAnchorId::SettingsRemoteShellIntegrationMode,
             Self::IdeAgentMode => SelectAnchorId::SettingsIdeAgentMode,
             Self::LocalShell => SelectAnchorId::SettingsLocalShell,
+            Self::LocalShellSemanticScheme(index) => {
+                SelectAnchorId::SettingsLocalShellSemanticScheme(index)
+            }
             Self::LocalPrivilegeKind => SelectAnchorId::SettingsLocalPrivilegeKind,
             Self::ConnectionIdleTimeout => SelectAnchorId::SettingsConnectionIdleTimeout,
             Self::ReconnectMaxAttempts => SelectAnchorId::SettingsReconnectMaxAttempts,
@@ -91,10 +94,19 @@ impl SettingsSelectAnchorExt for SettingsSelect {
             Self::KnowledgeDocumentFormat => SelectAnchorId::SettingsKnowledgeDocumentFormat,
             Self::AiMcpTransport => SelectAnchorId::SettingsAiMcpTransport,
             Self::AiMcpAuthMode => SelectAnchorId::SettingsAiMcpAuthMode,
+            Self::SftpPresentation => SelectAnchorId::SettingsSftpPresentation,
             Self::SftpProtocol => SelectAnchorId::SettingsSftpProtocol,
             Self::SftpConcurrent => SelectAnchorId::SettingsSftpConcurrent,
             Self::SftpDirectoryParallelism => SelectAnchorId::SettingsSftpDirectoryParallelism,
             Self::SftpConflict => SelectAnchorId::SettingsSftpConflict,
+            Self::TerminalSemanticScheme => SelectAnchorId::SettingsTerminalSemanticScheme,
+            Self::SemanticSchemeRuleClass(index) => {
+                SelectAnchorId::SettingsSemanticSchemeRuleClass(index)
+            }
+            Self::SemanticSchemeRuleContext(index) => {
+                SelectAnchorId::SettingsSemanticSchemeRuleContext(index)
+            }
+            Self::HighlightRuleSet => SelectAnchorId::SettingsHighlightRuleSet,
             Self::HighlightPreset => SelectAnchorId::SettingsHighlightPreset,
             Self::HighlightRenderMode(index) => SelectAnchorId::SettingsHighlightRenderMode(index),
             Self::HighlightMatchScope(index) => SelectAnchorId::SettingsHighlightMatchScope(index),

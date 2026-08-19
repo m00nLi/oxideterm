@@ -29,6 +29,7 @@ const NATIVE_PLUGIN_LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(5);
 const NATIVE_PLUGIN_DELIVERY_POLL_INTERVAL: Duration = Duration::from_millis(80);
 const NATIVE_PLUGIN_RELEASE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const NATIVE_PLUGIN_WORKSPACE_RELEASED_CODE: &str = "plugin_workspace_released";
+const NATIVE_PLUGIN_MANAGED_INSTALL_CANCELLED_CODE: &str = "managed_plugin_install_cancelled";
 
 pub(in crate::workspace) enum PluginWorkspaceEvent {
     ManagerDeliveryReady,
@@ -109,7 +110,7 @@ fn native_plugin_runtime_failure_message(error: plugin_runtime::PluginError) -> 
     // Runtime text is plugin-controlled and may echo request data. Keep only
     // known host codes and erase the raw text at the delivery boundary.
     let _sensitive_message = Zeroizing::new(message);
-    if code == plugin_runtime::WASM_RUNTIME_NOT_INSTALLED_CODE {
+    if code == plugin_runtime::WASM_RUNTIME_UNAVAILABLE_CODE {
         code
     } else {
         NATIVE_PLUGIN_RUNTIME_FAILURE_DIAGNOSTIC.to_string()
@@ -402,7 +403,6 @@ impl PluginWorkspaceEntity {
     pub(in crate::workspace) fn start_runtime_bootstrap(
         &mut self,
         host_api_resolver: plugin_runtime::NativeHostApiResolver,
-        wasm_sidecar_path: Option<PathBuf>,
     ) -> bool {
         if self.release_shutdown_started {
             return false;
@@ -424,7 +424,6 @@ impl PluginWorkspaceEntity {
         let delivery_tx = self.runtime_delivery_tx.clone();
         self.spawn_owned_task(async move {
             let mut host = host.lock().await;
-            host.set_wasm_sidecar_path(wasm_sidecar_path);
             host.set_host_api_resolver(host_api_resolver);
             // Preserve deterministic activation order across process and WASM runtimes.
             for plan in process_plans {
@@ -654,6 +653,7 @@ impl PluginWorkspaceEntity {
     pub(in crate::workspace) fn start_package_install(
         &mut self,
         settings_path: PathBuf,
+        expected_id: Option<String>,
         download_url: Zeroizing<String>,
         checksum: Option<String>,
         overwrite: bool,
@@ -664,13 +664,28 @@ impl PluginWorkspaceEntity {
         self.manager_operation_in_flight = true;
         let delivery_tx = self.manager_delivery_tx.clone();
         self.spawn_owned_task(async move {
-            let result = plugin_host::NativePluginRegistry::install_plugin_package_from_url(
-                &settings_path,
-                download_url.trim(),
-                checksum.as_deref(),
-                overwrite,
-            )
-            .await;
+            let result = match (expected_id.as_deref(), checksum.as_deref()) {
+                (Some(expected_id), Some(checksum)) => {
+                    plugin_host::NativePluginRegistry::install_managed_plugin_package_from_url(
+                        &settings_path,
+                        expected_id,
+                        download_url.trim(),
+                        checksum,
+                        overwrite,
+                    )
+                    .await
+                }
+                (Some(_), None) => Err("Marketplace plugin package is missing SHA-256".to_string()),
+                (None, checksum) => {
+                    plugin_host::NativePluginRegistry::install_plugin_package_from_url(
+                        &settings_path,
+                        download_url.trim(),
+                        checksum,
+                        overwrite,
+                    )
+                    .await
+                }
+            };
             let outcome = match result {
                 Ok(result) => plugin_manager::NativePluginInstallOutcome::Installed(result),
                 Err(error) => {
@@ -686,10 +701,28 @@ impl PluginWorkspaceEntity {
             // Move the original request values into the result; no duplicate
             // URL or checksum is retained while the package worker runs.
             let _ = delivery_tx.send(plugin_manager::NativePluginManagerDelivery::Install {
+                expected_id,
                 download_url,
                 checksum,
                 outcome,
             });
+        });
+        true
+    }
+
+    pub(in crate::workspace) fn start_marketplace_load(&mut self) -> bool {
+        if self.manager_operation_in_flight || self.release_shutdown_started {
+            return false;
+        }
+        self.manager_operation_in_flight = true;
+        let delivery_tx = self.manager_delivery_tx.clone();
+        self.spawn_owned_task(async move {
+            let registry = plugin_host::NativePluginRegistry::fetch_official_plugin_registry()
+                .await
+                .map_err(Zeroizing::new)
+                .ok();
+            let _ = delivery_tx
+                .send(plugin_manager::NativePluginManagerDelivery::LoadMarketplace(registry));
         });
         true
     }
@@ -701,6 +734,7 @@ impl PluginWorkspaceEntity {
         checksum: String,
         package_bytes: Zeroizing<Vec<u8>>,
         overwrite: bool,
+        cancellation: tokio_util::sync::CancellationToken,
     ) -> Option<
         tokio::sync::oneshot::Receiver<Result<plugin_host::NativePluginUrlInstallResult, String>>,
     > {
@@ -710,6 +744,11 @@ impl PluginWorkspaceEntity {
         self.manager_operation_in_flight = true;
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         self.spawn_owned_task(async move {
+            if cancellation.is_cancelled() {
+                let _ =
+                    result_tx.send(Err(NATIVE_PLUGIN_MANAGED_INSTALL_CANCELLED_CODE.to_owned()));
+                return;
+            }
             // The package bytes stay zeroizing while the registry validates and extracts them.
             let result = plugin_host::NativePluginRegistry::install_managed_plugin_package(
                 &settings_path,
@@ -765,26 +804,6 @@ impl PluginWorkspaceEntity {
         true
     }
 
-    pub(in crate::workspace) fn start_wasm_runtime_install(
-        &mut self,
-        settings_path: PathBuf,
-    ) -> bool {
-        if self.manager_operation_in_flight || self.release_shutdown_started {
-            return false;
-        }
-        self.manager_operation_in_flight = true;
-        let delivery_tx = self.manager_delivery_tx.clone();
-        self.spawn_owned_task(async move {
-            let result =
-                oxideterm_plugin_runtime_install::install_wasm_runtime_sidecar(&settings_path)
-                    .await;
-            let result = result.map_err(Zeroizing::new).ok();
-            let _ = delivery_tx
-                .send(plugin_manager::NativePluginManagerDelivery::InstallWasmRuntime(result));
-        });
-        true
-    }
-
     pub(in crate::workspace) fn apply_manager_deliveries(
         &mut self,
         settings_path: &std::path::Path,
@@ -805,6 +824,7 @@ impl PluginWorkspaceEntity {
     ) -> bool {
         match delivery {
             plugin_manager::NativePluginManagerDelivery::Install {
+                expected_id,
                 download_url,
                 checksum,
                 outcome,
@@ -830,6 +850,7 @@ impl PluginWorkspaceEntity {
                     self.manager_state.pending_overwrite =
                         Some(plugin_manager::NativePluginPendingOverwrite {
                             plugin_id,
+                            expected_id,
                             download_url,
                             checksum,
                         });
@@ -847,6 +868,45 @@ impl PluginWorkspaceEntity {
                     false
                 }
             },
+            plugin_manager::NativePluginManagerDelivery::LoadMarketplace(result) => {
+                match result {
+                    Some(registry) => {
+                        let installed = self
+                            .registry
+                            .plugins()
+                            .iter()
+                            .map(|plugin| plugin_host::NativePluginInstalledInfo {
+                                id: plugin.manifest.id.clone(),
+                                version: plugin.manifest.version.clone(),
+                            })
+                            .collect::<Vec<_>>();
+                        self.manager_state.available_updates =
+                            plugin_host::NativePluginRegistry::check_plugin_updates(
+                                registry.clone(),
+                                &installed,
+                            );
+                        self.manager_state.marketplace_entries = registry.plugins;
+                        self.manager_state.marketplace_load_state =
+                            plugin_manager::NativePluginMarketplaceLoadState::Loaded;
+                        self.manager_state.operation_status =
+                            plugin_manager::NativePluginManagerOperationStatus::Idle;
+                    }
+                    None => {
+                        self.manager_state.marketplace_load_state =
+                            plugin_manager::NativePluginMarketplaceLoadState::Failed;
+                        self.manager_state.operation_status =
+                            plugin_manager::NativePluginManagerOperationStatus::Error(
+                                i18n.t("plugin.marketplace_load_error"),
+                            );
+                    }
+                }
+                self.manager_state.section_list_state.splice(
+                    plugin_manager::PLUGIN_MANAGER_TABBED_CONTENT_SECTION_INDEX
+                        ..plugin_manager::PLUGIN_MANAGER_TABBED_CONTENT_SECTION_INDEX + 1,
+                    1,
+                );
+                false
+            }
             plugin_manager::NativePluginManagerDelivery::CheckUpdates(result) => {
                 match result {
                     Some(updates) => {
@@ -867,24 +927,6 @@ impl PluginWorkspaceEntity {
                 }
                 false
             }
-            plugin_manager::NativePluginManagerDelivery::InstallWasmRuntime(result) => match result
-            {
-                Some(result) => {
-                    self.manager_state.operation_status =
-                        plugin_manager::NativePluginManagerOperationStatus::Success(
-                            i18n.t("plugin.wasm_runtime_install_success")
-                                .replace("{{version}}", &result.version),
-                        );
-                    true
-                }
-                None => {
-                    self.manager_state.operation_status =
-                        plugin_manager::NativePluginManagerOperationStatus::Error(
-                            i18n.t("plugin.install_error"),
-                        );
-                    false
-                }
-            },
         }
     }
 

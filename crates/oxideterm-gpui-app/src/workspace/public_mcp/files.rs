@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use oxideterm_public_mcp::{
-    ClientRef, DomainRequest, FileSessionRef, PublicToolCall, ToolEnvelope,
+    ClientRef, DomainRequest, FileSessionRef, PublicToolCall, ToolEnvelope, ToolGroup,
 };
 use oxideterm_sftp::{FileInfo, FileType, ListFilter, SortOrder};
 use oxideterm_ssh::{ConnectionConsumer, NodeId, NodeRouter};
@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     PublicMcpFileSessionRecord, PublicMcpRuntimeHandles, WorkspaceApp, finish_serialized,
-    node_lease_for_client,
+    node_lease_for_client, workspaces,
 };
 
 const FILE_SESSION_CAPACITY: usize = 128;
@@ -190,6 +190,13 @@ impl WorkspaceApp {
             request.finish(ToolEnvelope::failed("The SFTP handle is unavailable"));
             return;
         };
+        for workspace in workspaces::take_file_session_workspaces(
+            &self.public_mcp.runtime_handles,
+            &args.file_session_ref,
+        ) {
+            workspace.revoke();
+        }
+        self.cancel_public_mcp_file_session_transfers(&args.file_session_ref);
         if let Some(connection_id) = record.physical_connection_id {
             self.node_router
                 .release_consumer(&connection_id, &record.consumer);
@@ -286,6 +293,7 @@ impl WorkspaceApp {
             .maximum_bytes
             .map_or(FILE_READ_DEFAULT_LIMIT, |limit| limit as usize);
         let artifact_store = self.public_mcp.state.artifacts.clone();
+        let clients = self.public_mcp.state.clients.clone();
         let client_ref = request.client_ref.clone();
         self.start_public_mcp_file_job(request, move |record| async move {
             let root = ready_root(&record)?;
@@ -308,12 +316,23 @@ impl WorkspaceApp {
             let byte_count = bytes.len();
             let artifact = artifact_store
                 .stage(
-                    client_ref,
+                    client_ref.clone(),
                     &bytes,
                     "application/octet-stream".to_owned(),
                     safe_artifact_name(&canonical_path),
                 )
                 .map_err(|_| "The remote file artifact could not be retained")?;
+            let artifact_authorized = clients.get(&client_ref).is_some_and(|client| {
+                client.enabled
+                    && client.tool_groups.contains(&ToolGroup::FileRead)
+                    && client.tool_groups.contains(&ToolGroup::ArtifactTransfer)
+            });
+            if !artifact_authorized {
+                // Revocation can race the remote read; the finished bytes must not
+                // recreate a data-plane handle after either required group closes.
+                artifact_store.revoke(&client_ref, &artifact.artifact_ref);
+                return Err("The MCP client authorization changed while reading the file");
+            }
             let next_offset = offset
                 .saturating_add(byte_count as u64)
                 .lt(&total_size)
@@ -577,7 +596,7 @@ pub(super) fn invalidate_for_disconnected_nodes(
         .retain(|_, record| !disconnected.contains(&record.node_id));
 }
 
-async fn refresh_file_session(
+pub(super) async fn refresh_file_session(
     router: &NodeRouter,
     handles: &Arc<parking_lot::Mutex<PublicMcpRuntimeHandles>>,
     client_ref: &ClientRef,
@@ -654,14 +673,14 @@ fn remove_file_session_reservation(
     }
 }
 
-fn ready_root(record: &PublicMcpFileSessionRecord) -> Result<&str, &'static str> {
+pub(super) fn ready_root(record: &PublicMcpFileSessionRecord) -> Result<&str, &'static str> {
     record
         .root
         .as_deref()
         .ok_or("The SFTP handle is still opening")
 }
 
-fn path_from_root(root: &str, path: &str) -> String {
+pub(super) fn path_from_root(root: &str, path: &str) -> String {
     if path.starts_with('/') || path == "~" || path.starts_with("~/") {
         return path.to_owned();
     }
@@ -683,13 +702,13 @@ fn remote_path_is_within(root: &str, path: &str) -> bool {
             .is_some_and(|remainder| remainder.starts_with('/'))
 }
 
-fn require_path_within_root(root: &str, path: &str) -> Result<(), &'static str> {
+pub(super) fn require_path_within_root(root: &str, path: &str) -> Result<(), &'static str> {
     remote_path_is_within(root, path)
         .then_some(())
         .ok_or("The remote path is outside the authorized SFTP root")
 }
 
-fn require_mutable_path_within_root(root: &str, path: &str) -> Result<(), &'static str> {
+pub(super) fn require_mutable_path_within_root(root: &str, path: &str) -> Result<(), &'static str> {
     require_path_within_root(root, path)?;
     if path == root {
         return Err("The authorized SFTP root cannot be modified");
@@ -747,7 +766,7 @@ fn hex_digest(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-fn safe_artifact_name(path: &str) -> Option<String> {
+pub(super) fn safe_artifact_name(path: &str) -> Option<String> {
     let name = path.rsplit('/').next()?;
     (!name.is_empty()
         && name.len() <= ARTIFACT_NAME_MAXIMUM_BYTES

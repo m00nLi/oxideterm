@@ -45,6 +45,7 @@ mod root {
     pub(super) mod state;
     #[cfg(test)]
     pub(super) mod tests;
+    pub(super) mod window_state;
 }
 mod selectable_text;
 mod selection_motion;
@@ -161,16 +162,17 @@ use oxideterm_gpui_platform::{
     window_opacity::{apply_window_opacity, normalized_window_opacity},
 };
 use oxideterm_gpui_terminal::{
-    BackgroundImageRenderCache, PrivilegePromptMatch, SharedTerminalSession, TerminalBackgroundFit,
-    TerminalBackgroundPreferences, TerminalBroadcastInputKind, TerminalCommandSelectionLabels,
-    TerminalContextAction, TerminalHighlightMatchScope, TerminalHighlightRenderMode,
-    TerminalHighlightRule as UiHighlightRule, TerminalInputBroadcaster, TerminalInputInterceptor,
+    BackgroundImageRenderCache, PrivilegePromptMatch, SemanticShellDialect, SharedTerminalSession,
+    TerminalBackgroundFit, TerminalBackgroundPreferences, TerminalBroadcastInputKind,
+    TerminalCommandSelectionLabels, TerminalContextAction, TerminalHighlightMatchScope,
+    TerminalHighlightRenderMode, TerminalHighlightRule as UiHighlightRule,
+    TerminalHighlightRuleSetOverride, TerminalInputBroadcaster, TerminalInputInterceptor,
     TerminalInputInterceptorResult, TerminalModemLabels, TerminalNotice, TerminalNoticeVariant,
     TerminalOutputProcessor, TerminalPane, TerminalPaneEvent, TerminalPasteLabels,
     TerminalRecordingState, TerminalRecordingStatus, TerminalSearchStatus,
     TerminalSerialControlLabels, TerminalTrzszLabels, TerminalUiPreferenceOverrides,
     TerminalUiPreferences, TerminalUiTheme, TerminalWorkingDirectorySource,
-    detect_custom_privilege_prompt,
+    detect_custom_privilege_prompt, resolved_terminal_semantic_scheme,
 };
 use oxideterm_gpui_ui::scroll::ScrollableElement;
 use oxideterm_gpui_ui::{
@@ -208,11 +210,11 @@ use oxideterm_session_adapter::{
 };
 use oxideterm_settings::{
     AI_SIDEBAR_ABSOLUTE_MAX_WIDTH, AI_SIDEBAR_ABSOLUTE_MIN_WIDTH, BackgroundFit, BackgroundScope,
-    CursorStyle as SettingsCursorStyle, FontFamily, FrostedGlassMode, HighlightRuleMatchScope,
-    HighlightRuleRenderMode, Language, MAX_TERMINAL_BACKGROUND_OPACITY, MAX_WINDOW_OPACITY,
-    MIN_TERMINAL_BACKGROUND_OPACITY, MIN_WINDOW_OPACITY, PersistedSettings, SettingsStore,
-    background_images_directory, default_settings_path, ensure_bundled_background_image,
-    list_background_images,
+    CursorStyle as SettingsCursorStyle, FontFamily, FrostedGlassMode, GLOBAL_HIGHLIGHT_RULE_SET_ID,
+    HighlightRule, HighlightRuleMatchScope, HighlightRuleRenderMode, Language,
+    MAX_TERMINAL_BACKGROUND_OPACITY, MAX_WINDOW_OPACITY, MIN_TERMINAL_BACKGROUND_OPACITY,
+    MIN_WINDOW_OPACITY, PersistedSettings, SettingsStore, background_images_directory,
+    default_settings_path, ensure_bundled_background_image, list_background_images,
 };
 use oxideterm_settings_model::{
     AiMcpServerDraft, AiProviderKeyStatusDelivery, SettingsNavigationLayout,
@@ -731,11 +733,17 @@ pub(crate) struct WorkspaceApp {
     tab_host: Entity<tabs::WorkspaceTabHostEntity>,
     _tab_host_subscription: Subscription,
     search: SearchBarState,
+    terminal_highlight_popover_open: bool,
+    terminal_semantic_highlight_section_expanded: bool,
+    terminal_rule_highlight_section_expanded: bool,
+    terminal_command_context_highlight_section_expanded: bool,
     terminal_command_sender: Entity<terminal_command_sender::TerminalCommandSenderEntity>,
     _terminal_command_sender_observation: Subscription,
     detached_local_terminals: HashMap<TerminalSessionId, DetachedLocalTerminalSession>,
     detached_local_terminal_order: Vec<TerminalSessionId>,
     serial_terminal_configs: HashMap<TerminalSessionId, SerialSessionConfig>,
+    // A Telnet pane keeps only the stable profile owner needed for toolbar persistence.
+    telnet_terminal_profile_ids: HashMap<TerminalSessionId, String>,
     detached_local_terminals_popover_open: bool,
     command_palette: Entity<command_palette::CommandPaletteEntity>,
     _command_palette_observation: Subscription,
@@ -755,6 +763,7 @@ pub(crate) struct WorkspaceApp {
     _plugin_entity_subscription: Subscription,
     split_drag: Option<SplitDrag>,
     sidebar_resizing: bool,
+    embedded_sftp_sidebar_resizing: bool,
     sidebar_resize_hotzone_hovered: bool,
     sidebar_collapsed: bool,
     sidebar_rendered: bool,
@@ -848,6 +857,8 @@ pub(crate) struct WorkspaceApp {
     _file_manager_observation: Subscription,
     _file_manager_subscription: Subscription,
     sftp_tab_nodes: HashMap<TabId, NodeId>,
+    embedded_sftp_node_id: Option<NodeId>,
+    sftp_presentation_request: Option<sftp::SftpPresentationRequest>,
     ide_workspace: Entity<ide::IdeWorkspaceEntity>,
     _ide_workspace_subscription: Subscription,
     sftp_view: Entity<sftp::SftpWorkspaceEntity>,
@@ -872,6 +883,8 @@ pub(crate) struct WorkspaceApp {
     vibrancy_support: VibrancySupport,
     app_lock: app_lock::AppLockState,
     settings_store: SettingsStore,
+    pending_window_ui_state: Option<oxideterm_settings::WindowUiState>,
+    window_state_save_task: Option<Task<()>>,
     connection_store: ConnectionStore,
     // The connection-layer worker owns SSH config parsing and persistence.
     ssh_config_sync_service: Option<SshConfigSyncService>,

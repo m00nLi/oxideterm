@@ -12,7 +12,9 @@ use std::{
 };
 
 use anyhow::Result;
+use async_channel::Sender;
 use chrono::Timelike;
+use futures::future::{Either, pending, select};
 use gpui::{
     App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle, PathPromptOptions, Pixels,
     Point, SharedString, Subscription, Timer, Window, px,
@@ -74,12 +76,13 @@ pub type TerminalInputInterceptor =
     Arc<dyn Fn(&[u8]) -> TerminalInputInterceptorResult + Send + Sync>;
 pub type TerminalInputBroadcaster = Rc<dyn Fn(TerminalBroadcastInputKind, &[u8], &mut App)>;
 const PRIVILEGE_PROMPT_DEBUG_ENV: &str = "OXIDETERM_PRIVILEGE_DEBUG";
-const ACTIVE_TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(16);
-const BACKGROUND_TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(64);
-const IDLE_TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const TERMINAL_ANIMATION_INTERVAL: Duration = Duration::from_millis(16);
+const SMOOTH_SCROLL_ANIMATION_DURATION: Duration = Duration::from_millis(125);
 const DRAIN_BOOST_POLL_INTERVAL: Duration = Duration::from_millis(8);
+const SSH_DRAIN_BOOST_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const MAX_UI_TERMINAL_DRAIN_DURATION: Duration = Duration::from_millis(2);
 const RECENT_TERMINAL_ACTIVITY_WINDOW: Duration = Duration::from_millis(600);
+const TERMINAL_PERFORMANCE_SAMPLE_CAPACITY: usize = 256;
 const RECENT_TERMINAL_INPUT_WINDOW: Duration = Duration::from_millis(220);
 const ACTIVE_PROCESS_INFO_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const EDITOR_INTEGRATION_HEARTBEAT_TIMEOUT: Duration = Duration::from_millis(2500);
@@ -260,33 +263,48 @@ impl TerminalEventEffect {
     }
 }
 
-fn terminal_poll_interval(
-    focused: bool,
+fn terminal_maintenance_interval(
+    startup_pending: bool,
     drain_budget_exhausted: bool,
-    time_since_input: Duration,
-    time_since_activity: Duration,
-) -> Duration {
+    drain_boost_interval: Duration,
+    smooth_scroll_active: bool,
+    cursor_blink_remaining: Option<Duration>,
+    process_refresh_remaining: Option<Duration>,
+    pending_cwd_remaining: Option<Duration>,
+    editor_expiry_remaining: Option<Duration>,
+) -> Option<Duration> {
     if drain_budget_exhausted {
-        return DRAIN_BOOST_POLL_INTERVAL;
+        return Some(drain_boost_interval);
     }
-    if focused {
-        return ACTIVE_TERMINAL_POLL_INTERVAL;
-    }
-    if time_since_input <= RECENT_TERMINAL_INPUT_WINDOW
-        || time_since_activity <= RECENT_TERMINAL_ACTIVITY_WINDOW
-    {
-        return BACKGROUND_TERMINAL_POLL_INTERVAL;
-    }
-    IDLE_TERMINAL_POLL_INTERVAL
+    [
+        startup_pending.then_some(TERMINAL_ANIMATION_INTERVAL),
+        smooth_scroll_active.then_some(TERMINAL_ANIMATION_INTERVAL),
+        cursor_blink_remaining,
+        process_refresh_remaining,
+        pending_cwd_remaining,
+        editor_expiry_remaining,
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalSchedulerWake {
+    BackendActivity,
+    BackendClosed,
+    PaneActivity,
+    PaneClosed,
+    Maintenance,
 }
 
 fn viewport_needs_live_output_restore(
     display_offset: usize,
-    scroll_remainder_px: Pixels,
+    smooth_scroll_offset_px: Pixels,
     smooth_scroll_animation_active: bool,
 ) -> bool {
     display_offset > 0
-        || f32::from(scroll_remainder_px).abs() > f32::EPSILON
+        || f32::from(smooth_scroll_offset_px).abs() > f32::EPSILON
         || smooth_scroll_animation_active
 }
 
@@ -305,10 +323,21 @@ fn terminal_latency_percentiles(samples: &VecDeque<u64>) -> (u64, u64, u64) {
 
 pub struct TerminalPane {
     terminal: Arc<Mutex<TerminalSession>>,
+    // The backend kind is immutable for a pane, including serial reconnects.
+    session_kind: TerminalSessionKind,
     serial_reconnect_config: Option<SerialSessionConfig>,
     serial_port_available: Option<bool>,
     focus_handle: FocusHandle,
     preference_overrides: TerminalUiPreferenceOverrides,
+    // The pane owns only its live-session highlight choice. Saved connection
+    // defaults remain connection-store data and never affect node ownership.
+    session_highlight_override: Option<TerminalHighlightRuleSetOverride>,
+    // This optional override belongs only to the pane and never mutates the
+    // application setting or the lifetime of its backing terminal session.
+    session_semantic_coloring_override: Option<bool>,
+    // Command-derived query highlighting is session-only and never becomes a
+    // persisted keyword rule or shared backend state.
+    command_context_highlighting_enabled: bool,
     preferences: TerminalUiPreferences,
     settings: TerminalUiSettings,
     theme: TerminalUiTheme,
@@ -365,8 +394,9 @@ pub struct TerminalPane {
     recorder: Option<TerminalRecorder>,
     bell_flash: bool,
     terminal_exited: bool,
-    scroll_remainder_px: Pixels,
-    smooth_scroll_animation_active: bool,
+    scroll_input_remainder_px: Pixels,
+    smooth_scroll_offset_px: Pixels,
+    smooth_scroll_animation: Option<SmoothScrollAnimation>,
     smooth_scroll_snapshot_cache: Option<SmoothScrollSnapshotCache>,
     scrollbar_drag: Option<ScrollbarDrag>,
     selection_autoscroll_position: Option<Point<Pixels>>,
@@ -379,11 +409,13 @@ pub struct TerminalPane {
     last_terminal_input: Instant,
     last_terminal_activity: Instant,
     last_drain_budget_exhausted: bool,
+    scheduler_wake_sender: Sender<()>,
     process_info_refresh_in_flight: bool,
     last_process_info_refresh_requested: Instant,
     render_stats: TerminalRenderStats,
     render_stats_window_start: Instant,
     render_stats_window_writes: usize,
+    drain_duration_samples_micros: VecDeque<u64>,
     input_latency_samples_micros: VecDeque<u64>,
     last_latency_sampled_input: Option<Instant>,
     image_cache: ImageRenderCache,
@@ -482,6 +514,26 @@ struct SmoothScrollSnapshotCache {
     display_offset: usize,
     rows: usize,
     snapshot: TerminalSnapshot,
+}
+
+#[derive(Clone, Copy)]
+struct SmoothScrollAnimation {
+    started_at: Instant,
+    start_offset_px: Pixels,
+}
+
+impl SmoothScrollAnimation {
+    fn offset_at(self, now: Instant) -> (Pixels, bool) {
+        let elapsed = now.saturating_duration_since(self.started_at);
+        if elapsed >= SMOOTH_SCROLL_ANIMATION_DURATION {
+            return (px(0.0), false);
+        }
+        let progress = elapsed.as_secs_f32() / SMOOTH_SCROLL_ANIMATION_DURATION.as_secs_f32();
+        let remaining = 1.0 - progress.clamp(0.0, 1.0);
+        // Ease out toward the target so delayed frames catch up without extending the animation.
+        let offset = f32::from(self.start_offset_px) * remaining * remaining * remaining;
+        (px(offset), true)
+    }
 }
 
 impl TerminalSearchCache {
@@ -713,29 +765,84 @@ impl TerminalPane {
             this.handle_focus_change(false, cx);
         });
 
-        // Poll independently of backend output so GPUI layout and debounce tasks can advance
-        // before a deferred SSH PTY starts producing terminal activity.
+        // GPUI unit tests use a deterministic single-thread scheduler, so real PTY threads must
+        // not wake its local executor directly. Production builds keep the activity-driven path.
+        let backend_activity_enabled = !cfg!(test);
+        let terminal_activity =
+            backend_activity_enabled.then(|| terminal.lock().activity_receiver());
+        let (scheduler_wake_sender, scheduler_wake_receiver) = async_channel::bounded(1);
+        // Backend output drives steady-state work. The startup deadline keeps GPUI layout and
+        // deferred PTY sizing moving before a remote session can emit its first activity edge.
         cx.spawn(async move |weak, cx| {
-            let mut poll_interval = ACTIVE_TERMINAL_POLL_INTERVAL;
+            let mut activity_receiver = terminal_activity;
+            let mut maintenance_interval = Some(TERMINAL_ANIMATION_INTERVAL);
+            let mut backend_activity_closed = false;
             loop {
-                cx.background_executor().timer(poll_interval).await;
-                let Ok(next_poll_interval) = weak.update(cx, |this, cx| {
-                    this.tick(cx);
-                    this.next_poll_interval()
-                }) else {
+                let activity = Box::pin(async {
+                    match activity_receiver.as_ref() {
+                        Some(receiver) => receiver.notified().await,
+                        None => pending::<bool>().await,
+                    }
+                });
+                let pane_activity = Box::pin(scheduler_wake_receiver.recv());
+                let terminal_wake = Box::pin(async {
+                    match select(activity, pane_activity).await {
+                        Either::Left((true, _)) => TerminalSchedulerWake::BackendActivity,
+                        Either::Left((false, _)) => TerminalSchedulerWake::BackendClosed,
+                        Either::Right((Ok(()), _)) => TerminalSchedulerWake::PaneActivity,
+                        Either::Right((Err(_), _)) => TerminalSchedulerWake::PaneClosed,
+                    }
+                });
+                let maintenance = Box::pin(async {
+                    match maintenance_interval {
+                        Some(interval) => cx.background_executor().timer(interval).await,
+                        None => pending::<()>().await,
+                    }
+                });
+                let wake = match select(terminal_wake, maintenance).await {
+                    Either::Left((wake, _)) => wake,
+                    Either::Right(((), _)) => TerminalSchedulerWake::Maintenance,
+                };
+                if wake == TerminalSchedulerWake::PaneClosed {
+                    break;
+                }
+                backend_activity_closed = match wake {
+                    TerminalSchedulerWake::BackendClosed => true,
+                    TerminalSchedulerWake::PaneActivity => false,
+                    _ => backend_activity_closed,
+                };
+
+                let Ok((next_maintenance_interval, next_activity_receiver)) =
+                    weak.update(cx, |this, cx| {
+                        this.tick(cx);
+                        let listen_for_backend = backend_activity_enabled
+                            && !backend_activity_closed
+                            && !this.terminal_exited
+                            && !this.last_drain_budget_exhausted;
+                        (
+                            this.next_maintenance_interval(),
+                            listen_for_backend.then(|| this.terminal.lock().activity_receiver()),
+                        )
+                    })
+                else {
                     break;
                 };
-                poll_interval = next_poll_interval;
+                maintenance_interval = next_maintenance_interval;
+                activity_receiver = next_activity_receiver;
             }
         })
         .detach();
 
         Ok(Self {
             terminal,
+            session_kind,
             serial_reconnect_config: None,
             serial_port_available: None,
             focus_handle,
             preference_overrides: TerminalUiPreferenceOverrides::default(),
+            session_highlight_override: None,
+            session_semantic_coloring_override: None,
+            command_context_highlighting_enabled: true,
             preferences: preferences.clone(),
             settings: TerminalUiSettings::from_preferences(&preferences),
             theme: preferences.theme.clone(),
@@ -795,8 +902,9 @@ impl TerminalPane {
             recorder: None,
             bell_flash: false,
             terminal_exited: false,
-            scroll_remainder_px: px(0.0),
-            smooth_scroll_animation_active: false,
+            scroll_input_remainder_px: px(0.0),
+            smooth_scroll_offset_px: px(0.0),
+            smooth_scroll_animation: None,
             smooth_scroll_snapshot_cache: None,
             scrollbar_drag: None,
             selection_autoscroll_position: None,
@@ -809,6 +917,7 @@ impl TerminalPane {
             last_terminal_input: Instant::now(),
             last_terminal_activity: Instant::now(),
             last_drain_budget_exhausted: false,
+            scheduler_wake_sender,
             process_info_refresh_in_flight: false,
             last_process_info_refresh_requested: Instant::now()
                 .checked_sub(ACTIVE_PROCESS_INFO_REFRESH_INTERVAL)
@@ -816,7 +925,12 @@ impl TerminalPane {
             render_stats: TerminalRenderStats::default(),
             render_stats_window_start: Instant::now(),
             render_stats_window_writes: 0,
-            input_latency_samples_micros: VecDeque::with_capacity(256),
+            drain_duration_samples_micros: VecDeque::with_capacity(
+                TERMINAL_PERFORMANCE_SAMPLE_CAPACITY,
+            ),
+            input_latency_samples_micros: VecDeque::with_capacity(
+                TERMINAL_PERFORMANCE_SAMPLE_CAPACITY,
+            ),
             last_latency_sampled_input: None,
             image_cache: {
                 let mut cache = ImageRenderCache::default();
@@ -1014,6 +1128,7 @@ impl TerminalPane {
             command: command.to_string(),
             created_at: Instant::now(),
         });
+        self.wake_terminal_scheduler();
         cx.emit(TerminalPaneEvent::CurrentDirectoryChanged);
         cx.notify();
     }
@@ -1158,6 +1273,12 @@ impl TerminalPane {
     pub fn set_preferences(&mut self, preferences: TerminalUiPreferences, cx: &mut Context<Self>) {
         let mut preferences = preferences;
         self.preference_overrides.apply_to(&mut preferences);
+        if let Some(highlight_override) = &self.session_highlight_override {
+            preferences.highlight_rules = highlight_override.rules.clone();
+        }
+        if self.session_semantic_coloring_override == Some(preferences.semantic_coloring) {
+            self.session_semantic_coloring_override = None;
+        }
         if self.preferences.terminal_encoding != preferences.terminal_encoding {
             self.terminal
                 .lock()
@@ -1195,6 +1316,7 @@ impl TerminalPane {
         self.last_pty_resize = None;
         self.pending_pty_resize = None;
         self.reset_cursor_blink();
+        self.wake_terminal_scheduler();
         cx.notify();
     }
 
@@ -1206,6 +1328,62 @@ impl TerminalPane {
         // pane retains them only to preserve host behavior on later refreshes.
         self.preference_overrides = preference_overrides;
         self
+    }
+
+    pub fn preference_overrides_snapshot(&self) -> TerminalUiPreferenceOverrides {
+        self.preference_overrides.clone()
+    }
+
+    pub fn session_highlight_rule_set_id(&self) -> Option<&str> {
+        self.session_highlight_override
+            .as_ref()
+            .map(|highlight_override| highlight_override.id.as_str())
+    }
+
+    pub fn semantic_coloring_enabled(&self) -> bool {
+        self.session_semantic_coloring_override
+            .unwrap_or(self.preferences.semantic_coloring)
+    }
+
+    pub fn session_semantic_coloring_overridden(&self) -> bool {
+        self.session_semantic_coloring_override.is_some()
+    }
+
+    pub fn set_session_semantic_coloring_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let semantic_override = (enabled != self.preferences.semantic_coloring).then_some(enabled);
+        if self.session_semantic_coloring_override == semantic_override {
+            return;
+        }
+        self.session_semantic_coloring_override = semantic_override;
+        cx.notify();
+    }
+
+    pub fn command_context_highlighting_enabled(&self) -> bool {
+        self.command_context_highlighting_enabled
+    }
+
+    pub fn set_command_context_highlighting_enabled(
+        &mut self,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.command_context_highlighting_enabled == enabled {
+            return;
+        }
+        self.command_context_highlighting_enabled = enabled;
+        cx.notify();
+    }
+
+    pub fn set_session_highlight_override(
+        &mut self,
+        highlight_override: Option<TerminalHighlightRuleSetOverride>,
+        application_preferences: TerminalUiPreferences,
+        cx: &mut Context<Self>,
+    ) {
+        // Session-only state is retained by this pane and is discarded with
+        // the pane without mutating the shared SSH node or saved connection.
+        self.session_highlight_override = highlight_override;
+        self.set_preferences(application_preferences, cx);
     }
 
     pub fn set_preference_overrides(
@@ -1233,7 +1411,7 @@ impl TerminalPane {
     }
 
     pub fn session_kind(&self) -> TerminalSessionKind {
-        self.terminal.lock().kind()
+        self.session_kind
     }
 
     pub fn is_serial_transport(&self) -> bool {
@@ -1460,6 +1638,7 @@ impl TerminalPane {
         self.last_drain_budget_exhausted = false;
         self.clear_smooth_scroll_remainder();
         self.reset_cursor_blink();
+        self.wake_terminal_scheduler();
         cx.notify();
     }
 
@@ -2050,7 +2229,7 @@ impl TerminalPane {
         {
             needs_notify = true;
         }
-        if self.advance_smooth_scroll_animation() {
+        if self.advance_smooth_scroll_animation(now) {
             needs_notify = true;
         }
         if self.expire_pending_terminal_cwd(now) {
@@ -2068,13 +2247,59 @@ impl TerminalPane {
         }
     }
 
-    fn next_poll_interval(&self) -> Duration {
-        terminal_poll_interval(
-            self.focused,
+    fn next_maintenance_interval(&self) -> Option<Duration> {
+        let now = Instant::now();
+        let cursor_blink_remaining = self.should_blink_cursor().then(|| {
+            CURSOR_BLINK_INTERVAL
+                .saturating_sub(now.saturating_duration_since(self.last_cursor_blink))
+        });
+        let (mode, ssh_still_connecting, process_refresh_supported) = {
+            let terminal = self.terminal.lock();
+            (
+                terminal.mode(),
+                terminal.kind() == TerminalSessionKind::SshPty && !terminal.is_interactive(),
+                terminal.process_info_probe().is_some(),
+            )
+        };
+        let needs_process_refresh = (self.settings.free_type_mode
+            && mode.contains(TermMode::ALT_SCREEN))
+            || (self.settings.current_directory_awareness_enabled
+                && self.cwd_shell_integration_status != TerminalCwdShellIntegrationStatus::Active);
+        let process_refresh_remaining = (self.focused
+            && needs_process_refresh
+            && process_refresh_supported
+            && !self.process_info_refresh_in_flight)
+            .then(|| {
+                ACTIVE_PROCESS_INFO_REFRESH_INTERVAL.saturating_sub(
+                    now.saturating_duration_since(self.last_process_info_refresh_requested),
+                )
+            });
+        let pending_cwd_remaining = self.pending_cwd.as_ref().map(|pending| {
+            PENDING_CWD_TIMEOUT.saturating_sub(now.saturating_duration_since(pending.created_at))
+        });
+        let editor_expiry_remaining = self.editor_integration.map(|integration| {
+            EDITOR_INTEGRATION_HEARTBEAT_TIMEOUT
+                .saturating_sub(now.saturating_duration_since(integration.last_seen))
+        });
+        terminal_maintenance_interval(
+            !self.terminal_exited && (self.last_pty_resize.is_none() || ssh_still_connecting),
             self.last_drain_budget_exhausted,
-            self.last_terminal_input.elapsed(),
-            self.last_terminal_activity.elapsed(),
+            if self.session_kind == TerminalSessionKind::SshPty {
+                SSH_DRAIN_BOOST_POLL_INTERVAL
+            } else {
+                DRAIN_BOOST_POLL_INTERVAL
+            },
+            self.smooth_scroll_animation.is_some(),
+            cursor_blink_remaining,
+            process_refresh_remaining,
+            pending_cwd_remaining,
+            editor_expiry_remaining,
         )
+    }
+
+    pub(super) fn wake_terminal_scheduler(&self) {
+        // One queued edge is enough because every wake recomputes all maintenance deadlines.
+        let _ = self.scheduler_wake_sender.try_send(());
     }
 
     fn request_active_process_info_refresh(&mut self, cx: &mut Context<Self>) {
@@ -2116,6 +2341,7 @@ impl TerminalPane {
                 if this.apply_process_info(info) {
                     cx.notify();
                 }
+                this.wake_terminal_scheduler();
             });
         })
         .detach();
@@ -2148,29 +2374,17 @@ impl TerminalPane {
         true
     }
 
-    fn advance_smooth_scroll_animation(&mut self) -> bool {
-        if !self.smooth_scroll_animation_active {
+    fn advance_smooth_scroll_animation(&mut self, now: Instant) -> bool {
+        let Some(animation) = self.smooth_scroll_animation else {
             return false;
-        }
-
-        let current = f32::from(self.scroll_remainder_px);
-        if current.abs() <= f32::EPSILON {
-            self.smooth_scroll_animation_active = false;
-            return false;
-        }
-
-        // Keep the interpolation short and deterministic. The 16 ms tick loop
-        // gives this roughly six frames, enough to reveal clipped text without
-        // making wheel scrolling feel laggy.
-        let step = (self.metrics.line_height_f32() / 6.0).max(1.0);
-        let next = if current > 0.0 {
-            (current - step).max(0.0)
-        } else {
-            (current + step).min(0.0)
         };
-        self.scroll_remainder_px = px(next);
-        self.smooth_scroll_animation_active = next.abs() > f32::EPSILON;
-        true
+        let previous_offset = self.smooth_scroll_offset_px;
+        let (next_offset, active) = animation.offset_at(now);
+        self.smooth_scroll_offset_px = next_offset;
+        if !active {
+            self.smooth_scroll_animation = None;
+        }
+        self.smooth_scroll_offset_px != previous_offset
     }
 
     fn clear_command_mark_selection_for_tui_mode(&mut self, mode: TermMode) -> bool {
@@ -2200,8 +2414,8 @@ impl TerminalPane {
         // The terminal state still scrolls in whole rows. The paint layer keeps
         // the remaining wheel distance in pixels, so the scrollbar must use the
         // same fractional row offset to move with smooth-scrolling content.
-        let display_offset =
-            self.snapshot.display_offset as f32 + f32::from(self.scroll_remainder_px) / line_height;
+        let display_offset = self.snapshot.display_offset as f32
+            + f32::from(self.smooth_scroll_offset_px) / line_height;
         display_offset.clamp(0.0, self.snapshot.scrollback_lines as f32)
     }
 
@@ -2215,6 +2429,7 @@ impl TerminalPane {
             TerminalDrainBudget::new(drain.normal_bytes, drain.max_events)
         }
         .with_max_duration(MAX_UI_TERMINAL_DRAIN_DURATION)
+        .with_performance_metrics(self.preferences.show_performance_overlay)
     }
 
     fn current_render_tier(&self) -> TerminalRenderTier {
@@ -2230,6 +2445,15 @@ impl TerminalPane {
     }
 
     fn update_render_stats(&mut self, report: &TerminalDrainReport, now: Instant) -> bool {
+        let drain_micros = report.drain_duration.as_micros().min(u128::from(u64::MAX)) as u64;
+        if self.preferences.show_performance_overlay
+            && (report.events_drained > 0 || report.changed || report.pending_bytes > 0)
+        {
+            if self.drain_duration_samples_micros.len() == TERMINAL_PERFORMANCE_SAMPLE_CAPACITY {
+                self.drain_duration_samples_micros.pop_front();
+            }
+            self.drain_duration_samples_micros.push_back(drain_micros);
+        }
         let writes = report
             .events_drained
             .max(usize::from(report.changed && report.drained_bytes > 0));
@@ -2250,7 +2474,7 @@ impl TerminalPane {
                 <= RECENT_TERMINAL_ACTIVITY_WINDOW
             && self.last_latency_sampled_input != Some(self.last_terminal_input)
         {
-            if self.input_latency_samples_micros.len() == 256 {
+            if self.input_latency_samples_micros.len() == TERMINAL_PERFORMANCE_SAMPLE_CAPACITY {
                 self.input_latency_samples_micros.pop_front();
             }
             self.input_latency_samples_micros.push_back(
@@ -2260,12 +2484,17 @@ impl TerminalPane {
             );
             self.last_latency_sampled_input = Some(self.last_terminal_input);
         }
+        let drain_p95_micros = if self.preferences.show_performance_overlay {
+            terminal_latency_percentiles(&self.drain_duration_samples_micros).1
+        } else {
+            self.render_stats.drain_p95_micros
+        };
         let latency_percentiles = terminal_latency_percentiles(&self.input_latency_samples_micros);
         Self::apply_render_stats_sample(
             &mut self.render_stats,
             tier,
-            report.pending_bytes,
-            report.drain_duration.as_micros().min(u128::from(u64::MAX)) as u64,
+            report,
+            drain_p95_micros,
             latency_percentiles,
             published_writes_per_sec,
         )
@@ -2274,15 +2503,26 @@ impl TerminalPane {
     fn apply_render_stats_sample(
         stats: &mut TerminalRenderStats,
         tier: TerminalRenderTier,
-        pending_bytes: usize,
-        drain_micros: u64,
+        report: &TerminalDrainReport,
+        drain_p95_micros: u64,
         latency_percentiles: (u64, u64, u64),
         published_writes_per_sec: Option<u32>,
     ) -> bool {
         let previous_stats = *stats;
         stats.tier = tier;
-        stats.pending_bytes = pending_bytes;
-        stats.drain_micros = drain_micros;
+        stats.pending_bytes = report.pending_bytes;
+        stats.drain_micros = report.drain_duration.as_micros().min(u128::from(u64::MAX)) as u64;
+        stats.drain_p95_micros = drain_p95_micros;
+        stats.drained_bytes = report.drained_bytes;
+        stats.max_data_chunk_bytes = report.max_data_chunk_bytes;
+        stats.output_processing_micros = report
+            .output_processing_duration
+            .as_micros()
+            .min(u128::from(u64::MAX)) as u64;
+        stats.terminal_lock_wait_micros = report
+            .terminal_lock_wait_duration
+            .as_micros()
+            .min(u128::from(u64::MAX)) as u64;
         stats.input_latency_p50_micros = latency_percentiles.0;
         stats.input_latency_p95_micros = latency_percentiles.1;
         stats.input_latency_p99_micros = latency_percentiles.2;
@@ -2569,6 +2809,7 @@ impl TerminalPane {
         self.reset_cursor_blink();
         // Focus changes must consume already queued output instead of waiting for an old deadline.
         self.tick(cx);
+        self.wake_terminal_scheduler();
         cx.notify();
     }
 
@@ -2648,8 +2889,8 @@ impl TerminalPane {
     fn restore_live_output_after_user_input(&mut self) {
         if !viewport_needs_live_output_restore(
             self.snapshot.display_offset,
-            self.scroll_remainder_px,
-            self.smooth_scroll_animation_active,
+            self.smooth_scroll_offset_px,
+            self.smooth_scroll_animation.is_some(),
         ) {
             return;
         }
@@ -3023,9 +3264,9 @@ fn current_terminal_timestamp_label() -> String {
 }
 
 fn terminal_timestamp_label(hour: u32, minute: u32, second: u32, millis: u32) -> String {
-    // Fixed-width millisecond labels keep the paint-only gutter stable while
-    // making closely spaced device output distinguishable at a glance.
-    format!("{hour:02}:{minute:02}:{second:02}.{millis:03}")
+    // Bracketed fixed-width labels separate timestamp metadata from terminal
+    // output while keeping the paint-only gutter stable.
+    format!("[{hour:02}:{minute:02}:{second:02}.{millis:03}]")
 }
 
 fn record_timestampable_snapshot_rows(
@@ -3191,51 +3432,89 @@ mod tests {
     }
 
     #[test]
-    fn terminal_polling_keeps_focused_panes_responsive() {
+    fn terminal_maintenance_keeps_startup_layout_advancing() {
         assert_eq!(
-            terminal_poll_interval(
+            terminal_maintenance_interval(
                 true,
                 false,
-                Duration::from_secs(10),
-                Duration::from_secs(10),
+                DRAIN_BOOST_POLL_INTERVAL,
+                false,
+                None,
+                None,
+                None,
+                None,
             ),
-            ACTIVE_TERMINAL_POLL_INTERVAL
+            Some(TERMINAL_ANIMATION_INTERVAL)
         );
     }
 
     #[test]
-    fn terminal_polling_reduces_background_and_idle_work() {
+    fn terminal_maintenance_sleeps_until_activity_without_a_deadline() {
         assert_eq!(
-            terminal_poll_interval(
+            terminal_maintenance_interval(
                 false,
                 false,
-                Duration::from_secs(10),
-                Duration::from_millis(20),
+                DRAIN_BOOST_POLL_INTERVAL,
+                false,
+                None,
+                None,
+                None,
+                None,
             ),
-            BACKGROUND_TERMINAL_POLL_INTERVAL
-        );
-        assert_eq!(
-            terminal_poll_interval(
-                false,
-                false,
-                Duration::from_secs(10),
-                Duration::from_secs(10),
-            ),
-            IDLE_TERMINAL_POLL_INTERVAL
+            None
         );
     }
 
     #[test]
-    fn terminal_polling_drains_backpressure_before_other_tiers() {
+    fn terminal_maintenance_drains_backpressure_before_other_deadlines() {
         assert_eq!(
-            terminal_poll_interval(
+            terminal_maintenance_interval(
                 false,
                 true,
-                Duration::from_secs(10),
-                Duration::from_secs(10),
+                DRAIN_BOOST_POLL_INTERVAL,
+                true,
+                Some(Duration::ZERO),
+                None,
+                None,
+                None,
             ),
-            DRAIN_BOOST_POLL_INTERVAL
+            Some(DRAIN_BOOST_POLL_INTERVAL)
         );
+    }
+
+    #[test]
+    fn terminal_maintenance_uses_the_earliest_real_deadline() {
+        assert_eq!(
+            terminal_maintenance_interval(
+                false,
+                false,
+                DRAIN_BOOST_POLL_INTERVAL,
+                false,
+                Some(Duration::from_millis(300)),
+                Some(Duration::from_millis(700)),
+                Some(Duration::from_millis(120)),
+                None,
+            ),
+            Some(Duration::from_millis(120))
+        );
+    }
+
+    #[test]
+    fn smooth_scroll_animation_uses_elapsed_time_and_finishes_exactly() {
+        let started_at = Instant::now();
+        let animation = SmoothScrollAnimation {
+            started_at,
+            start_offset_px: px(80.0),
+        };
+        let (midpoint_offset, active) =
+            animation.offset_at(started_at + SMOOTH_SCROLL_ANIMATION_DURATION / 2);
+        assert!(active);
+        assert!((f32::from(midpoint_offset) - 10.0).abs() < 0.001);
+
+        let (final_offset, active) =
+            animation.offset_at(started_at + SMOOTH_SCROLL_ANIMATION_DURATION);
+        assert!(!active);
+        assert_eq!(final_offset, px(0.0));
     }
 
     #[test]
@@ -3330,6 +3609,7 @@ mod tests {
             wide: false,
             fg: TerminalColor::rgb(0xe6, 0xe8, 0xeb),
             bg: TerminalColor::rgb(0x0d, 0x0f, 0x12),
+            style_origin: Default::default(),
             attrs: TerminalAttrs::default(),
             hyperlink: None,
             cursor: false,
@@ -3397,11 +3677,12 @@ mod tests {
     #[test]
     fn performance_overlay_requests_redraw_only_when_published_stats_change() {
         let mut stats = TerminalRenderStats::default();
+        let report = TerminalDrainReport::default();
 
         assert!(!TerminalPane::apply_render_stats_sample(
             &mut stats,
             TerminalRenderTier::Normal,
-            0,
+            &report,
             0,
             (0, 0, 0),
             None,
@@ -3409,7 +3690,7 @@ mod tests {
         assert!(TerminalPane::apply_render_stats_sample(
             &mut stats,
             TerminalRenderTier::Idle,
-            0,
+            &report,
             0,
             (0, 0, 0),
             Some(7),
@@ -3417,7 +3698,7 @@ mod tests {
         assert!(!TerminalPane::apply_render_stats_sample(
             &mut stats,
             TerminalRenderTier::Idle,
-            0,
+            &report,
             0,
             (0, 0, 0),
             None,
@@ -3471,6 +3752,56 @@ mod tests {
         record_timestampable_snapshot_rows(&mut row_timestamps, &cleared_snapshot, "10:00:04");
 
         assert!(!row_timestamps.contains_key(&42));
+    }
+
+    #[test]
+    fn terminal_timestamp_labels_are_bracketed_and_match_the_gutter_width() {
+        let label = terminal_timestamp_label(1, 2, 3, 4);
+
+        assert_eq!(label, "[01:02:03.004]");
+        assert_eq!(label.chars().count(), TERMINAL_TIMESTAMP_LABEL_CELLS);
+    }
+
+    #[gpui::test]
+    fn session_highlight_override_wins_over_connection_and_application_rules(
+        cx: &mut TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_window, _cx| TerminalTestRoot);
+        let pane = cx.update(|window, cx| {
+            cx.new(|cx| TerminalPane::new(window, cx).expect("test terminal pane"))
+        });
+        let rule = |id: &str| TerminalHighlightRule {
+            id: id.to_string(),
+            pattern: id.to_string(),
+            enabled: true,
+            ..TerminalHighlightRule::default()
+        };
+        pane.update(cx, |pane, cx| {
+            let mut application = TerminalUiPreferences::default();
+            application.highlight_rules = Arc::from([rule("application")]);
+            pane.set_preference_overrides(
+                TerminalUiPreferenceOverrides {
+                    highlight_rules: Some(Arc::from([rule("connection")])),
+                    highlight_rule_set_id: Some("connection-set".to_string()),
+                    ..TerminalUiPreferenceOverrides::default()
+                },
+                application.clone(),
+                cx,
+            );
+            pane.set_session_highlight_override(
+                Some(TerminalHighlightRuleSetOverride {
+                    id: "session-set".to_string(),
+                    rules: Arc::from([rule("session")]),
+                }),
+                application,
+                cx,
+            );
+        });
+
+        pane.read_with(cx, |pane, _cx| {
+            assert_eq!(pane.preferences.highlight_rules[0].id, "session");
+            assert_eq!(pane.session_highlight_rule_set_id(), Some("session-set"));
+        });
     }
 
     #[test]

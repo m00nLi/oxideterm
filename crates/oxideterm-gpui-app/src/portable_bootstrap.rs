@@ -14,7 +14,7 @@ use gpui::{
 use oxideterm_gpui_ui::{ButtonTone, TextInputView, button, text_input, text_input_anchor_probe};
 use oxideterm_i18n::I18n;
 use oxideterm_portable_runtime::{PortableBootstrapStatus, PortableStatusSnapshot};
-use oxideterm_settings::PersistedSettings;
+use oxideterm_settings::{PersistedSettings, WindowUiState};
 use oxideterm_theme::ThemeTokens;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -34,9 +34,10 @@ enum PortableBootstrapAction {
 }
 
 struct PortableBootstrapLaunch {
-    ssh_launch: Option<oxideterm_ssh_launch::TemporarySshLaunch>,
+    native_ssh_launch: Option<oxideterm_ssh_launch::NativeSshLaunch>,
     desktop_presence_menu: oxideterm_desktop_presence::DesktopPresenceMenu,
     single_instance_rx: Option<SingleInstanceReceiver>,
+    window_ui: WindowUiState,
 }
 
 /// Owns portable password drafts until the encrypted keystore accepts them.
@@ -72,10 +73,11 @@ pub(crate) fn open_portable_bootstrap_window(
     cx: &mut App,
     status: PortableStatusSnapshot,
     settings: PersistedSettings,
-    ssh_launch: Option<oxideterm_ssh_launch::TemporarySshLaunch>,
+    native_ssh_launch: Option<oxideterm_ssh_launch::NativeSshLaunch>,
     desktop_presence_menu: oxideterm_desktop_presence::DesktopPresenceMenu,
     single_instance_rx: Option<SingleInstanceReceiver>,
 ) -> anyhow::Result<()> {
+    let window_ui = settings.window_ui.clone();
     let bounds = crate::default_window_bounds(cx);
     let mut options = crate::platform::window_options(bounds);
     // The workspace paints its own title bar. The bootstrap window instead
@@ -94,9 +96,10 @@ pub(crate) fn open_portable_bootstrap_window(
                 status,
                 settings,
                 PortableBootstrapLaunch {
-                    ssh_launch,
+                    native_ssh_launch,
                     desktop_presence_menu,
                     single_instance_rx,
+                    window_ui,
                 },
                 window,
                 cx,
@@ -289,9 +292,10 @@ impl PortableBootstrapWindow {
             };
             match crate::open_main_workspace_window(
                 cx,
-                launch.ssh_launch,
+                launch.native_ssh_launch,
                 launch.desktop_presence_menu,
                 launch.single_instance_rx,
+                launch.window_ui,
             ) {
                 Ok(()) => {
                     #[cfg(target_os = "windows")]

@@ -9,6 +9,9 @@ pub struct LocalTerminalSettings {
     pub oh_my_posh_enabled: bool,
     pub oh_my_posh_theme: Option<String>,
     pub custom_env_vars: Map<String, Value>,
+    // Shell-specific selections inherit the application Scheme when absent.
+    #[serde(default)]
+    pub semantic_scheme_by_shell: std::collections::BTreeMap<String, String>,
     #[serde(flatten)]
     pub extra: ExtraFields,
 }
@@ -24,14 +27,30 @@ impl Default for LocalTerminalSettings {
             oh_my_posh_enabled: false,
             oh_my_posh_theme: None,
             custom_env_vars: Map::new(),
+            semantic_scheme_by_shell: std::collections::BTreeMap::new(),
             extra: ExtraFields::new(),
         }
+    }
+}
+
+impl LocalTerminalSettings {
+    pub fn semantic_scheme_for_shell(&self, shell_id: &str) -> Option<&str> {
+        self.semantic_scheme_by_shell
+            .get(shell_id)
+            .map(String::as_str)
     }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SftpSettings {
+    // The default keeps existing installations neutral until the user chooses a surface.
+    #[serde(default)]
+    pub presentation: SftpPresentationPreference,
+    // Preserve the user's embedded sidebar split without exposing transient
+    // drag state in settings.
+    #[serde(default = "default_sftp_sidebar_session_fraction")]
+    pub sidebar_session_fraction: f32,
     #[serde(default)]
     pub transfer_protocol: FileTransferProtocolPreference,
     pub max_concurrent_transfers: i64,
@@ -47,6 +66,8 @@ pub struct SftpSettings {
 impl Default for SftpSettings {
     fn default() -> Self {
         Self {
+            presentation: SftpPresentationPreference::Ask,
+            sidebar_session_fraction: default_sftp_sidebar_session_fraction(),
             transfer_protocol: FileTransferProtocolPreference::Auto,
             max_concurrent_transfers: 3,
             directory_parallelism: 4,
@@ -56,6 +77,19 @@ impl Default for SftpSettings {
             extra: ExtraFields::new(),
         }
     }
+}
+
+fn default_sftp_sidebar_session_fraction() -> f32 {
+    0.4
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SftpPresentationPreference {
+    #[default]
+    Ask,
+    Tab,
+    Sidebar,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -350,6 +384,32 @@ fn default_host_tool_enabled() -> bool {
     true
 }
 
+/// Device-local placement for the main application window.
+///
+/// `.oxide` export and cloud sync use explicit allowlists that intentionally
+/// omit this state because monitor coordinates are not portable across devices.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowUiState {
+    #[serde(default)]
+    pub normal_bounds: Option<WindowGeometry>,
+    #[serde(default)]
+    pub maximized: bool,
+    #[serde(default)]
+    pub fullscreen: bool,
+    #[serde(flatten)]
+    pub extra: ExtraFields,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowGeometry {
+    pub x: i64,
+    pub y: i64,
+    pub width: i64,
+    pub height: i64,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersistedSettings {
@@ -363,6 +423,8 @@ pub struct PersistedSettings {
     pub tree_ui: TreeUiState,
     #[serde(rename = "sidebarUI")]
     pub sidebar_ui: SidebarUiState,
+    #[serde(rename = "windowUI", default)]
+    pub window_ui: WindowUiState,
     #[serde(default)]
     pub settings_navigation: SettingsNavigationSettings,
     pub ai: AiSettings,
@@ -411,6 +473,7 @@ impl Default for PersistedSettings {
             connection_defaults: ConnectionDefaults::default(),
             tree_ui: TreeUiState::default(),
             sidebar_ui: SidebarUiState::default(),
+            window_ui: WindowUiState::default(),
             settings_navigation: SettingsNavigationSettings::default(),
             ai: AiSettings::default(),
             local_terminal: LocalTerminalSettings::default(),

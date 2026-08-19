@@ -144,16 +144,52 @@ OxideSens 可以从工作区、用户数据目录和已启用的 Native 插件�
 
 1. 创建普通模式或完全权限模式客户端。普通模式的高风险操作需要在 OxideTerm 内批准；完全权限模式对已勾选工具组跳过逐项批准。
 2. 复制回环 HTTP 端点和只显示一次的客户端凭据。
+   监听端口默认为 `0`，由应用自动选择；需要固定端口时可输入 `1` 至 `65535` 并应用。端口偏好只保存在当前设备，不进入普通设置、`.oxide` 导出或云同步。
 3. 在外部 MCP 客户端中把端点配置为 Streamable HTTP URL，并添加 `Authorization: Bearer <凭据>` 请求头。
-4. 让客户端先调用 `connections_browse`，再按需读取连接详情并请求 `nodes_connect`。
+   如果客户端只支持 stdio，把命令设为 `oxideterm mcp bridge`，并通过客户端的秘密环境配置提供 `OXIDETERM_MCP_TOKEN=<凭据>`；bridge 会自动发现当前回环端点。不要把凭据放进命令参数。
+
+   CC Switch 及接受 `command`、`args`、`env` 对象的客户端可以直接使用应用中“复制 stdio JSON”生成的配置：
+
+   ```json
+   {
+     "command": "oxideterm",
+     "args": ["mcp", "bridge"],
+     "env": {
+       "OXIDETERM_MCP_TOKEN": "<客户端凭据>"
+     }
+   }
+   ```
+
+   如果客户端要求顶层 `mcpServers`，将同一个对象包装为：
+
+   ```json
+   {
+     "mcpServers": {
+       "oxideterm": {
+         "command": "oxideterm",
+         "args": ["mcp", "bridge"],
+         "env": {
+           "OXIDETERM_MCP_TOKEN": "<客户端凭据>"
+         }
+       }
+     }
+   }
+   ```
+
+   两种 JSON 都包含客户端凭据，只能保存到受信任客户端的秘密配置中，不要写入项目文件、日志或公开内容。运行前需在“设置 → 常规”安装命令行工具，并保持 OxideTerm 运行。
+4. 让客户端先调用 `connections_browse`，再按需读取连接详情。连接管理组可创建、修改或删除 SSH、Mosh、Telnet、串口、RDP 和 VNC 配置；凭据管理组只能写入新值、查看存在性或遗忘指定槽位，不能读取既有秘密。
 5. 普通模式下，在 OxideTerm 的“待批准操作”中检查实际客户端、目标和命令；批准后，客户端调用 `mcp_commit_action`。完全权限模式直接执行。
 6. 使用返回的 `command_ref` 查询状态并分段读取标准输出和标准错误。
 
-当前实现实际开放保存的 SSH 连接、NodeRouter 节点租约、SSH exec 命令、有界临时 artifact、当前客户端自己的脱敏 MCP 审计记录，以及类型化 Host Tools 快照和操作。Host Tools 只接受固定资源与动作 schema，不提供 shell 正文或插件调用入口。未接通的终端屏幕、SFTP、转发、远程桌面和同步能力不会出现在工具清单中。释放 MCP 节点租约不会断开仍由其他终端、SFTP 或转发消费者使用的物理 SSH 节点；只有明确批准的 `nodes_disconnect` 才会断开节点。
+当前实现已经开放连接与凭据管理、NodeRouter 节点租约、终端与录制、RDP/VNC、SSH exec、有界临时 artifact、SFTP 与后台单文件传输、远端 IDE 工作区、转发、快速命令、插件生命周期、云同步、当前客户端自己的脱敏 MCP 审计记录，以及类型化 Host Tools 快照和操作。后台传输只在授权 SFTP 根与客户端私有 artifact 之间移动数据，不接受本机路径；当前最大 64 MiB，尚不支持跨请求断点恢复。IDE 工作区必须从已授权的 SFTP 文件会话挂载，读取与结构化编辑可分别开启；文本读取上限为 4 MiB，编辑必须使用先前读取到的 revision，关闭工作区只释放它自己的 IDE consumer。云同步先返回一次性预览计划，应用前会重新核对本地与远端版本；远端发布不提供虚假撤销，含 SSH、Mosh 或凭据的拉取也只保留产品已有的加密恢复备份。Host Tools 只接受固定资源与动作 schema，不提供自由 shell 或插件调用入口。释放 MCP 节点租约不会断开仍由其他终端、SFTP、IDE 或转发消费者使用的物理 SSH 节点；只有明确批准的 `nodes_disconnect` 才会断开节点。
 
-客户端凭据在 OxideTerm 侧只保存摘要。停用或撤销客户端会立即取消其命令、待批准操作和节点租约。端点、授权记录和凭据都不会进入普通设置、`.oxide` 导出或云同步。
+后台命令和 SFTP 传输除各自的领域句柄外还返回 `operation_ref`。`mcp_operation` 可读取统一的脱敏状态与进度，`mcp_cancel_operation` 可请求取消；取消命令或上传并不代表已经撤销远端副作用。
 
-完全权限模式不等于开放全部工具。每个客户端仍需在设置中单独勾选连接、节点、命令、审计和临时内容等工具组；未勾选工具不会发布，也不能调用。Bearer 认证、应用锁、秘密不可读取边界和审计在两种模式下始终生效。
+只有工具结果明确返回 `undo_ref` 时才可撤销。`mcp_revert` 目前复用云同步本地应用的严格恢复逻辑，仍要求云同步工具组与原有 revision 检查；远端发布、命令、上传和永久删除不会获得虚假撤销句柄。
+
+客户端凭据在 OxideTerm 侧只保存摘要。停用或撤销客户端会立即取消其命令、待批准操作和节点租约。端点、授权记录和凭据都不会进入普通设置、`.oxide` 导出或云同步。stdio bridge 的环境变量由外部客户端进程负责保护；OxideTerm 不会把它写回配置文件。
+
+完全权限模式不等于开放全部工具。每个客户端仍需在设置中单独勾选连接、节点、命令、审计和临时内容等工具组；未勾选工具不会发布，也不能调用。客户端也可用 `mcp_request_access` 发起授权请求，但即使处于完全权限模式也必须在应用内批准；用 `mcp_revoke_access` 主动关闭工具组则立即生效并撤销对应句柄。Bearer 认证、应用锁、秘密不可读取边界和审计在两种模式下始终生效。
 
 ## 设置
 

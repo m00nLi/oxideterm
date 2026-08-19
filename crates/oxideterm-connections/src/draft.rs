@@ -96,6 +96,7 @@ pub struct ConnectionDraft {
     pub username: String,
     pub auth: ConnectionAuthDraft,
     pub group: String,
+    pub notes: String,
     pub color: String,
     pub icon_background_color: String,
     pub icon: String,
@@ -136,12 +137,14 @@ pub fn saved_connection_from_ssh_host(host: SshConfigHost) -> Result<SavedConnec
         version: crate::store::CONFIG_VERSION,
         name: host.alias.clone(),
         group: Some(IMPORTED_GROUP.to_string()),
+        notes: None,
         host: host.hostname.unwrap_or(host.alias),
         port: host.port.unwrap_or(22),
         username: host.user.unwrap_or_else(current_username),
         auth,
         proxy_chain,
         upstream_proxy: SavedUpstreamProxyPolicy::UseGlobal,
+        proxy_command: None,
         options: ConnectionOptions {
             connect_timeout_seconds: host.connect_timeout_seconds,
             agent_forwarding: host.agent_forwarding,
@@ -201,6 +204,7 @@ pub fn save_request_from_draft(
         id,
         name: draft.name.trim().to_string(),
         group: Some(draft.group.trim().to_string()),
+        notes: (!draft.notes.trim().is_empty()).then(|| draft.notes.trim().to_string()),
         host: draft.host.trim().to_string(),
         port,
         username: draft.username.trim().to_string(),
@@ -211,6 +215,7 @@ pub fn save_request_from_draft(
         },
         proxy_chain: saved_proxy_chain_from_drafts(draft.proxy_hops)?,
         upstream_proxy: SavedUpstreamProxyPolicy::UseGlobal,
+        proxy_command: None,
         color: (!draft.color.trim().is_empty()).then(|| draft.color.trim().to_string()),
         icon_background_color: (!draft.icon_background_color.trim().is_empty())
             .then(|| draft.icon_background_color.trim().to_string()),
@@ -549,6 +554,7 @@ mod tests {
     fn proxy_hop_two_factor_is_saved_as_keyboard_interactive() {
         let draft = ConnectionDraft {
             name: "Home".to_string(),
+            notes: String::new(),
             host: "target.example.com".to_string(),
             port: "22".to_string(),
             username: "me".to_string(),
@@ -598,6 +604,7 @@ mod tests {
     fn save_request_preserves_single_channel_flag() {
         let draft = ConnectionDraft {
             name: "Home".to_string(),
+            notes: String::new(),
             host: "target.example.com".to_string(),
             port: "22".to_string(),
             username: "me".to_string(),

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use base64::Engine;
 use http::{header::AUTHORIZATION, request::Parts};
@@ -21,22 +21,32 @@ use crate::{
     artifact::ArtifactStore,
     audit::{AuditAuthorization, AuditStore},
     auth::{ClientApprovalMode, ClientProjection, ClientRegistry, ToolGroup},
-    broker::DomainBroker,
+    broker::{BrokerError, DomainBroker},
     calls::{
         AddonsInstallArgs, AddonsListArgs, AddonsRemoveArgs, AddonsSetEnabledArgs, AuditSearchArgs,
-        BrowseConnectionsArgs, CancelCommandArgs, CommandOutputArgs, CommandStateArgs,
-        ConnectNodeArgs, DescribeConnectionArgs, DisconnectNodeArgs, FilesCloseArgs,
+        BrowseConnectionsArgs, CancelCommandArgs, CancelOperationArgs, CommandOutputArgs,
+        CommandStateArgs, ConnectNodeArgs, CredentialStatusArgs, DescribeConnectionArgs,
+        DesktopButtonState, DesktopClipboardImageFormat, DesktopClipboardPayload, DesktopFrameArgs,
+        DesktopHandleArgs, DesktopInputArgs, DesktopInputEvent, DisconnectNodeArgs, FilesCloseArgs,
         FilesCompareArgs, FilesListArgs, FilesMoveArgs, FilesOpenArgs, FilesReadArgs,
-        FilesRemoveArgs, FilesStatArgs, FilesWriteArgs, ForwardHandleArgs, ForwardKind,
-        ForwardsChangeArgs, ForwardsDiscoverPortsArgs, ForwardsListArgs, ForwardsOpenArgs,
-        ForwardsRemoveArgs, HostToolsCaptureArgs, HostToolsCatalogArgs, HostToolsOperateArgs,
-        InspectNodeArgs, OpenTerminalArgs, PublicToolCall, QuickCommandsDescribeArgs,
-        QuickCommandsListArgs, QuickCommandsRemoveArgs, QuickCommandsRunArgs,
-        QuickCommandsSaveArgs, ReadArtifactArgs, ReadTerminalArgs, ReleaseNodeArgs,
-        ResizeTerminalArgs, StageArtifactArgs, StartCommandArgs, SubmitTerminalArgs,
-        TerminalHandleArgs, ToolEnvelope, ToolOutcome,
+        FilesRemoveArgs, FilesStatArgs, FilesWriteArgs, ForgetCredentialArgs, ForwardHandleArgs,
+        ForwardKind, ForwardsChangeArgs, ForwardsDiscoverPortsArgs, ForwardsListArgs,
+        ForwardsOpenArgs, ForwardsRemoveArgs, HostToolsCaptureArgs, HostToolsCatalogArgs,
+        HostToolsOperateArgs, InspectNodeArgs, OpenDesktopArgs, OpenTerminalArgs,
+        OperationStateArgs, PublicCredentialSlot, PublicDesktopMouseButton, PublicToolCall,
+        QuickCommandsDescribeArgs, QuickCommandsListArgs, QuickCommandsRemoveArgs,
+        QuickCommandsRunArgs, QuickCommandsSaveArgs, ReadArtifactArgs, ReadDesktopClipboardArgs,
+        ReadTerminalArgs, RecordingsControlArgs, RecordingsExportArgs, RecordingsSearchArgs,
+        RecordingsStatusArgs, ReleaseNodeArgs, RemovePublicConnectionArgs, RequestAccessArgs,
+        ResizeDesktopArgs, ResizeTerminalArgs, RevertArgs, RevokeAccessArgs,
+        SavePublicConnectionArgs, StageArtifactArgs, StartCommandArgs, StartTransferArgs,
+        StoreCredentialArgs, SubmitTerminalArgs, SyncApplyPlanArgs, SyncPublishPreviewArgs,
+        SyncPullPreviewArgs, SyncRestoreArgs, SyncStatusArgs, TerminalHandleArgs, ToolEnvelope,
+        ToolOutcome, TransferHandleArgs, WorkspaceApplyEditsArgs, WorkspaceCloseArgs,
+        WorkspaceFileEdits, WorkspaceMountArgs, WorkspaceReadArgs, WorkspaceSearchArgs,
+        WorkspaceTextEdit, WorkspaceTreeArgs, WriteDesktopClipboardArgs,
     },
-    handles::{ApprovalRef, ClientRef, NodeRef, TerminalRef},
+    handles::{ApprovalRef, ClientRef, ConnectionRef, NodeRef, TerminalRef, WorkspaceRef},
 };
 
 const TOOL_LIST_CACHE_TTL_MS: u64 = 1_000;
@@ -52,12 +62,29 @@ const FORWARD_REVISION_LIMIT_BYTES: usize = 80;
 const REMOTE_PATH_LIMIT_BYTES: usize = 16 * 1024;
 const FILE_LIST_LIMIT_MAXIMUM: u32 = 500;
 const FILE_READ_LIMIT_MAXIMUM: u32 = 4 * 1024 * 1024;
+const WORKSPACE_EDIT_FILE_LIMIT: usize = 16;
+const WORKSPACE_EDIT_COUNT_LIMIT: usize = 512;
+const WORKSPACE_EDIT_REPLACEMENT_LIMIT_BYTES: usize = 4 * 1024 * 1024;
+const WORKSPACE_SEARCH_PATTERN_LIMIT_BYTES: usize = 8 * 1024;
+const WORKSPACE_SEARCH_RESULT_LIMIT: u32 = 500;
 const TERMINAL_INPUT_LIMIT_BYTES: usize = 256 * 1024;
 const TERMINAL_QUERY_LIMIT_BYTES: usize = 4 * 1024;
 const TERMINAL_LINE_LIMIT_MAXIMUM: u32 = 1_000;
 const TERMINAL_MATCH_LIMIT_MAXIMUM: u32 = 500;
 const TERMINAL_DIMENSION_MAXIMUM: u16 = 1_000;
 const TERMINAL_TITLE_LIMIT_BYTES: usize = 256;
+const RECORDING_TITLE_LIMIT_BYTES: usize = 256;
+const RECORDING_QUERY_LIMIT_BYTES: usize = 4 * 1024;
+const RECORDING_SEARCH_LIMIT_MAXIMUM: u32 = 50;
+const DESKTOP_MIN_WIDTH: u32 = 200;
+const DESKTOP_MIN_HEIGHT: u32 = 120;
+const DESKTOP_MAX_DIMENSION: u32 = 8_192;
+const DESKTOP_KEY_CODE_LIMIT_BYTES: usize = 128;
+const DESKTOP_KEY_TEXT_LIMIT_BYTES: usize = 4 * 1024;
+const DESKTOP_TEXT_INPUT_LIMIT_BYTES: usize = 256 * 1024;
+const DESKTOP_CLIPBOARD_TEXT_LIMIT_BYTES: usize = 1024 * 1024;
+const DESKTOP_WHEEL_DELTA_LIMIT: f32 = 10_000.0;
+const CREDENTIAL_SECRET_LIMIT_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone)]
 pub struct PublicMcpService {
@@ -111,12 +138,136 @@ struct SubmitTerminalSchema {
     append_enter: bool,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WorkspaceTextEditSchema {
+    start_byte: u32,
+    end_byte: u32,
+    replacement: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WorkspaceFileEditsSchema {
+    path: String,
+    expected_revision: String,
+    edits: Vec<WorkspaceTextEditSchema>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WorkspaceApplyEditsSchema {
+    workspace_ref: WorkspaceRef,
+    files: Vec<WorkspaceFileEditsSchema>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SubmitTerminalMetadata {
     terminal_ref: TerminalRef,
     #[serde(default)]
     append_enter: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "this type exists only to generate the public tool schema"
+)]
+#[serde(deny_unknown_fields)]
+struct StoreCredentialSchema {
+    connection_ref: ConnectionRef,
+    slot: PublicCredentialSlot,
+    new_secret: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoreCredentialMetadata {
+    connection_ref: ConnectionRef,
+    slot: PublicCredentialSlot,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "this type exists only to generate the public tool schema"
+)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
+enum DesktopInputEventSchema {
+    MouseMove {
+        x: u32,
+        y: u32,
+    },
+    MouseButton {
+        x: u32,
+        y: u32,
+        button: PublicDesktopMouseButton,
+        state: DesktopButtonState,
+    },
+    Wheel {
+        x: u32,
+        y: u32,
+        delta_x: f32,
+        delta_y: f32,
+    },
+    Key {
+        code: String,
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        alt: bool,
+        #[serde(default)]
+        ctrl: bool,
+        #[serde(default)]
+        shift: bool,
+        #[serde(default)]
+        meta: bool,
+        state: DesktopButtonState,
+    },
+    Text {
+        text: String,
+    },
+    ReleaseAll,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "this type exists only to generate the public tool schema"
+)]
+#[serde(deny_unknown_fields)]
+struct DesktopInputSchema {
+    desktop_ref: crate::DesktopRef,
+    graphics_epoch: u64,
+    event: DesktopInputEventSchema,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "this type exists only to generate the public tool schema"
+)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
+enum DesktopClipboardPayloadSchema {
+    Text {
+        text: String,
+    },
+    Image {
+        artifact_ref: crate::ArtifactRef,
+        format: DesktopClipboardImageFormat,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "this type exists only to generate the public tool schema"
+)]
+#[serde(deny_unknown_fields)]
+struct WriteDesktopClipboardSchema {
+    desktop_ref: crate::DesktopRef,
+    payload: DesktopClipboardPayloadSchema,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -180,6 +331,7 @@ struct QuickCommandsSaveMetadata {
 struct CatalogEntry {
     name: String,
     tool_group: ToolGroup,
+    additional_tool_groups: &'static [ToolGroup],
     requires_approval: bool,
 }
 
@@ -207,7 +359,7 @@ impl PublicMcpService {
     fn visible_tools(&self, client: &ClientProjection) -> Vec<Tool> {
         tool_definitions()
             .into_iter()
-            .filter(|definition| client.tool_groups.contains(&definition.group))
+            .filter(|definition| definition.is_visible_to(client))
             .map(|definition| definition.tool)
             .collect()
     }
@@ -217,14 +369,23 @@ impl PublicMcpService {
         client: &ClientProjection,
         call: PublicToolCall,
     ) -> CallToolResult {
-        if !client.tool_groups.contains(&call.required_group()) {
+        if !client.tool_groups.contains(&call.required_group())
+            || call
+                .additional_required_groups()
+                .iter()
+                .any(|group| !client.tool_groups.contains(group))
+        {
             return tool_error(
                 "tool_group_disabled",
                 "This tool group is disabled for the client",
             );
         }
 
-        if call.requires_approval() && client.approval_mode == ClientApprovalMode::Standard {
+        // Access expansion always crosses the local approval boundary, including unattended mode.
+        if call.requires_approval()
+            && (client.approval_mode == ClientApprovalMode::Standard
+                || call.requires_explicit_app_approval())
+        {
             let tool_name = call.tool_name();
             let target = call.target_summary();
             let approval = match self.state.approvals.stage(client.client_ref.clone(), call) {
@@ -250,19 +411,34 @@ impl PublicMcpService {
         } else {
             AuditAuthorization::NotRequired
         };
-        self.execute_approved_call(client.client_ref.clone(), call, authorization)
-            .await
+        self.execute_approved_call(
+            client.client_ref.clone(),
+            client.approval_mode,
+            call,
+            authorization,
+        )
+        .await
     }
 
     async fn execute_approved_call(
         &self,
         client_ref: ClientRef,
+        expected_approval_mode: ClientApprovalMode,
         call: PublicToolCall,
         authorization: AuditAuthorization,
     ) -> CallToolResult {
         let tool_name = call.tool_name().to_owned();
         let target = call.target_summary();
-        let response = self.state.broker.execute(client_ref.clone(), call).await;
+        let response = self
+            .state
+            .broker
+            .execute(
+                &self.state.clients,
+                expected_approval_mode,
+                client_ref.clone(),
+                call,
+            )
+            .await;
         match response {
             Ok(envelope) => {
                 self.state.audit.record_fields(
@@ -282,7 +458,11 @@ impl PublicMcpService {
                     authorization,
                     ToolOutcome::Failed,
                 );
-                tool_error("workspace_unavailable", error.to_string())
+                let error_code = match error {
+                    BrokerError::AuthorizationChanged => "authorization_changed",
+                    _ => "workspace_unavailable",
+                };
+                tool_error(error_code, error.to_string())
             }
         }
     }
@@ -304,7 +484,12 @@ impl PublicMcpService {
             Ok(call) => call,
             Err(error) => return tool_error("approval_unavailable", error.to_string()),
         };
-        if !client.tool_groups.contains(&call.required_group()) {
+        if !client.tool_groups.contains(&call.required_group())
+            || call
+                .additional_required_groups()
+                .iter()
+                .any(|group| !client.tool_groups.contains(group))
+        {
             return tool_error(
                 "tool_group_disabled",
                 "The required tool group was disabled before commit",
@@ -312,6 +497,7 @@ impl PublicMcpService {
         }
         self.execute_approved_call(
             client.client_ref.clone(),
+            client.approval_mode,
             call,
             AuditAuthorization::AppApproval,
         )
@@ -368,23 +554,119 @@ impl ServerHandler for PublicMcpService {
                     "server": "OxideTerm Public MCP",
                     "protocol": ProtocolVersion::V_2026_07_28.to_string(),
                     "approval_policy": approval_policy,
+                    "enabled_tool_groups": client.tool_groups,
+                    "available_tool_groups": ToolGroup::selectable(),
                     "security": "Bearer authentication, per-client tool groups, app-lock enforcement, secret hard boundaries, and audit remain active in every mode",
                 }))
             }
             "mcp_catalog" => {
-                let catalog = tool_definitions()
+                let tools = tool_definitions()
                     .into_iter()
-                    .filter(|definition| client.tool_groups.contains(&definition.group))
+                    .filter(|definition| definition.is_visible_to(&client))
                     .map(|definition| CatalogEntry {
                         name: definition.tool.name.into_owned(),
                         tool_group: definition.group,
+                        additional_tool_groups: definition.additional_groups,
                         requires_approval: definition.requires_approval
-                            && client.approval_mode == ClientApprovalMode::Standard,
+                            && (client.approval_mode == ClientApprovalMode::Standard
+                                || definition.requires_explicit_app_approval),
                     })
                     .collect::<Vec<_>>();
-                CallToolResult::structured(json!({ "tools": catalog }))
+                let tool_groups = ToolGroup::selectable()
+                    .iter()
+                    .map(|group| {
+                        json!({
+                            "group": group,
+                            "enabled": client.tool_groups.contains(group),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                CallToolResult::structured(json!({
+                    "tools": tools,
+                    "tool_groups": tool_groups,
+                }))
             }
-            "mcp_access_state" => CallToolResult::structured(json!({ "client": client })),
+            "mcp_access_state" => {
+                let access_requests = self
+                    .state
+                    .approvals
+                    .list()
+                    .into_iter()
+                    .filter(|approval| {
+                        approval.client_ref == client.client_ref
+                            && approval.tool_name == "mcp_request_access"
+                    })
+                    .collect::<Vec<_>>();
+                CallToolResult::structured(json!({
+                    "client": client,
+                    "selectable_groups": ToolGroup::selectable(),
+                    "access_requests": access_requests,
+                }))
+            }
+            "mcp_request_access" => match parse_arguments::<RequestAccessArgs>(arguments) {
+                Ok(mut args) if access_groups_are_valid(&args.groups) => {
+                    let requested_groups = args.groups.into_iter().collect::<BTreeSet<_>>();
+                    args.groups = requested_groups
+                        .into_iter()
+                        .filter(|group| !client.tool_groups.contains(group))
+                        .collect();
+                    if args.groups.is_empty() {
+                        CallToolResult::structured(json!({
+                            "outcome": "already_granted",
+                            "client": client,
+                        }))
+                    } else {
+                        self.execute_call(&client, PublicToolCall::RequestAccess(args))
+                            .await
+                    }
+                }
+                Ok(_) => tool_error(
+                    "invalid_arguments",
+                    "Select one or more non-basic Public MCP tool groups",
+                ),
+                Err(error) => *error,
+            },
+            "mcp_revoke_access" => match parse_arguments::<RevokeAccessArgs>(arguments) {
+                Ok(args) if access_groups_are_valid(&args.groups) => {
+                    let groups = args
+                        .groups
+                        .into_iter()
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect();
+                    self.execute_call(
+                        &client,
+                        PublicToolCall::RevokeAccess(RevokeAccessArgs { groups }),
+                    )
+                    .await
+                }
+                Ok(_) => tool_error(
+                    "invalid_arguments",
+                    "Select one or more non-basic Public MCP tool groups",
+                ),
+                Err(error) => *error,
+            },
+            "mcp_operation" => match parse_arguments::<OperationStateArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::OperationState(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "mcp_cancel_operation" => match parse_arguments::<CancelOperationArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::CancelOperation(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "mcp_revert" => match parse_arguments::<RevertArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::Revert(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
             "mcp_commit_action" => self.commit_action(&client, arguments).await,
             "connections_browse" => match parse_arguments::<BrowseConnectionsArgs>(arguments) {
                 Ok(args) => {
@@ -396,6 +678,78 @@ impl ServerHandler for PublicMcpService {
             "connections_describe" => match parse_arguments::<DescribeConnectionArgs>(arguments) {
                 Ok(args) => {
                     self.execute_call(&client, PublicToolCall::DescribeConnection(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "connections_save" => match parse_arguments::<SavePublicConnectionArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::SaveConnection(Box::new(args)))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "connections_remove" => {
+                match parse_arguments::<RemovePublicConnectionArgs>(arguments) {
+                    Ok(args) => {
+                        self.execute_call(&client, PublicToolCall::RemoveConnection(args))
+                            .await
+                    }
+                    Err(error) => *error,
+                }
+            }
+            "credentials_status" => match parse_arguments::<CredentialStatusArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::CredentialStatus(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "credentials_store" => match parse_store_credential(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::StoreCredential(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "credentials_forget" => match parse_arguments::<ForgetCredentialArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::ForgetCredential(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "sync_status" => match parse_arguments::<SyncStatusArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::SyncStatus(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "sync_pull_preview" => match parse_arguments::<SyncPullPreviewArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::SyncPullPreview(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "sync_publish_preview" => match parse_arguments::<SyncPublishPreviewArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::SyncPublishPreview(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "sync_apply_plan" => match parse_arguments::<SyncApplyPlanArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::SyncApplyPlan(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "sync_restore" => match parse_arguments::<SyncRestoreArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::SyncRestore(args))
                         .await
                 }
                 Err(error) => *error,
@@ -514,6 +868,126 @@ impl ServerHandler for PublicMcpService {
                 }
                 Err(error) => *error,
             },
+            "recordings_control" => match parse_arguments::<RecordingsControlArgs>(arguments) {
+                Ok(args) if recording_control_is_valid(&args) => {
+                    self.execute_call(&client, PublicToolCall::RecordingsControl(args))
+                        .await
+                }
+                Ok(_) => tool_error(
+                    "invalid_arguments",
+                    "Terminal recording input capture is unavailable or the title is invalid",
+                ),
+                Err(error) => *error,
+            },
+            "recordings_status" => match parse_arguments::<RecordingsStatusArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::RecordingsStatus(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "recordings_search" => match parse_arguments::<RecordingsSearchArgs>(arguments) {
+                Ok(args)
+                    if !args.query.trim().is_empty()
+                        && args.query.len() <= RECORDING_QUERY_LIMIT_BYTES
+                        && args.limit > 0
+                        && args.limit <= RECORDING_SEARCH_LIMIT_MAXIMUM =>
+                {
+                    self.execute_call(&client, PublicToolCall::RecordingsSearch(args))
+                        .await
+                }
+                Ok(_) => tool_error(
+                    "invalid_arguments",
+                    "The recording query or result limit is invalid",
+                ),
+                Err(error) => *error,
+            },
+            "recordings_export" => match parse_arguments::<RecordingsExportArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::RecordingsExport(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "desktops_open" => match parse_arguments::<OpenDesktopArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::OpenDesktop(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "desktops_state" => match parse_arguments::<DesktopHandleArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::DesktopState(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "desktops_frame" => match parse_arguments::<DesktopFrameArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::DesktopFrame(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "desktops_input" => match parse_arguments::<DesktopInputArgs>(arguments) {
+                Ok(args) if desktop_input_is_valid(&args.event) => {
+                    self.execute_call(&client, PublicToolCall::DesktopInput(args))
+                        .await
+                }
+                Ok(_) => tool_error(
+                    "invalid_arguments",
+                    "The remote desktop input event exceeds the supported bounds",
+                ),
+                Err(error) => *error,
+            },
+            "desktops_resize" => match parse_arguments::<ResizeDesktopArgs>(arguments) {
+                Ok(args) if desktop_dimensions_are_valid(args.width, args.height) => {
+                    self.execute_call(&client, PublicToolCall::ResizeDesktop(args))
+                        .await
+                }
+                Ok(_) => tool_error(
+                    "invalid_arguments",
+                    "The remote desktop dimensions are outside the supported range",
+                ),
+                Err(error) => *error,
+            },
+            "desktops_clipboard_read" => {
+                match parse_arguments::<ReadDesktopClipboardArgs>(arguments) {
+                    Ok(args) => {
+                        self.execute_call(&client, PublicToolCall::ReadDesktopClipboard(args))
+                            .await
+                    }
+                    Err(error) => *error,
+                }
+            }
+            "desktops_clipboard_write" => {
+                match parse_arguments::<WriteDesktopClipboardArgs>(arguments) {
+                    Ok(args) if desktop_clipboard_payload_is_valid(&args.payload) => {
+                        self.execute_call(&client, PublicToolCall::WriteDesktopClipboard(args))
+                            .await
+                    }
+                    Ok(_) => tool_error(
+                        "invalid_arguments",
+                        "The remote desktop clipboard payload exceeds the supported bounds",
+                    ),
+                    Err(error) => *error,
+                }
+            }
+            "desktops_reconnect" => match parse_arguments::<DesktopHandleArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::ReconnectDesktop(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "desktops_close" => match parse_arguments::<DesktopHandleArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::CloseDesktop(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
             "commands_start" => match parse_start_command(arguments) {
                 Ok(args) => {
                     self.execute_call(&client, PublicToolCall::StartCommand(args))
@@ -558,6 +1032,84 @@ impl ServerHandler for PublicMcpService {
                     "invalid_arguments",
                     "The artifact read length must be between 1 and 262144 bytes",
                 ),
+                Err(error) => *error,
+            },
+            "transfers_start" => match parse_arguments::<StartTransferArgs>(arguments) {
+                Ok(args) if remote_path_is_valid(args.remote_path()) => {
+                    self.execute_call(&client, PublicToolCall::TransferStart(args))
+                        .await
+                }
+                Ok(_) => tool_error(
+                    "invalid_arguments",
+                    "The remote transfer path exceeds the supported bounds",
+                ),
+                Err(error) => *error,
+            },
+            "transfers_status" => match parse_arguments::<TransferHandleArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::TransferStatus(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "transfers_cancel" => match parse_arguments::<TransferHandleArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::TransferCancel(args))
+                        .await
+                }
+                Err(error) => *error,
+            },
+            "workspaces_mount" => match parse_arguments::<WorkspaceMountArgs>(arguments) {
+                Ok(args) if args.root.as_deref().is_none_or(remote_path_is_valid) => {
+                    self.execute_call(&client, PublicToolCall::WorkspaceMount(args))
+                        .await
+                }
+                Ok(_) => tool_error("invalid_arguments", "The workspace root is invalid"),
+                Err(error) => *error,
+            },
+            "workspaces_tree" => match parse_arguments::<WorkspaceTreeArgs>(arguments) {
+                Ok(args) if workspace_tree_args_are_valid(&args) => {
+                    self.execute_call(&client, PublicToolCall::WorkspaceTree(args))
+                        .await
+                }
+                Ok(_) => tool_error("invalid_arguments", "The workspace tree request is invalid"),
+                Err(error) => *error,
+            },
+            "workspaces_read" => match parse_arguments::<WorkspaceReadArgs>(arguments) {
+                Ok(args) if remote_path_is_valid(&args.path) => {
+                    self.execute_call(&client, PublicToolCall::WorkspaceRead(args))
+                        .await
+                }
+                Ok(_) => tool_error("invalid_arguments", "The workspace path is invalid"),
+                Err(error) => *error,
+            },
+            "workspaces_apply_edits" => match parse_workspace_apply_edits(arguments) {
+                Ok(args) if workspace_apply_edits_args_are_valid(&args) => {
+                    self.execute_call(&client, PublicToolCall::WorkspaceApplyEdits(args))
+                        .await
+                }
+                Ok(_) => tool_error(
+                    "invalid_arguments",
+                    "The structured workspace edit exceeds the supported bounds",
+                ),
+                Err(error) => *error,
+            },
+            "workspaces_search" => match parse_arguments::<WorkspaceSearchArgs>(arguments) {
+                Ok(args) if workspace_search_args_are_valid(&args) => {
+                    self.execute_call(&client, PublicToolCall::WorkspaceSearch(args))
+                        .await
+                }
+                Ok(_) => tool_error(
+                    "invalid_arguments",
+                    "The workspace search request is invalid",
+                ),
+                Err(error) => *error,
+            },
+            "workspaces_close" => match parse_arguments::<WorkspaceCloseArgs>(arguments) {
+                Ok(args) => {
+                    self.execute_call(&client, PublicToolCall::WorkspaceClose(args))
+                        .await
+                }
                 Err(error) => *error,
             },
             "mcp_audit_search" => match parse_arguments::<AuditSearchArgs>(arguments) {
@@ -815,7 +1367,24 @@ impl ServerHandler for PublicMcpService {
 struct ToolDefinition {
     tool: Tool,
     group: ToolGroup,
+    additional_groups: &'static [ToolGroup],
     requires_approval: bool,
+    requires_explicit_app_approval: bool,
+}
+
+impl ToolDefinition {
+    fn with_additional_groups(mut self, additional_groups: &'static [ToolGroup]) -> Self {
+        self.additional_groups = additional_groups;
+        self
+    }
+
+    fn is_visible_to(&self, client: &ClientProjection) -> bool {
+        client.tool_groups.contains(&self.group)
+            && self
+                .additional_groups
+                .iter()
+                .all(|group| client.tool_groups.contains(group))
+    }
 }
 
 fn tool_definitions() -> Vec<ToolDefinition> {
@@ -841,6 +1410,39 @@ fn tool_definitions() -> Vec<ToolDefinition> {
             true,
             false,
         ),
+        define_explicit_approval_tool::<RequestAccessArgs>(
+            "mcp_request_access",
+            "Request additional tool groups for this client through an in-app approval.",
+            ToolGroup::Basic,
+        ),
+        define_tool::<RevokeAccessArgs>(
+            "mcp_revoke_access",
+            "Immediately disable selected tool groups for this client and release their capabilities.",
+            ToolGroup::Basic,
+            false,
+            false,
+        ),
+        define_tool::<OperationStateArgs>(
+            "mcp_operation",
+            "Read redacted state and progress for a client-owned background operation.",
+            ToolGroup::Basic,
+            true,
+            false,
+        ),
+        define_tool::<CancelOperationArgs>(
+            "mcp_cancel_operation",
+            "Request cancellation of a client-owned background operation without claiming rollback.",
+            ToolGroup::Basic,
+            false,
+            false,
+        ),
+        define_tool::<RevertArgs>(
+            "mcp_revert",
+            "Apply the exact inverse retained for a client-owned Cloud Sync undo handle.",
+            ToolGroup::Basic,
+            false,
+            true,
+        ),
         define_tool::<CommitActionArgs>(
             "mcp_commit_action",
             "Commit an action that the user already approved in OxideTerm.",
@@ -861,6 +1463,76 @@ fn tool_definitions() -> Vec<ToolDefinition> {
             ToolGroup::ConnectionRead,
             true,
             false,
+        ),
+        define_tool::<SavePublicConnectionArgs>(
+            "connections_save",
+            "Create or update a typed saved connection profile without secret values.",
+            ToolGroup::ConnectionManage,
+            false,
+            true,
+        ),
+        define_tool::<RemovePublicConnectionArgs>(
+            "connections_remove",
+            "Remove a saved connection with explicit protected-credential handling.",
+            ToolGroup::ConnectionManage,
+            false,
+            true,
+        ),
+        define_tool::<CredentialStatusArgs>(
+            "credentials_status",
+            "Report configured protected credential slots without returning values or storage references.",
+            ToolGroup::CredentialManage,
+            true,
+            false,
+        ),
+        define_tool::<StoreCredentialSchema>(
+            "credentials_store",
+            "Store a new credential directly in OxideTerm's protected backend without exposing existing values.",
+            ToolGroup::CredentialManage,
+            false,
+            true,
+        ),
+        define_tool::<ForgetCredentialArgs>(
+            "credentials_forget",
+            "Forget one protected credential slot without returning its previous value.",
+            ToolGroup::CredentialManage,
+            false,
+            true,
+        ),
+        define_tool::<SyncStatusArgs>(
+            "sync_status",
+            "Read Cloud Sync state and configured capability without locations, tokens, or protected references.",
+            ToolGroup::CloudSync,
+            true,
+            false,
+        ),
+        define_tool::<SyncPullPreviewArgs>(
+            "sync_pull_preview",
+            "Download and freeze a bounded Cloud Sync pull plan without applying it.",
+            ToolGroup::CloudSync,
+            true,
+            false,
+        ),
+        define_tool::<SyncPublishPreviewArgs>(
+            "sync_publish_preview",
+            "Freeze a bounded Cloud Sync publish plan and check the current remote revision.",
+            ToolGroup::CloudSync,
+            true,
+            false,
+        ),
+        define_tool::<SyncApplyPlanArgs>(
+            "sync_apply_plan",
+            "Apply one frozen pull or publish plan after checking local and remote revisions.",
+            ToolGroup::CloudSync,
+            false,
+            true,
+        ),
+        define_tool::<SyncRestoreArgs>(
+            "sync_restore",
+            "Restore an exact local checkpoint returned by a prior Cloud Sync apply.",
+            ToolGroup::CloudSync,
+            false,
+            true,
         ),
         define_tool::<ConnectNodeArgs>(
             "nodes_connect",
@@ -946,6 +1618,99 @@ fn tool_definitions() -> Vec<ToolDefinition> {
             false,
             false,
         ),
+        define_tool::<RecordingsControlArgs>(
+            "recordings_control",
+            "Start, pause, resume, or stop an output-only recording on a client-owned terminal.",
+            ToolGroup::RecordingControl,
+            false,
+            true,
+        ),
+        define_tool::<RecordingsStatusArgs>(
+            "recordings_status",
+            "Read recording state and bounded metadata without returning terminal content.",
+            ToolGroup::RecordingControl,
+            true,
+            false,
+        ),
+        define_tool::<RecordingsSearchArgs>(
+            "recordings_search",
+            "Search bounded snippets in one stopped client-owned terminal recording.",
+            ToolGroup::RecordingContent,
+            true,
+            false,
+        ),
+        define_tool::<RecordingsExportArgs>(
+            "recordings_export",
+            "Export one stopped terminal recording to a client-scoped temporary artifact.",
+            ToolGroup::RecordingContent,
+            false,
+            true,
+        )
+        .with_additional_groups(&[ToolGroup::ArtifactTransfer]),
+        define_tool::<OpenDesktopArgs>(
+            "desktops_open",
+            "Open a real saved RDP or VNC profile in a visible OxideTerm tab.",
+            ToolGroup::DesktopSession,
+            false,
+            true,
+        ),
+        define_tool::<DesktopHandleArgs>(
+            "desktops_state",
+            "Read the session, security, framebuffer, input, and clipboard capability state.",
+            ToolGroup::DesktopObserve,
+            true,
+            false,
+        ),
+        define_tool::<DesktopFrameArgs>(
+            "desktops_frame",
+            "Encode the latest bounded framebuffer as a client-scoped PNG artifact.",
+            ToolGroup::DesktopObserve,
+            true,
+            false,
+        )
+        .with_additional_groups(&[ToolGroup::ArtifactTransfer]),
+        define_tool::<DesktopInputSchema>(
+            "desktops_input",
+            "Send one strict mouse, wheel, key, text, or release-all event for the current framebuffer epoch.",
+            ToolGroup::DesktopInput,
+            false,
+            true,
+        ),
+        define_tool::<ResizeDesktopArgs>(
+            "desktops_resize",
+            "Request a bounded remote framebuffer resize when the provider supports it.",
+            ToolGroup::DesktopInput,
+            false,
+            false,
+        ),
+        define_tool::<ReadDesktopClipboardArgs>(
+            "desktops_clipboard_read",
+            "Read the latest remote clipboard value; image content also requires artifact transfer.",
+            ToolGroup::DesktopClipboard,
+            true,
+            false,
+        ),
+        define_tool::<WriteDesktopClipboardSchema>(
+            "desktops_clipboard_write",
+            "Write exact text or a bounded image artifact; images also require artifact transfer.",
+            ToolGroup::DesktopClipboard,
+            false,
+            true,
+        ),
+        define_tool::<DesktopHandleArgs>(
+            "desktops_reconnect",
+            "Reconnect the existing client-owned remote desktop session using its retained profile.",
+            ToolGroup::DesktopSession,
+            false,
+            true,
+        ),
+        define_tool::<DesktopHandleArgs>(
+            "desktops_close",
+            "Release all remote inputs and close the client-owned desktop helper and tab.",
+            ToolGroup::DesktopSession,
+            false,
+            false,
+        ),
         define_tool::<StartCommandSchema>(
             "commands_start",
             "Start a command on an acquired SSH node and return a command handle.",
@@ -986,6 +1751,69 @@ fn tool_definitions() -> Vec<ToolDefinition> {
             "Read a bounded range from a temporary artifact owned by this client.",
             ToolGroup::ArtifactTransfer,
             true,
+            false,
+        ),
+        define_tool::<StartTransferArgs>(
+            "transfers_start",
+            "Start one bounded background SFTP upload or download between an authorized remote path and client-owned artifact storage.",
+            ToolGroup::ArtifactTransfer,
+            false,
+            true,
+        ),
+        define_tool::<TransferHandleArgs>(
+            "transfers_status",
+            "Read bounded progress and the completed artifact for one client-owned transfer.",
+            ToolGroup::ArtifactTransfer,
+            true,
+            false,
+        ),
+        define_tool::<TransferHandleArgs>(
+            "transfers_cancel",
+            "Cancel one client-owned background transfer without disconnecting its SSH node.",
+            ToolGroup::ArtifactTransfer,
+            false,
+            false,
+        ),
+        define_tool::<WorkspaceMountArgs>(
+            "workspaces_mount",
+            "Mount a client-scoped remote IDE workspace beneath an authorized SFTP root.",
+            ToolGroup::WorkspaceRead,
+            false,
+            false,
+        ),
+        define_tool::<WorkspaceTreeArgs>(
+            "workspaces_tree",
+            "List one bounded page from a mounted remote IDE workspace tree.",
+            ToolGroup::WorkspaceRead,
+            true,
+            false,
+        ),
+        define_tool::<WorkspaceReadArgs>(
+            "workspaces_read",
+            "Read one bounded editable text file and its conflict-detection revision.",
+            ToolGroup::WorkspaceRead,
+            true,
+            false,
+        ),
+        define_tool::<WorkspaceApplyEditsSchema>(
+            "workspaces_apply_edits",
+            "Apply bounded byte-range text edits after checking every observed file revision.",
+            ToolGroup::WorkspaceEdit,
+            false,
+            true,
+        ),
+        define_tool::<WorkspaceSearchArgs>(
+            "workspaces_search",
+            "Search a mounted workspace through the node agent or bounded remote fallback.",
+            ToolGroup::WorkspaceRead,
+            true,
+            false,
+        ),
+        define_tool::<WorkspaceCloseArgs>(
+            "workspaces_close",
+            "Release one IDE workspace consumer without disconnecting the physical SSH node.",
+            ToolGroup::WorkspaceRead,
+            false,
             false,
         ),
         define_tool::<AuditSearchArgs>(
@@ -1064,7 +1892,8 @@ fn tool_definitions() -> Vec<ToolDefinition> {
             ToolGroup::AddonManage,
             false,
             true,
-        ),
+        )
+        .with_additional_groups(&[ToolGroup::ArtifactTransfer]),
         define_tool::<AddonsSetEnabledArgs>(
             "addons_set_enabled",
             "Enable or disable an installed addon through OxideTerm's managed lifecycle.",
@@ -1169,21 +1998,24 @@ fn tool_definitions() -> Vec<ToolDefinition> {
             ToolGroup::FileRead,
             true,
             false,
-        ),
+        )
+        .with_additional_groups(&[ToolGroup::ArtifactTransfer]),
         define_tool::<FilesCompareArgs>(
             "files_compare",
             "Compare one bounded remote file with a client-owned artifact without changing it.",
             ToolGroup::FileRead,
             true,
             false,
-        ),
+        )
+        .with_additional_groups(&[ToolGroup::ArtifactTransfer]),
         define_tool::<FilesWriteArgs>(
             "files_write",
             "Write one client-owned artifact to an authorized remote path.",
             ToolGroup::FileWrite,
             false,
             true,
-        ),
+        )
+        .with_additional_groups(&[ToolGroup::ArtifactTransfer]),
         define_tool::<FilesMoveArgs>(
             "files_move",
             "Move one authorized remote path within the same SFTP root.",
@@ -1218,15 +2050,31 @@ fn define_tool<T: JsonSchema>(
     ToolDefinition {
         tool: Tool::new(name, description, schema_object::<T>()).with_annotations(annotations),
         group,
+        additional_groups: &[],
         requires_approval,
+        requires_explicit_app_approval: false,
     }
 }
 
+fn define_explicit_approval_tool<T: JsonSchema>(
+    name: &'static str,
+    description: &'static str,
+    group: ToolGroup,
+) -> ToolDefinition {
+    let mut definition = define_tool::<T>(name, description, group, false, true);
+    definition.requires_explicit_app_approval = true;
+    definition
+}
+
 fn schema_object<T: JsonSchema>() -> JsonObject {
-    serde_json::to_value(schema_for!(T))
+    let mut schema = serde_json::to_value(schema_for!(T))
         .ok()
         .and_then(|value| value.as_object().cloned())
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    // MCP tool arguments cross the protocol as JSON objects, even when the schema uses oneOf.
+    schema.insert("type".to_owned(), Value::String("object".to_owned()));
+    schema
 }
 
 fn parse_arguments<T: DeserializeOwned>(arguments: JsonObject) -> Result<T, Box<CallToolResult>> {
@@ -1236,6 +2084,14 @@ fn parse_arguments<T: DeserializeOwned>(arguments: JsonObject) -> Result<T, Box<
             format!("The tool arguments are invalid: {error}"),
         ))
     })
+}
+
+fn access_groups_are_valid(groups: &[ToolGroup]) -> bool {
+    !groups.is_empty()
+        && groups.len() <= ToolGroup::selectable().len()
+        && groups
+            .iter()
+            .all(|group| ToolGroup::selectable().contains(group))
 }
 
 fn parse_start_command(mut arguments: JsonObject) -> Result<StartCommandArgs, Box<CallToolResult>> {
@@ -1267,6 +2123,57 @@ fn parse_start_command(mut arguments: JsonObject) -> Result<StartCommandArgs, Bo
         node_ref: metadata.node_ref,
         command,
         working_directory: metadata.working_directory.map(Zeroizing::new),
+    })
+}
+
+fn parse_workspace_apply_edits(
+    arguments: JsonObject,
+) -> Result<WorkspaceApplyEditsArgs, Box<CallToolResult>> {
+    let schema = parse_arguments::<WorkspaceApplyEditsSchema>(arguments)?;
+    Ok(WorkspaceApplyEditsArgs {
+        workspace_ref: schema.workspace_ref,
+        files: schema
+            .files
+            .into_iter()
+            .map(|file| WorkspaceFileEdits {
+                path: file.path,
+                expected_revision: file.expected_revision,
+                edits: file
+                    .edits
+                    .into_iter()
+                    .map(|edit| WorkspaceTextEdit {
+                        start_byte: edit.start_byte,
+                        end_byte: edit.end_byte,
+                        replacement: Zeroizing::new(edit.replacement),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    })
+}
+
+fn parse_store_credential(
+    mut arguments: JsonObject,
+) -> Result<StoreCredentialArgs, Box<CallToolResult>> {
+    // Move the incoming secret into a zeroizing owner before parsing non-secret metadata.
+    let new_secret = match arguments.remove("new_secret") {
+        Some(Value::String(secret))
+            if !secret.is_empty() && secret.len() <= CREDENTIAL_SECRET_LIMIT_BYTES =>
+        {
+            Zeroizing::new(secret)
+        }
+        _ => {
+            return Err(Box::new(tool_error(
+                "invalid_arguments",
+                "The new credential must be non-empty and within the supported size limit",
+            )));
+        }
+    };
+    let metadata = parse_arguments::<StoreCredentialMetadata>(arguments)?;
+    Ok(StoreCredentialArgs {
+        connection_ref: metadata.connection_ref,
+        slot: metadata.slot,
+        new_secret,
     })
 }
 
@@ -1328,6 +2235,67 @@ fn terminal_title_is_valid(title: &str) -> bool {
     !title.trim().is_empty()
         && title.len() <= TERMINAL_TITLE_LIMIT_BYTES
         && !title.chars().any(char::is_control)
+}
+
+fn recording_control_is_valid(args: &RecordingsControlArgs) -> bool {
+    match args {
+        RecordingsControlArgs::Start {
+            title,
+            capture_input,
+            ..
+        } => {
+            !capture_input
+                && title.as_deref().is_none_or(|title| {
+                    !title.trim().is_empty()
+                        && title.len() <= RECORDING_TITLE_LIMIT_BYTES
+                        && !title.chars().any(char::is_control)
+                })
+        }
+        RecordingsControlArgs::Pause { .. }
+        | RecordingsControlArgs::Resume { .. }
+        | RecordingsControlArgs::Stop { .. } => true,
+    }
+}
+
+fn desktop_dimensions_are_valid(width: u32, height: u32) -> bool {
+    (DESKTOP_MIN_WIDTH..=DESKTOP_MAX_DIMENSION).contains(&width)
+        && (DESKTOP_MIN_HEIGHT..=DESKTOP_MAX_DIMENSION).contains(&height)
+}
+
+fn desktop_input_is_valid(event: &DesktopInputEvent) -> bool {
+    match event {
+        DesktopInputEvent::MouseMove { .. } | DesktopInputEvent::MouseButton { .. } => true,
+        DesktopInputEvent::Wheel {
+            delta_x, delta_y, ..
+        } => {
+            delta_x.is_finite()
+                && delta_y.is_finite()
+                && delta_x.abs() <= DESKTOP_WHEEL_DELTA_LIMIT
+                && delta_y.abs() <= DESKTOP_WHEEL_DELTA_LIMIT
+                && (delta_x.abs() > f32::EPSILON || delta_y.abs() > f32::EPSILON)
+        }
+        DesktopInputEvent::Key { code, text, .. } => {
+            !code.trim().is_empty()
+                && code.len() <= DESKTOP_KEY_CODE_LIMIT_BYTES
+                && !code.chars().any(char::is_control)
+                && text
+                    .as_deref()
+                    .is_none_or(|text| text.len() <= DESKTOP_KEY_TEXT_LIMIT_BYTES)
+        }
+        DesktopInputEvent::Text { text } => {
+            !text.is_empty() && text.len() <= DESKTOP_TEXT_INPUT_LIMIT_BYTES
+        }
+        DesktopInputEvent::ReleaseAll => true,
+    }
+}
+
+fn desktop_clipboard_payload_is_valid(payload: &DesktopClipboardPayload) -> bool {
+    match payload {
+        DesktopClipboardPayload::Text { text } => {
+            !text.is_empty() && text.len() <= DESKTOP_CLIPBOARD_TEXT_LIMIT_BYTES
+        }
+        DesktopClipboardPayload::Image { .. } => true,
+    }
 }
 
 fn parse_stage_artifact(
@@ -1514,6 +2482,38 @@ fn files_remove_args_are_valid(args: &FilesRemoveArgs) -> bool {
         && optional_revision_is_valid(args.expected_revision.as_deref())
 }
 
+fn workspace_tree_args_are_valid(args: &WorkspaceTreeArgs) -> bool {
+    args.path.as_deref().is_none_or(remote_path_is_valid)
+        && args
+            .limit
+            .is_none_or(|limit| limit > 0 && limit <= FILE_LIST_LIMIT_MAXIMUM)
+}
+
+fn workspace_apply_edits_args_are_valid(args: &WorkspaceApplyEditsArgs) -> bool {
+    !args.files.is_empty()
+        && args.files.len() <= WORKSPACE_EDIT_FILE_LIMIT
+        && args.files.iter().all(|file| {
+            remote_path_is_valid(&file.path)
+                && forward_text_is_valid(&file.expected_revision, FORWARD_REVISION_LIMIT_BYTES)
+                && !file.edits.is_empty()
+                && file.edits.len() <= WORKSPACE_EDIT_COUNT_LIMIT
+                && file.edits.iter().all(|edit| {
+                    edit.start_byte <= edit.end_byte
+                        && edit.replacement.len() <= WORKSPACE_EDIT_REPLACEMENT_LIMIT_BYTES
+                })
+        })
+}
+
+fn workspace_search_args_are_valid(args: &WorkspaceSearchArgs) -> bool {
+    !args.pattern.is_empty()
+        && args.pattern.len() <= WORKSPACE_SEARCH_PATTERN_LIMIT_BYTES
+        && !args.pattern.chars().any(char::is_control)
+        && args.root.as_deref().is_none_or(remote_path_is_valid)
+        && args
+            .maximum_results
+            .is_none_or(|limit| limit > 0 && limit <= WORKSPACE_SEARCH_RESULT_LIMIT)
+}
+
 fn optional_revision_is_valid(revision: Option<&str>) -> bool {
     revision.is_none_or(|revision| forward_text_is_valid(revision, FORWARD_REVISION_LIMIT_BYTES))
 }
@@ -1546,4 +2546,39 @@ fn tool_error(code: &'static str, message: impl Into<String>) -> CallToolResult 
 
 fn unauthorized_error() -> McpError {
     McpError::invalid_request("Unauthorized MCP client", None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_tool_input_schemas_have_object_roots() {
+        // MCP tool arguments must expose an object at the schema root, including tagged enums.
+        for definition in tool_definitions() {
+            assert_eq!(
+                definition
+                    .tool
+                    .input_schema
+                    .get("type")
+                    .and_then(Value::as_str),
+                Some("object"),
+                "tool {} must expose an object input schema",
+                definition.tool.name
+            );
+        }
+
+        for schema in [
+            schema_object::<RecordingsControlArgs>(),
+            schema_object::<StartTransferArgs>(),
+        ] {
+            assert!(
+                schema
+                    .get("oneOf")
+                    .and_then(Value::as_array)
+                    .is_some_and(|variants| !variants.is_empty()),
+                "tagged enum alternatives must be preserved"
+            );
+        }
+    }
 }

@@ -12,6 +12,31 @@ const SETTINGS_PUBLIC_MCP_COMMAND_PADDING_X: f32 = 8.0;
 const SETTINGS_PUBLIC_MCP_COMMAND_PADDING_Y: f32 = 6.0;
 const SETTINGS_PUBLIC_MCP_ACTION_ICON_SIZE: f32 = 14.0;
 
+#[derive(serde::Serialize)]
+struct PublicMcpStdioEnvironment<'a> {
+    #[serde(rename = "OXIDETERM_MCP_TOKEN")]
+    credential: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct PublicMcpStdioConfig<'a> {
+    command: &'static str,
+    args: [&'static str; 2],
+    env: PublicMcpStdioEnvironment<'a>,
+}
+
+fn public_mcp_stdio_json(credential: &str) -> zeroize::Zeroizing<String> {
+    // Borrow the credential during serialization so the JSON output is the only temporary copy.
+    zeroize::Zeroizing::new(
+        serde_json::to_string_pretty(&PublicMcpStdioConfig {
+            command: CLI_COMPANION_COMMAND_NAME,
+            args: ["mcp", "bridge"],
+            env: PublicMcpStdioEnvironment { credential },
+        })
+        .expect("serializing the stdio MCP configuration cannot fail"),
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::workspace) enum NetworkProxyAuthMode {
     None,
@@ -71,12 +96,18 @@ pub(in crate::workspace) fn network_application_proxy_mode_label(
 
 fn public_mcp_tool_group_label_key(tool_group: oxideterm_public_mcp::ToolGroup) -> &'static str {
     match tool_group {
-        oxideterm_public_mcp::ToolGroup::Basic => "settings_view.network.public_mcp",
+        oxideterm_public_mcp::ToolGroup::Basic => "settings_view.network.mcp_group_basic",
         oxideterm_public_mcp::ToolGroup::ConnectionDirectory => {
             "settings_view.network.mcp_group_connection_directory"
         }
         oxideterm_public_mcp::ToolGroup::ConnectionRead => {
             "settings_view.network.mcp_group_connection_read"
+        }
+        oxideterm_public_mcp::ToolGroup::ConnectionManage => {
+            "settings_view.network.mcp_group_connection_manage"
+        }
+        oxideterm_public_mcp::ToolGroup::CredentialManage => {
+            "settings_view.network.mcp_group_credential_manage"
         }
         oxideterm_public_mcp::ToolGroup::NodeSession => {
             "settings_view.network.mcp_group_node_session"
@@ -89,6 +120,24 @@ fn public_mcp_tool_group_label_key(tool_group: oxideterm_public_mcp::ToolGroup) 
         }
         oxideterm_public_mcp::ToolGroup::TerminalInput => {
             "settings_view.network.mcp_group_terminal_input"
+        }
+        oxideterm_public_mcp::ToolGroup::RecordingControl => {
+            "settings_view.network.mcp_group_recording_control"
+        }
+        oxideterm_public_mcp::ToolGroup::RecordingContent => {
+            "settings_view.network.mcp_group_recording_content"
+        }
+        oxideterm_public_mcp::ToolGroup::DesktopSession => {
+            "settings_view.network.mcp_group_desktop_session"
+        }
+        oxideterm_public_mcp::ToolGroup::DesktopObserve => {
+            "settings_view.network.mcp_group_desktop_observe"
+        }
+        oxideterm_public_mcp::ToolGroup::DesktopInput => {
+            "settings_view.network.mcp_group_desktop_input"
+        }
+        oxideterm_public_mcp::ToolGroup::DesktopClipboard => {
+            "settings_view.network.mcp_group_desktop_clipboard"
         }
         oxideterm_public_mcp::ToolGroup::CommandObserve => {
             "settings_view.network.mcp_group_command_observe"
@@ -130,6 +179,13 @@ fn public_mcp_tool_group_label_key(tool_group: oxideterm_public_mcp::ToolGroup) 
         }
         oxideterm_public_mcp::ToolGroup::FileRead => "settings_view.network.mcp_group_file_read",
         oxideterm_public_mcp::ToolGroup::FileWrite => "settings_view.network.mcp_group_file_write",
+        oxideterm_public_mcp::ToolGroup::WorkspaceRead => {
+            "settings_view.network.mcp_group_workspace_read"
+        }
+        oxideterm_public_mcp::ToolGroup::WorkspaceEdit => {
+            "settings_view.network.mcp_group_workspace_edit"
+        }
+        oxideterm_public_mcp::ToolGroup::CloudSync => "settings_view.network.mcp_group_cloud_sync",
     }
 }
 
@@ -365,6 +421,50 @@ impl WorkspaceApp {
 
         content = content.child(
             div()
+                .w_full()
+                .min_w(px(0.0))
+                .flex()
+                .flex_wrap()
+                .items_end()
+                .gap(px(SETTINGS_PUBLIC_MCP_ENDPOINT_GAP))
+                .child(
+                    div()
+                        .w(px(SETTINGS_NETWORK_PORT_FIELD_WIDTH))
+                        .max_w_full()
+                        .child(self.network_input_field(
+                            "settings_view.network.public_mcp_port",
+                            "settings_view.network.public_mcp_port_hint",
+                            SettingsInput::PublicMcpPort,
+                            self.current_settings_input_value(SettingsInput::PublicMcpPort, cx),
+                            "0".to_string(),
+                            true,
+                            cx,
+                        )),
+                )
+                .child(self.workspace_toolbar_action_button(
+                    self.i18n.t("settings_view.network.apply_public_mcp_port"),
+                    None,
+                    ToolbarButtonOptions::default(),
+                    cx.listener(move |this, _event, _window, cx| {
+                        let draft = this.public_mcp.port_draft().trim().to_owned();
+                        let Ok(port) = draft.parse::<u16>() else {
+                            let error =
+                                this.i18n.t("settings_view.network.invalid_public_mcp_port");
+                            this.public_mcp.record_action_error(error);
+                            cx.notify();
+                            return;
+                        };
+                        let runtime = this.forwarding_runtime.handle().clone();
+                        if let Err(error) = this.public_mcp.apply_preferred_port(&runtime, port) {
+                            this.public_mcp.record_action_error(error.to_string());
+                        }
+                        cx.notify();
+                    }),
+                )),
+        );
+
+        content = content.child(
+            div()
                 .text_size(px(self.tokens.metrics.ui_text_xs))
                 .text_color(rgb(self.tokens.ui.text_muted))
                 .child(
@@ -390,9 +490,21 @@ impl WorkspaceApp {
                         div()
                             .min_w(px(0.0))
                             .flex_1()
-                            .text_size(px(self.tokens.metrics.ui_text_sm))
-                            .text_color(rgb(self.tokens.ui.text))
-                            .child(self.i18n.t("settings_view.network.credential_once")),
+                            .flex()
+                            .flex_col()
+                            .gap(px(SETTINGS_PUBLIC_MCP_STATUS_GAP))
+                            .child(
+                                div()
+                                    .text_size(px(self.tokens.metrics.ui_text_sm))
+                                    .text_color(rgb(self.tokens.ui.text))
+                                    .child(self.i18n.t("settings_view.network.credential_once")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(self.tokens.metrics.ui_text_xs))
+                                    .text_color(rgb(self.tokens.ui.warning))
+                                    .child(self.i18n.t("settings_view.network.stdio_json_hint")),
+                            ),
                     )
                     .child(self.workspace_toolbar_action_button(
                         self.i18n.t("settings_view.network.copy_credential"),
@@ -413,6 +525,24 @@ impl WorkspaceApp {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                     credential.to_owned(),
                                 ));
+                            }
+                            cx.stop_propagation();
+                        }),
+                    ))
+                    .child(self.workspace_toolbar_action_button(
+                        self.i18n.t("settings_view.network.copy_stdio_json"),
+                        Some(Self::render_lucide_icon(
+                            LucideIcon::Copy,
+                            SETTINGS_PUBLIC_MCP_ACTION_ICON_SIZE,
+                            rgb(self.tokens.ui.text),
+                        )),
+                        ToolbarButtonOptions::default(),
+                        cx.listener(|this, _event, _window, cx| {
+                            if let Some(credential) = this.public_mcp.revealed_credential() {
+                                let mut config = public_mcp_stdio_json(credential);
+                                // The clipboard is the explicit external boundary; app state never retains the JSON.
+                                let clipboard_config = std::mem::take(&mut *config);
+                                cx.write_to_clipboard(ClipboardItem::new_string(clipboard_config));
                             }
                             cx.stop_propagation();
                         }),
@@ -490,25 +620,47 @@ impl WorkspaceApp {
                     .flex()
                     .flex_wrap()
                     .gap(px(SETTINGS_PUBLIC_MCP_ROW_GAP));
-                for &tool_group in oxideterm_public_mcp::ToolGroup::selectable() {
+                let visible_tool_groups = std::iter::once(oxideterm_public_mcp::ToolGroup::Basic)
+                    .chain(
+                        oxideterm_public_mcp::ToolGroup::selectable()
+                            .iter()
+                            .copied(),
+                    );
+                for tool_group in visible_tool_groups {
                     let label_key = public_mcp_tool_group_label_key(tool_group);
                     let checked = client.tool_groups.contains(&tool_group);
                     let client_ref_for_group = client.client_ref.clone();
-                    let control = checkbox(&self.tokens, String::new(), checked).on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            if let Err(error) = this.set_public_mcp_client_tool_group(
-                                &client_ref_for_group,
-                                tool_group,
-                                !checked,
-                                cx,
-                            ) {
-                                this.public_mcp.record_action_error(error);
-                            }
-                            cx.notify();
-                            cx.stop_propagation();
-                        }),
+                    let required_group = tool_group == oxideterm_public_mcp::ToolGroup::Basic;
+                    let mut control = checkbox_with_state(
+                        &self.tokens,
+                        String::new(),
+                        if checked {
+                            CheckboxState::Checked
+                        } else {
+                            CheckboxState::Unchecked
+                        },
+                        CheckboxOptions {
+                            disabled: required_group,
+                            ..CheckboxOptions::default()
+                        },
                     );
+                    if !required_group {
+                        control = control.on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _event, _window, cx| {
+                                if let Err(error) = this.set_public_mcp_client_tool_group(
+                                    &client_ref_for_group,
+                                    tool_group,
+                                    !checked,
+                                    cx,
+                                ) {
+                                    this.public_mcp.record_action_error(error);
+                                }
+                                cx.notify();
+                                cx.stop_propagation();
+                            }),
+                        );
+                    }
                     group_controls = group_controls.child(
                         div()
                             .flex()
@@ -1902,6 +2054,18 @@ mod tests {
     use super::*;
     use gpui::{AppContext, TestAppContext};
     use oxideterm_ssh::{UpstreamProxyAuth, UpstreamProxyProtocol};
+
+    #[test]
+    fn stdio_mcp_json_escapes_the_one_time_credential() {
+        let credential = "credential-with-\"quote\\slash";
+        let config = public_mcp_stdio_json(credential);
+        let value: serde_json::Value =
+            serde_json::from_str(&config).expect("parse generated stdio MCP configuration");
+
+        assert_eq!(value["command"], CLI_COMPANION_COMMAND_NAME);
+        assert_eq!(value["args"], serde_json::json!(["mcp", "bridge"]));
+        assert_eq!(value["env"]["OXIDETERM_MCP_TOKEN"], credential);
+    }
 
     #[test]
     fn proxy_route_test_enters_workspace_tokio_runtime() {

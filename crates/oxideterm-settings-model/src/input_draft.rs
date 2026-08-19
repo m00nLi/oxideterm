@@ -16,10 +16,11 @@ use oxideterm_settings::{
     MIN_AI_TOOL_MAX_ROUNDS, PersistedSettings, RECOMMENDED_FOCUS_HANDOFF_COMMANDS,
     SettingsUpstreamProxyAuth, UpdateProxyMode, reindex_highlight_rules,
 };
+use oxideterm_terminal_semantic::SEMANTIC_CLASSES;
 
 use crate::{
-    SettingsInput, ai_update_provider, parse_focus_handoff_command_list,
-    set_ai_model_max_response_tokens, set_ai_user_context_window,
+    SettingsInput, ai_update_provider, edit_custom_semantic_scheme,
+    parse_focus_handoff_command_list, set_ai_model_max_response_tokens, set_ai_user_context_window,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,7 +96,9 @@ pub fn persisted_settings_input_value(
             })
             .unwrap_or_default(),
         SettingsInput::NetworkProxyPassword => String::new(),
-        SettingsInput::NetworkProxyTestHost | SettingsInput::NetworkProxyTestPort => return None,
+        SettingsInput::NetworkProxyTestHost
+        | SettingsInput::NetworkProxyTestPort
+        | SettingsInput::PublicMcpPort => return None,
         SettingsInput::UpdateProxyHost => settings.general.update_proxy.host.clone(),
         SettingsInput::UpdateProxyPort => settings.general.update_proxy.port.to_string(),
         SettingsInput::UpdateProxyNoProxy => settings.general.update_proxy.no_proxy.clone(),
@@ -124,27 +127,62 @@ pub fn persisted_settings_input_value(
             .cloned()
             .collect::<Vec<_>>()
             .join(", "),
+        SettingsInput::SemanticSchemeName => settings
+            .terminal
+            .active_custom_semantic_scheme()
+            .map(|scheme| scheme.name.clone())
+            .unwrap_or_default(),
+        SettingsInput::SemanticSchemeRulePattern(index) => settings
+            .terminal
+            .active_custom_semantic_scheme()
+            .and_then(|scheme| scheme.rules.get(index))
+            .map(|rule| rule.pattern.clone())
+            .unwrap_or_default(),
+        SettingsInput::SemanticSchemeRuleCapture(index) => settings
+            .terminal
+            .active_custom_semantic_scheme()
+            .and_then(|scheme| scheme.rules.get(index))
+            .map(|rule| rule.capture.to_string())
+            .unwrap_or_default(),
+        SettingsInput::SemanticSchemeColor(index) => SEMANTIC_CLASSES
+            .get(index)
+            .and_then(|class| {
+                settings
+                    .terminal
+                    .active_custom_semantic_scheme()?
+                    .colors
+                    .get(class)
+                    .cloned()
+            })
+            .unwrap_or_default(),
+        SettingsInput::HighlightRuleSetName => settings
+            .terminal
+            .default_highlight_rule_set
+            .as_deref()
+            .and_then(|id| settings.terminal.highlight_rule_set(id))
+            .map(|rule_set| rule_set.name.clone())
+            .unwrap_or_default(),
         SettingsInput::HighlightLabel(index) => settings
             .terminal
-            .highlight_rules
+            .effective_highlight_rules()
             .get(index)
             .map(|rule| rule.label.clone())
             .unwrap_or_default(),
         SettingsInput::HighlightPattern(index) => settings
             .terminal
-            .highlight_rules
+            .effective_highlight_rules()
             .get(index)
             .map(|rule| rule.pattern.clone())
             .unwrap_or_default(),
         SettingsInput::HighlightForeground(index) => settings
             .terminal
-            .highlight_rules
+            .effective_highlight_rules()
             .get(index)
             .and_then(|rule| rule.foreground.clone())
             .unwrap_or_default(),
         SettingsInput::HighlightBackground(index) => settings
             .terminal
-            .highlight_rules
+            .effective_highlight_rules()
             .get(index)
             .and_then(|rule| rule.background.clone())
             .unwrap_or_default(),
@@ -354,9 +392,9 @@ pub fn apply_persisted_settings_input_draft(
             };
         }),
         SettingsInput::NetworkProxyPassword => SettingsInputDraftApply::Unhandled,
-        SettingsInput::NetworkProxyTestHost | SettingsInput::NetworkProxyTestPort => {
-            SettingsInputDraftApply::Unhandled
-        }
+        SettingsInput::NetworkProxyTestHost
+        | SettingsInput::NetworkProxyTestPort
+        | SettingsInput::PublicMcpPort => SettingsInputDraftApply::Unhandled,
         SettingsInput::UpdateProxyHost => {
             settings.general.update_proxy.host = draft.trim().to_string();
             SettingsInputDraftApply::Applied
@@ -405,6 +443,65 @@ pub fn apply_persisted_settings_input_draft(
             .into(),
         SettingsInput::TerminalKeepaliveString => {
             settings.terminal.keepalive.send_string = draft.to_string();
+            SettingsInputDraftApply::Applied
+        }
+        SettingsInput::SemanticSchemeName => edit_custom_semantic_scheme(settings, |scheme| {
+            scheme.name = draft.trim().to_string();
+        })
+        .map(|()| SettingsInputDraftApply::Applied)
+        .unwrap_or(SettingsInputDraftApply::Invalid),
+        SettingsInput::SemanticSchemeRulePattern(index) => {
+            edit_custom_semantic_scheme(settings, |scheme| {
+                if let Some(rule) = scheme.rules.get_mut(index) {
+                    rule.pattern = draft.trim().to_string();
+                }
+            })
+            .map(|()| SettingsInputDraftApply::Applied)
+            .unwrap_or(SettingsInputDraftApply::Invalid)
+        }
+        SettingsInput::SemanticSchemeRuleCapture(index) => {
+            let Ok(capture) = draft.trim().parse::<usize>() else {
+                return SettingsInputDraftApply::Invalid;
+            };
+            edit_custom_semantic_scheme(settings, |scheme| {
+                if let Some(rule) = scheme.rules.get_mut(index) {
+                    rule.capture = capture;
+                }
+            })
+            .map(|()| SettingsInputDraftApply::Applied)
+            .unwrap_or(SettingsInputDraftApply::Invalid)
+        }
+        SettingsInput::SemanticSchemeColor(index) => {
+            let Some(&class) = SEMANTIC_CLASSES.get(index) else {
+                return SettingsInputDraftApply::Invalid;
+            };
+            edit_custom_semantic_scheme(settings, |scheme| {
+                let color = draft.trim();
+                if color.is_empty() {
+                    scheme.colors.remove(&class);
+                } else {
+                    scheme.colors.insert(class, color.to_string());
+                }
+            })
+            .map(|()| SettingsInputDraftApply::Applied)
+            .unwrap_or(SettingsInputDraftApply::Invalid)
+        }
+        SettingsInput::HighlightRuleSetName => {
+            let name = draft.trim();
+            if name.is_empty() {
+                return SettingsInputDraftApply::Invalid;
+            }
+            let Some(id) = settings.terminal.default_highlight_rule_set.clone() else {
+                return SettingsInputDraftApply::Applied;
+            };
+            if let Some(rule_set) = settings
+                .terminal
+                .highlight_rule_sets
+                .iter_mut()
+                .find(|rule_set| rule_set.id == id)
+            {
+                rule_set.name = name.to_string();
+            }
             SettingsInputDraftApply::Applied
         }
         SettingsInput::HighlightLabel(index) => edit_highlight_rule(settings, index, |rule| {
@@ -582,12 +679,12 @@ fn edit_highlight_rule(
     index: usize,
     edit: impl FnOnce(&mut oxideterm_settings::HighlightRule),
 ) -> SettingsInputDraftApply {
-    let Some(rule) = settings.terminal.highlight_rules.get_mut(index) else {
+    let rules = settings.terminal.effective_highlight_rules_mut();
+    let Some(rule) = rules.get_mut(index) else {
         return SettingsInputDraftApply::Applied;
     };
     edit(rule);
-    settings.terminal.highlight_rules =
-        reindex_highlight_rules(settings.terminal.highlight_rules.clone());
+    *rules = reindex_highlight_rules(rules.clone());
     SettingsInputDraftApply::Applied
 }
 
@@ -803,6 +900,106 @@ mod tests {
         );
 
         assert_eq!(settings.connection_defaults.port, original);
+    }
+
+    #[test]
+    fn semantic_scheme_drafts_validate_before_mutating_the_active_document() {
+        let mut settings = PersistedSettings::default();
+        crate::create_custom_semantic_scheme(
+            &mut settings,
+            "Operations".to_string(),
+            oxideterm_settings::TerminalSemanticScheme::Balanced,
+        )
+        .expect("create semantic scheme");
+        let original_pattern = settings
+            .terminal
+            .active_custom_semantic_scheme()
+            .unwrap()
+            .rules[0]
+            .pattern
+            .clone();
+
+        assert_eq!(
+            apply_persisted_settings_input_draft(
+                &mut settings,
+                SettingsInput::SemanticSchemeRulePattern(0),
+                "(",
+            ),
+            SettingsInputDraftApply::Invalid
+        );
+        assert_eq!(
+            settings
+                .terminal
+                .active_custom_semantic_scheme()
+                .unwrap()
+                .rules[0]
+                .pattern,
+            original_pattern
+        );
+        assert_eq!(
+            apply_persisted_settings_input_draft(
+                &mut settings,
+                SettingsInput::SemanticSchemeColor(0),
+                "#123456",
+            ),
+            SettingsInputDraftApply::Applied
+        );
+        assert_eq!(
+            apply_persisted_settings_input_draft(
+                &mut settings,
+                SettingsInput::SemanticSchemeRuleCapture(0),
+                "99",
+            ),
+            SettingsInputDraftApply::Invalid
+        );
+        assert_eq!(
+            apply_persisted_settings_input_draft(
+                &mut settings,
+                SettingsInput::SemanticSchemeRuleCapture(0),
+                "0",
+            ),
+            SettingsInputDraftApply::Applied
+        );
+    }
+
+    #[test]
+    fn highlight_drafts_edit_the_selected_rule_set_without_changing_global_base() {
+        let mut settings = PersistedSettings::default();
+        settings
+            .terminal
+            .highlight_rules
+            .push(oxideterm_settings::HighlightRule {
+                id: "base".to_string(),
+                label: "Base".to_string(),
+                ..oxideterm_settings::HighlightRule::default()
+            });
+        settings
+            .terminal
+            .highlight_rule_sets
+            .push(oxideterm_settings::HighlightRuleSet {
+                id: "operations".to_string(),
+                name: "Operations".to_string(),
+                rules: vec![oxideterm_settings::HighlightRule {
+                    id: "override".to_string(),
+                    label: "Override".to_string(),
+                    ..oxideterm_settings::HighlightRule::default()
+                }],
+            });
+        settings.terminal.default_highlight_rule_set = Some("operations".to_string());
+
+        assert_eq!(
+            apply_persisted_settings_input_draft(
+                &mut settings,
+                SettingsInput::HighlightLabel(0),
+                "Edited",
+            ),
+            SettingsInputDraftApply::Applied
+        );
+        assert_eq!(settings.terminal.highlight_rules[0].label, "Base");
+        assert_eq!(
+            settings.terminal.highlight_rule_sets[0].rules[0].label,
+            "Edited"
+        );
     }
 
     #[test]

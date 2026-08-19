@@ -24,7 +24,6 @@ members = [
   "crates/oxideterm-plugin-manifest",
   "crates/oxideterm-plugin-protocol",
   "crates/oxideterm-plugin-registry",
-  "crates/oxideterm-plugin-runtime-install",
   "crates/oxideterm-plugin-wasm-runtime",
   "crates/oxideterm-ai",
   "crates/oxideterm-ai-tasks",
@@ -72,6 +71,7 @@ members = [
   "crates/oxideterm-terminal-encoding",
   "crates/oxideterm-terminal-graphics",
   "crates/oxideterm-terminal-model",
+  "crates/oxideterm-terminal-semantic",
   "crates/oxideterm-terminal-unicode",
   "crates/oxideterm-theme",
   "crates/oxideterm-trzsz",
@@ -108,7 +108,7 @@ russh-sftp = { path = "crates/russh-sftp" }
 edition = "2024"
 license = "GPL-3.0-only"
 publish = false
-version = "2.0.20"
+version = "2.0.21"
 
 [workspace.dependencies]
 accesskit = "0.24.0"

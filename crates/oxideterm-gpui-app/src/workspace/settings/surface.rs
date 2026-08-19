@@ -1,4 +1,6 @@
 use super::*;
+use crate::workspace::root::init::terminal_highlight_rules;
+use crate::workspace::root::init::terminal_preference_overrides;
 
 const SETTINGS_CONNECTION_IMPORTERS_SECTION_INDEX: usize = 5;
 
@@ -1262,8 +1264,79 @@ impl WorkspaceApp {
             .collect::<Vec<_>>();
         for (pane_id, pane) in panes {
             let preferences = self.terminal_preferences_for_pane(pane_id, cx);
+            let retained_overrides = pane.read(cx).preference_overrides_snapshot();
+            let session_highlight_rule_set_id = pane
+                .read(cx)
+                .session_highlight_rule_set_id()
+                .map(str::to_string);
+            let refreshed_session_highlight_override =
+                session_highlight_rule_set_id.and_then(|id| {
+                    let terminal = &self.settings_store.settings().terminal;
+                    let rules = if id == GLOBAL_HIGHLIGHT_RULE_SET_ID {
+                        terminal.effective_highlight_rules()
+                    } else {
+                        &terminal.highlight_rule_set(&id)?.rules
+                    };
+                    Some(TerminalHighlightRuleSetOverride {
+                        id,
+                        rules: terminal_highlight_rules(rules),
+                    })
+                });
+            let local_shell_id = retained_overrides.local_shell_id.clone();
+            let session_id = self.tabs(cx).iter().find_map(|tab| {
+                tab.root_pane
+                    .as_ref()
+                    .and_then(|root| root.session_id_for_pane(pane_id))
+            });
+            let ssh_node_id = session_id.and_then(|session_id| {
+                self.workspace_runtime
+                    .read(cx)
+                    .ssh_terminal_node_id(session_id)
+            });
+            let refreshed_overrides = local_shell_id
+                .as_deref()
+                .map(|shell_id| {
+                    self.terminal_preference_overrides_for_local_shell(Some(&ShellInfo::new(
+                        shell_id, shell_id, shell_id,
+                    )))
+                })
+                .or_else(|| {
+                    ssh_node_id
+                        .as_ref()
+                        .map(|node_id| self.terminal_preference_overrides_for_ssh_node(node_id))
+                })
+                .or_else(|| {
+                    let semantic_scheme_id = retained_overrides.semantic_scheme_id.clone();
+                    let highlight_rule_set_id = retained_overrides.highlight_rule_set_id.clone();
+                    if semantic_scheme_id.is_none() && highlight_rule_set_id.is_none() {
+                        return None;
+                    }
+                    let mut overrides = retained_overrides.clone();
+                    let refreshed = terminal_preference_overrides(
+                        ConnectionTerminalOptions {
+                            semantic_scheme: semantic_scheme_id,
+                            highlight_rule_set: highlight_rule_set_id,
+                            ..ConnectionTerminalOptions::default()
+                        },
+                        &self.settings_store.settings().terminal,
+                    );
+                    overrides.semantic_scheme = refreshed.semantic_scheme;
+                    overrides.highlight_rules = refreshed.highlight_rules;
+                    Some(overrides)
+                });
             let _ = pane.update(cx, |pane, cx| {
-                pane.set_preferences(preferences, cx);
+                if let Some(overrides) = refreshed_overrides {
+                    pane.set_preference_overrides(overrides, preferences.clone(), cx);
+                } else {
+                    pane.set_preferences(preferences.clone(), cx);
+                }
+                if pane.session_highlight_rule_set_id().is_some() {
+                    pane.set_session_highlight_override(
+                        refreshed_session_highlight_override,
+                        preferences,
+                        cx,
+                    );
+                }
             });
         }
         // Tauri's IDE reads Settings.ide live from settingsStore. Native IDE

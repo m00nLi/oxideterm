@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base64::Engine;
@@ -11,11 +11,12 @@ use oxideterm_connections::{ConnectionInfo, ConnectionStore};
 use oxideterm_gpui_terminal::{TerminalNotice, TerminalNoticeVariant};
 use oxideterm_plugin_registry as plugin_host;
 use oxideterm_public_mcp::{
-    AddonRef, ApprovalRef, ApprovalStatus, AuditQuery, ClientApprovalMode, ClientCredential,
-    ClientProjection, ClientRef, ClientRegistry, CommandRef, ConnectionRef, DomainBroker,
-    DomainMessage, DomainRequest, DomainRequestReceiver, FileSessionRef, ForwardRef, NodeRef,
-    PublicMcpHttpServer, PublicMcpState, PublicToolCall, QuickCommandRef, TerminalRef,
-    ToolEnvelope, ToolGroup, ToolOutcome, start_http_server,
+    AddonRef, ApprovalRef, ApprovalStatus, ArtifactRef, AuditQuery, ClientApprovalMode,
+    ClientCredential, ClientProjection, ClientRef, ClientRegistry, CommandRef, ConnectionRef,
+    DesktopRef, DomainBroker, DomainMessage, DomainRequest, DomainRequestReceiver, FileSessionRef,
+    ForwardRef, NodeRef, OperationRef, PublicMcpHttpServer, PublicMcpState, PublicToolCall,
+    QuickCommandRef, RecordingRef, SyncPlanRef, SyncRestoreArgs, TerminalRef, ToolEnvelope,
+    ToolGroup, ToolOutcome, TransferRef, UndoRef, WorkspaceRef, start_http_server,
 };
 use oxideterm_session_adapter::ssh_config_from_saved_connection;
 use oxideterm_ssh::{ConnectionConsumer, NodeId, NodeRouter, SshTransportError};
@@ -25,14 +26,20 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
-use super::{TerminalSessionId, WorkspaceApp};
+use super::{TabId, TerminalSessionId, WorkspaceApp};
 
 mod addons;
+mod cloud_sync;
+mod connections;
+pub(in crate::workspace) mod desktops;
 mod files;
 mod forwards;
 mod host_tools;
 mod quick_commands;
+mod recordings;
 pub(in crate::workspace) mod terminals;
+mod transfers;
+mod workspaces;
 
 const PUBLIC_MCP_CLIENTS_FILE: &str = "public-mcp-clients.json";
 const PUBLIC_MCP_ENDPOINT_FILE: &str = "public-mcp-endpoint.json";
@@ -40,9 +47,13 @@ const PUBLIC_MCP_BROKER_CAPACITY: usize = 64;
 const PUBLIC_MCP_COMMAND_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const PUBLIC_MCP_COMMAND_OUTPUT_LIMIT: usize = 1024 * 1024;
 const PUBLIC_MCP_OUTPUT_PAGE_LIMIT: usize = 256 * 1024;
-// Bound retained command output even when an authorized client never releases its node lease.
+const PUBLIC_MCP_COMMAND_RETENTION: Duration = Duration::from_secs(15 * 60);
+// Bound command concurrency and retained output independently of node lease lifetime.
 const PUBLIC_MCP_COMMAND_CAPACITY: usize = 256;
 const PUBLIC_MCP_COMMAND_CAPACITY_PER_CLIENT: usize = 64;
+// Node leases include both ready and in-flight connection attempts.
+const PUBLIC_MCP_NODE_CAPACITY: usize = 128;
+const PUBLIC_MCP_NODE_CAPACITY_PER_CLIENT: usize = 32;
 // Namespace internal profile identifiers so external connection handles remain type-safe.
 const CONNECTION_KEY_SSH_PREFIX: &str = "ssh:";
 const CONNECTION_KEY_SERIAL_PREFIX: &str = "serial:";
@@ -58,6 +69,8 @@ pub(in crate::workspace) struct PublicMcpWorkspaceBridge {
     endpoint_url: Option<String>,
     startup_error: Option<String>,
     server: Option<PublicMcpHttpServer>,
+    port_draft: String,
+    client_registry_ready: bool,
     state: Arc<PublicMcpState>,
     settings_path: PathBuf,
     receiver: Option<DomainRequestReceiver>,
@@ -70,23 +83,60 @@ pub(in crate::workspace) struct PublicMcpWorkspaceBridge {
     quick_command_ids: HashMap<QuickCommandRef, (ClientRef, String)>,
     addon_refs: HashMap<(ClientRef, String), AddonRef>,
     addon_ids: HashMap<AddonRef, (ClientRef, String)>,
+    sync_plans: HashMap<SyncPlanRef, cloud_sync::PublicMcpSyncPlan>,
+    sync_undos: HashMap<UndoRef, cloud_sync::PublicMcpSyncUndo>,
     terminals: HashMap<TerminalRef, PublicMcpTerminalRecord>,
     pending_terminal_opens: HashMap<String, PublicMcpPendingTerminalOpen>,
+    recordings: HashMap<RecordingRef, PublicMcpRecordingRecord>,
+    desktops: HashMap<DesktopRef, PublicMcpDesktopRecord>,
     runtime_handles: Arc<Mutex<PublicMcpRuntimeHandles>>,
+}
+
+pub(in crate::workspace) enum PublicMcpNodeWindowEffect {
+    Disconnect(DomainRequest),
+}
+
+impl PublicMcpNodeWindowEffect {
+    pub(in crate::workspace) fn finish_without_window(self) {
+        let Self::Disconnect(request) = self;
+        request.finish(ToolEnvelope::failed(
+            "A live OxideTerm window is required to disconnect a node",
+        ));
+    }
 }
 
 #[derive(Default)]
 struct PublicMcpRuntimeHandles {
     nodes: HashMap<NodeRef, PublicMcpNodeLease>,
     commands: HashMap<CommandRef, PublicMcpCommandRecord>,
+    operations: HashMap<OperationRef, PublicMcpOperationRecord>,
     forwards: HashMap<ForwardRef, PublicMcpForwardRecord>,
     file_sessions: HashMap<FileSessionRef, PublicMcpFileSessionRecord>,
+    transfers: HashMap<TransferRef, PublicMcpTransferRecord>,
+    workspaces: HashMap<WorkspaceRef, PublicMcpWorkspaceRecord>,
+}
+
+#[derive(Clone)]
+/// Maps a generic operation handle to a typed domain handle without exposing internal IDs.
+enum PublicMcpOperationTarget {
+    Command(CommandRef),
+    Transfer(TransferRef),
+}
+
+#[derive(Clone)]
+struct PublicMcpOperationRecord {
+    client_ref: ClientRef,
+    owner_group: ToolGroup,
+    target: PublicMcpOperationTarget,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PublicMcpEndpointState {
     version: u32,
     port: u16,
+    // Zero keeps automatic allocation while retaining the last live port for discovery.
+    #[serde(default)]
+    preferred_port: u16,
 }
 
 #[derive(Clone)]
@@ -120,6 +170,59 @@ struct PublicMcpFileSessionRecord {
     consumer: ConnectionConsumer,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PublicMcpTransferState {
+    Pending,
+    Running,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+struct PublicMcpTransferRecord {
+    client_ref: ClientRef,
+    file_session_ref: FileSessionRef,
+    internal_id: String,
+    direction: &'static str,
+    remote_path: String,
+    state: PublicMcpTransferState,
+    total_bytes: u64,
+    transferred_bytes: u64,
+    speed_bytes_per_second: u64,
+    artifact: Option<oxideterm_public_mcp::ArtifactProjection>,
+    error_code: Option<&'static str>,
+    remote_residue: Option<&'static str>,
+    finished_at: Option<Instant>,
+}
+
+/// Keeps one headless IDE owner scoped to an external client and SFTP root.
+#[derive(Clone)]
+struct PublicMcpWorkspaceRecord {
+    client_ref: ClientRef,
+    file_session_ref: FileSessionRef,
+    node_id: NodeId,
+    root: String,
+    owner: oxideterm_ide_fs::NodeAgentIdeFileSystem,
+    revisions: Arc<Mutex<HashMap<String, PublicMcpWorkspaceRevision>>>,
+    cancellation: CancellationToken,
+    edit_cancellation: CancellationToken,
+}
+
+impl PublicMcpWorkspaceRecord {
+    fn revoke(&self) {
+        self.cancellation.cancel();
+        self.edit_cancellation.cancel();
+        self.owner.release_all_ide_consumers();
+    }
+}
+
+#[derive(Clone)]
+struct PublicMcpWorkspaceRevision {
+    public_revision: String,
+    version: oxideterm_ide_core::SavedFileVersion,
+}
+
 #[derive(Clone)]
 struct PublicMcpTerminalRecord {
     client_ref: ClientRef,
@@ -136,6 +239,30 @@ struct PublicMcpPendingTerminalOpen {
     cols: u16,
     rows: u16,
     title: String,
+}
+
+struct PublicMcpRecordingRecord {
+    client_ref: ClientRef,
+    terminal_ref: TerminalRef,
+    cols: usize,
+    rows: usize,
+    elapsed_ms: u64,
+    event_count: usize,
+    active: bool,
+    truncated: bool,
+    stopped_at: Option<Instant>,
+    content: Option<Zeroizing<String>>,
+    artifact_refs: HashSet<ArtifactRef>,
+}
+
+#[derive(Clone)]
+struct PublicMcpDesktopRecord {
+    client_ref: ClientRef,
+    tab_id: TabId,
+    title: String,
+    observing_frames: bool,
+    frame_artifacts: HashSet<ArtifactRef>,
+    clipboard_artifacts: HashSet<ArtifactRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -161,20 +288,6 @@ struct PublicMcpCommandRecord {
 }
 
 #[derive(Serialize)]
-struct PublicConnectionProjection {
-    connection_ref: ConnectionRef,
-    #[serde(rename = "type")]
-    connection_type: &'static str,
-    name: String,
-    group: Option<String>,
-    host: String,
-    port: u16,
-    username: String,
-    tags: Vec<String>,
-    last_used_at: Option<String>,
-}
-
-#[derive(Serialize)]
 struct PublicConnectionDirectoryEntry {
     connection_ref: ConnectionRef,
     name: String,
@@ -193,14 +306,12 @@ impl PublicMcpWorkspaceBridge {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(PUBLIC_MCP_CLIENTS_FILE);
-        let endpoint_state_path = settings_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(PUBLIC_MCP_ENDPOINT_FILE);
+        let endpoint_state_path = public_mcp_endpoint_state_path(settings_path);
         let (clients, registry_error) = match ClientRegistry::open(clients_path) {
             Ok(clients) => (Arc::new(clients), None),
             Err(error) => (Arc::new(ClientRegistry::default()), Some(error.to_string())),
         };
+        let client_registry_ready = registry_error.is_none();
         let (broker, receiver) = DomainBroker::channel(PUBLIC_MCP_BROKER_CAPACITY);
         let state = Arc::new(PublicMcpState {
             clients,
@@ -209,11 +320,21 @@ impl PublicMcpWorkspaceBridge {
             artifacts: Arc::default(),
             broker,
         });
-        let preferred_port = read_endpoint_port(&endpoint_state_path).unwrap_or(0);
-        let (server, endpoint_url, server_error) = if registry_error.is_none() {
+        let endpoint_state = read_endpoint_state(&endpoint_state_path);
+        let preferred_port = endpoint_state
+            .as_ref()
+            .map(|state| state.preferred_port)
+            .unwrap_or(0);
+        let initial_port = if preferred_port == 0 {
+            endpoint_state.as_ref().map(|state| state.port).unwrap_or(0)
+        } else {
+            preferred_port
+        };
+        let (server, endpoint_url, server_error) = if client_registry_ready {
             let started =
-                start_http_server(runtime, state.clone(), preferred_port).or_else(|first_error| {
-                    if preferred_port == 0 {
+                start_http_server(runtime, state.clone(), initial_port).or_else(|first_error| {
+                    // Only automatic mode may move away from the previous discovery port.
+                    if preferred_port != 0 || initial_port == 0 {
                         Err(first_error)
                     } else {
                         start_http_server(runtime, state.clone(), 0)
@@ -223,7 +344,8 @@ impl PublicMcpWorkspaceBridge {
                 Ok(server) => {
                     let endpoint_url = Some(server.endpoint_url());
                     // A persistence failure must not hide a healthy live endpoint.
-                    let _ = persist_endpoint_port(&endpoint_state_path, server.port());
+                    let _ =
+                        persist_endpoint_state(&endpoint_state_path, server.port(), preferred_port);
                     (Some(server), endpoint_url, None)
                 }
                 Err(error) => (None, None, Some(error.to_string())),
@@ -235,6 +357,8 @@ impl PublicMcpWorkspaceBridge {
             endpoint_url,
             startup_error: registry_error.or(server_error),
             server,
+            port_draft: preferred_port.to_string(),
+            client_registry_ready,
             state,
             settings_path: settings_path.to_path_buf(),
             receiver: Some(receiver),
@@ -246,8 +370,12 @@ impl PublicMcpWorkspaceBridge {
             quick_command_ids: HashMap::new(),
             addon_refs: HashMap::new(),
             addon_ids: HashMap::new(),
+            sync_plans: HashMap::new(),
+            sync_undos: HashMap::new(),
             terminals: HashMap::new(),
             pending_terminal_opens: HashMap::new(),
+            recordings: HashMap::new(),
+            desktops: HashMap::new(),
             runtime_handles: Arc::default(),
         }
     }
@@ -258,6 +386,51 @@ impl PublicMcpWorkspaceBridge {
 
     pub(in crate::workspace) fn startup_error(&self) -> Option<&str> {
         self.startup_error.as_deref()
+    }
+
+    pub(in crate::workspace) fn port_draft(&self) -> &str {
+        &self.port_draft
+    }
+
+    pub(in crate::workspace) fn set_port_draft(&mut self, draft: String) {
+        self.port_draft = draft;
+    }
+
+    pub(in crate::workspace) fn apply_preferred_port(
+        &mut self,
+        runtime: &tokio::runtime::Handle,
+        preferred_port: u16,
+    ) -> std::io::Result<()> {
+        if !self.client_registry_ready {
+            return Err(std::io::Error::other(
+                "The Public MCP client registry is unavailable",
+            ));
+        }
+        let current_port = self.server.as_ref().map(PublicMcpHttpServer::port);
+        let endpoint_state_path = public_mcp_endpoint_state_path(&self.settings_path);
+
+        if preferred_port == 0 && current_port.is_some() {
+            // Automatic mode can keep the healthy listener and choose again on a later startup.
+            persist_endpoint_state(
+                &endpoint_state_path,
+                current_port.unwrap_or_default(),
+                preferred_port,
+            )?;
+        } else if current_port == Some(preferred_port) {
+            persist_endpoint_state(&endpoint_state_path, preferred_port, preferred_port)?;
+        } else {
+            // Bind the replacement before dropping the current listener so a failed choice
+            // never takes a working endpoint offline.
+            let replacement = start_http_server(runtime, self.state.clone(), preferred_port)?;
+            let replacement_url = replacement.endpoint_url();
+            persist_endpoint_state(&endpoint_state_path, replacement.port(), preferred_port)?;
+            self.server = Some(replacement);
+            self.endpoint_url = Some(replacement_url);
+        }
+
+        self.port_draft = preferred_port.to_string();
+        self.startup_error = None;
+        Ok(())
     }
 
     pub(in crate::workspace) fn record_action_error(&mut self, error: String) {
@@ -340,6 +513,17 @@ impl PublicMcpWorkspaceBridge {
             .map_err(|error| error.to_string())
     }
 
+    fn set_client_groups(
+        &self,
+        client_ref: &ClientRef,
+        tool_groups: BTreeSet<ToolGroup>,
+    ) -> Result<(), String> {
+        self.state
+            .clients
+            .set_groups(client_ref, tool_groups)
+            .map_err(|error| error.to_string())
+    }
+
     pub(in crate::workspace) fn remove_client(&self, client_ref: &ClientRef) -> Result<(), String> {
         self.state
             .clients
@@ -401,34 +585,6 @@ impl PublicMcpWorkspaceBridge {
             .map(|(_, connection_key)| connection_key.clone())
     }
 
-    fn connection_projection(
-        &mut self,
-        client_ref: &ClientRef,
-        info: ConnectionInfo,
-    ) -> PublicConnectionProjection {
-        let internal_key = format!("{CONNECTION_KEY_SSH_PREFIX}{}", info.id);
-        let connection_key = (client_ref.clone(), internal_key.clone());
-        let connection_ref = self
-            .connection_refs
-            .entry(connection_key)
-            .or_default()
-            .clone();
-        self.connection_ids
-            .entry(connection_ref.clone())
-            .or_insert_with(|| (client_ref.clone(), internal_key));
-        PublicConnectionProjection {
-            connection_ref,
-            connection_type: CONNECTION_TYPE_SSH,
-            name: info.name,
-            group: info.group,
-            host: info.host,
-            port: info.port,
-            username: info.username,
-            tags: info.tags,
-            last_used_at: info.last_used_at,
-        }
-    }
-
     fn connection_directory_entry(
         &mut self,
         client_ref: &ClientRef,
@@ -475,35 +631,36 @@ impl PublicMcpWorkspaceBridge {
     }
 
     fn sync_connection_refs(&mut self, client_ref: &ClientRef, store: &ConnectionStore) {
+        let mut valid_internal_keys = HashSet::new();
         for info in store.connection_infos() {
-            self.ensure_connection_ref(
-                client_ref,
-                format!("{CONNECTION_KEY_SSH_PREFIX}{}", info.id),
-            );
+            valid_internal_keys.insert(format!("{CONNECTION_KEY_SSH_PREFIX}{}", info.id));
         }
         for profile in store.serial_profiles() {
-            self.ensure_connection_ref(
-                client_ref,
-                format!("{CONNECTION_KEY_SERIAL_PREFIX}{}", profile.id),
-            );
+            valid_internal_keys.insert(format!("{CONNECTION_KEY_SERIAL_PREFIX}{}", profile.id));
         }
         for profile in store.telnet_profiles() {
-            self.ensure_connection_ref(
-                client_ref,
-                format!("{CONNECTION_KEY_TELNET_PREFIX}{}", profile.id),
-            );
+            valid_internal_keys.insert(format!("{CONNECTION_KEY_TELNET_PREFIX}{}", profile.id));
         }
         for profile in store.mosh_profiles() {
-            self.ensure_connection_ref(
-                client_ref,
-                format!("{CONNECTION_KEY_MOSH_PREFIX}{}", profile.id),
-            );
+            valid_internal_keys.insert(format!("{CONNECTION_KEY_MOSH_PREFIX}{}", profile.id));
         }
         for profile in store.remote_desktop_profiles() {
-            self.ensure_connection_ref(
-                client_ref,
-                format!("{CONNECTION_KEY_DESKTOP_PREFIX}{}", profile.id),
-            );
+            valid_internal_keys.insert(format!("{CONNECTION_KEY_DESKTOP_PREFIX}{}", profile.id));
+        }
+
+        // Keep stable refs for live profiles while dropping handles whose saved
+        // records were removed through the UI, import, sync, or another client.
+        let stale_refs = self
+            .connection_refs
+            .extract_if(|(owner, internal_key), _| {
+                owner == client_ref && !valid_internal_keys.contains(internal_key)
+            })
+            .map(|(_, connection_ref)| connection_ref)
+            .collect::<HashSet<_>>();
+        self.connection_ids
+            .retain(|connection_ref, _| !stale_refs.contains(connection_ref));
+        for internal_key in valid_internal_keys {
+            self.ensure_connection_ref(client_ref, internal_key);
         }
     }
 
@@ -637,6 +794,16 @@ impl PublicMcpWorkspaceBridge {
                 .trim()
                 .to_owned();
         }
+        if let Ok(desktop_ref) = connection_target.parse::<DesktopRef>()
+            && let Some(record) = self.desktops.get(&desktop_ref)
+            && &record.client_ref == client_ref
+        {
+            let action = target
+                .strip_prefix(connection_target)
+                .unwrap_or_default()
+                .trim();
+            return format!("{} {}", record.title, action).trim().to_owned();
+        }
         let (addon_target, addon_action) = target.split_once(' ').unwrap_or((target, ""));
         if let Ok(addon_ref) = addon_target.parse::<AddonRef>()
             && let Some((owner, plugin_id)) = self.addon_ids.get(&addon_ref)
@@ -699,6 +866,19 @@ impl PublicMcpWorkspaceBridge {
             .trim()
             .to_owned();
         }
+        if let Ok(workspace_ref) = file_target.parse::<WorkspaceRef>()
+            && let Some(record) = self
+                .runtime_handles
+                .lock()
+                .workspaces
+                .get(&workspace_ref)
+                .filter(|record| record.client_ref == *client_ref)
+                .cloned()
+        {
+            return format!("IDE {} {}", record.root, file_action)
+                .trim()
+                .to_owned();
+        }
         let node_target = target.split_whitespace().next().unwrap_or(target);
         if let Ok(node_ref) = node_target.parse::<NodeRef>()
             && let Some(lease) = self.runtime_handles.lock().nodes.get(&node_ref).cloned()
@@ -712,6 +892,16 @@ impl PublicMcpWorkspaceBridge {
 
 impl Drop for PublicMcpWorkspaceBridge {
     fn drop(&mut self) {
+        let workspaces = self
+            .runtime_handles
+            .lock()
+            .workspaces
+            .drain()
+            .map(|(_, record)| record)
+            .collect::<Vec<_>>();
+        for record in workspaces {
+            record.revoke();
+        }
         self.delivery_task.take();
         self.revealed_credential.take();
         self.server.take();
@@ -815,44 +1005,98 @@ impl WorkspaceApp {
     ) -> Result<(), String> {
         self.public_mcp
             .set_client_tool_group(client_ref, tool_group, enabled)?;
-        if !enabled {
-            self.public_mcp
-                .state
-                .approvals
-                .revoke_client_tool_group(client_ref, tool_group);
-            match tool_group {
-                ToolGroup::NodeSession => self.revoke_public_mcp_client_runtime(client_ref, cx),
-                ToolGroup::TerminalSession => {
-                    self.revoke_public_mcp_client_terminals(client_ref, cx)
-                }
-                ToolGroup::CommandExecute => self.public_mcp.revoke_client_commands(client_ref),
-                ToolGroup::QuickCommandExecute => self
-                    .public_mcp
-                    .revoke_client_commands_for_group(client_ref, ToolGroup::QuickCommandExecute),
-                ToolGroup::ArtifactTransfer => {
-                    self.public_mcp.state.artifacts.revoke_client(client_ref)
-                }
-                ToolGroup::ForwardManage => self.revoke_public_mcp_client_forwards(client_ref),
-                ToolGroup::FileRead => self.revoke_public_mcp_client_file_sessions(client_ref),
-                ToolGroup::Basic
-                | ToolGroup::ConnectionDirectory
-                | ToolGroup::ConnectionRead
-                | ToolGroup::TerminalObserve
-                | ToolGroup::TerminalInput
-                | ToolGroup::CommandObserve
-                | ToolGroup::AuditRead
-                | ToolGroup::HostToolsObserve
-                | ToolGroup::HostToolsOperate
-                | ToolGroup::QuickCommandRead
-                | ToolGroup::QuickCommandContentRead
-                | ToolGroup::QuickCommandManage
-                | ToolGroup::AddonRead
-                | ToolGroup::AddonManage
-                | ToolGroup::ForwardRead
-                | ToolGroup::FileWrite => {}
-            }
+        if enabled {
+            self.enable_public_mcp_client_tool_group(client_ref, tool_group, cx);
+        } else {
+            self.disable_public_mcp_client_tool_group(client_ref, tool_group, cx);
         }
         Ok(())
+    }
+
+    fn enable_public_mcp_client_tool_group(
+        &mut self,
+        client_ref: &ClientRef,
+        tool_group: ToolGroup,
+        cx: &mut Context<Self>,
+    ) {
+        match tool_group {
+            ToolGroup::DesktopObserve => {
+                self.set_public_mcp_client_desktop_observation(client_ref, true, cx)
+            }
+            ToolGroup::FileWrite | ToolGroup::WorkspaceEdit => {
+                self.reset_public_mcp_client_workspace_edit_cancellation(client_ref)
+            }
+            _ => {}
+        }
+    }
+
+    fn disable_public_mcp_client_tool_group(
+        &mut self,
+        client_ref: &ClientRef,
+        tool_group: ToolGroup,
+        cx: &mut Context<Self>,
+    ) {
+        self.public_mcp
+            .state
+            .approvals
+            .revoke_client_tool_group(client_ref, tool_group);
+        self.public_mcp
+            .state
+            .broker
+            .cancel_client_tool_group(client_ref, tool_group);
+        match tool_group {
+            ToolGroup::NodeSession => self.revoke_public_mcp_client_runtime(client_ref, cx),
+            ToolGroup::TerminalSession => self.revoke_public_mcp_client_terminals(client_ref, cx),
+            ToolGroup::RecordingControl => self.stop_public_mcp_client_recordings(client_ref, cx),
+            ToolGroup::RecordingContent => {
+                self.revoke_public_mcp_client_recording_content(client_ref)
+            }
+            ToolGroup::DesktopSession => self.revoke_public_mcp_client_desktops(client_ref, cx),
+            ToolGroup::DesktopObserve => {
+                self.set_public_mcp_client_desktop_observation(client_ref, false, cx)
+            }
+            ToolGroup::DesktopInput => {
+                self.release_public_mcp_client_desktop_inputs(client_ref, cx)
+            }
+            ToolGroup::DesktopClipboard => {
+                self.revoke_public_mcp_client_desktop_clipboard_content(client_ref, cx)
+            }
+            ToolGroup::CommandExecute => self.public_mcp.revoke_client_commands(client_ref),
+            ToolGroup::QuickCommandExecute => self
+                .public_mcp
+                .revoke_client_commands_for_group(client_ref, ToolGroup::QuickCommandExecute),
+            ToolGroup::ArtifactTransfer => {
+                self.revoke_public_mcp_client_transfers(client_ref);
+                self.public_mcp.state.artifacts.revoke_client(client_ref)
+            }
+            ToolGroup::ForwardManage => self.revoke_public_mcp_client_forwards(client_ref),
+            ToolGroup::FileRead => self.revoke_public_mcp_client_file_sessions(client_ref),
+            ToolGroup::FileWrite => {
+                // Uploads and workspace edits both require remote write access.
+                self.cancel_public_mcp_client_uploads(client_ref);
+                self.cancel_public_mcp_client_workspace_edits(client_ref);
+            }
+            ToolGroup::WorkspaceRead => self.revoke_public_mcp_client_workspaces(client_ref),
+            ToolGroup::WorkspaceEdit => self.cancel_public_mcp_client_workspace_edits(client_ref),
+            ToolGroup::CloudSync => self.public_mcp.revoke_client_sync_handles(client_ref),
+            ToolGroup::Basic
+            | ToolGroup::ConnectionDirectory
+            | ToolGroup::ConnectionRead
+            | ToolGroup::ConnectionManage
+            | ToolGroup::CredentialManage
+            | ToolGroup::TerminalObserve
+            | ToolGroup::TerminalInput
+            | ToolGroup::CommandObserve
+            | ToolGroup::AuditRead
+            | ToolGroup::HostToolsObserve
+            | ToolGroup::HostToolsOperate
+            | ToolGroup::QuickCommandRead
+            | ToolGroup::QuickCommandContentRead
+            | ToolGroup::QuickCommandManage
+            | ToolGroup::AddonRead
+            | ToolGroup::AddonManage
+            | ToolGroup::ForwardRead => {}
+        }
     }
 
     pub(in crate::workspace) fn remove_public_mcp_client(
@@ -893,9 +1137,15 @@ impl WorkspaceApp {
     }
 
     fn revoke_public_mcp_client_runtime(&mut self, client_ref: &ClientRef, cx: &mut Context<Self>) {
+        // Active domain work shares the broker cancellation token used by timeout and disconnect.
+        self.public_mcp.state.broker.cancel_client(client_ref);
+        self.revoke_public_mcp_client_recordings(client_ref, cx);
+        self.revoke_public_mcp_client_desktops(client_ref, cx);
         self.revoke_public_mcp_client_terminals(client_ref, cx);
         self.revoke_public_mcp_client_forwards(client_ref);
+        self.revoke_public_mcp_client_transfers(client_ref);
         self.revoke_public_mcp_client_file_sessions(client_ref);
+        self.public_mcp.revoke_client_sync_handles(client_ref);
         self.public_mcp
             .revoke_client_runtime(client_ref, &self.node_router);
     }
@@ -918,12 +1168,48 @@ impl WorkspaceApp {
     }
 
     fn revoke_public_mcp_client_file_sessions(&self, client_ref: &ClientRef) {
+        self.revoke_public_mcp_client_workspaces(client_ref);
+        self.revoke_public_mcp_client_transfers(client_ref);
         for record in files::take_client_file_sessions(&self.public_mcp.runtime_handles, client_ref)
         {
             if let Some(connection_id) = record.physical_connection_id {
                 self.node_router
                     .release_consumer(&connection_id, &record.consumer);
             }
+        }
+    }
+
+    fn revoke_public_mcp_client_workspaces(&self, client_ref: &ClientRef) {
+        for record in
+            workspaces::take_client_workspaces(&self.public_mcp.runtime_handles, client_ref)
+        {
+            record.revoke();
+        }
+    }
+
+    fn cancel_public_mcp_client_workspace_edits(&self, client_ref: &ClientRef) {
+        for record in self
+            .public_mcp
+            .runtime_handles
+            .lock()
+            .workspaces
+            .values()
+            .filter(|record| record.client_ref == *client_ref)
+        {
+            record.edit_cancellation.cancel();
+        }
+    }
+
+    fn reset_public_mcp_client_workspace_edit_cancellation(&self, client_ref: &ClientRef) {
+        for record in self
+            .public_mcp
+            .runtime_handles
+            .lock()
+            .workspaces
+            .values_mut()
+            .filter(|record| record.client_ref == *client_ref)
+        {
+            record.edit_cancellation = CancellationToken::new();
         }
     }
 
@@ -936,12 +1222,46 @@ impl WorkspaceApp {
             return;
         }
         match &request.call {
+            PublicToolCall::RequestAccess(_) => self.handle_public_mcp_request_access(request, cx),
+            PublicToolCall::RevokeAccess(_) => self.handle_public_mcp_revoke_access(request, cx),
+            PublicToolCall::OperationState(_) => self.handle_public_mcp_operation(request),
+            PublicToolCall::CancelOperation(_) => self.handle_public_mcp_cancel_operation(request),
+            PublicToolCall::Revert(args) => {
+                let call = PublicToolCall::SyncRestore(SyncRestoreArgs {
+                    undo_ref: args.undo_ref.clone(),
+                });
+                self.handle_public_mcp_sync_restore(request.with_call(call), cx)
+            }
             PublicToolCall::BrowseConnections(_) => {
                 self.handle_public_mcp_browse_connections(request)
             }
             PublicToolCall::DescribeConnection(_) => {
                 self.handle_public_mcp_describe_connection(request)
             }
+            PublicToolCall::SaveConnection(_) => {
+                self.handle_public_mcp_save_connection(request, cx)
+            }
+            PublicToolCall::RemoveConnection(_) => {
+                self.handle_public_mcp_remove_connection(request, cx)
+            }
+            PublicToolCall::CredentialStatus(_) => {
+                self.handle_public_mcp_credential_status(request)
+            }
+            PublicToolCall::StoreCredential(_) => {
+                self.handle_public_mcp_store_credential(request, cx)
+            }
+            PublicToolCall::ForgetCredential(_) => {
+                self.handle_public_mcp_forget_credential(request, cx)
+            }
+            PublicToolCall::SyncStatus(_) => self.handle_public_mcp_sync_status(request, cx),
+            PublicToolCall::SyncPullPreview(_) => {
+                self.handle_public_mcp_sync_pull_preview(request, cx)
+            }
+            PublicToolCall::SyncPublishPreview(_) => {
+                self.handle_public_mcp_sync_publish_preview(request, cx)
+            }
+            PublicToolCall::SyncApplyPlan(_) => self.handle_public_mcp_sync_apply_plan(request, cx),
+            PublicToolCall::SyncRestore(_) => self.handle_public_mcp_sync_restore(request, cx),
             PublicToolCall::ConnectNode(_) => self.handle_public_mcp_connect_node(request, cx),
             PublicToolCall::InspectNode(_) => self.handle_public_mcp_inspect_node(request),
             PublicToolCall::ReleaseNode(_) => self.handle_public_mcp_release_node(request),
@@ -962,6 +1282,33 @@ impl WorkspaceApp {
                 self.handle_public_mcp_terminal_control(request, cx)
             }
             PublicToolCall::CloseTerminal(_) => self.handle_public_mcp_terminal_close(request, cx),
+            PublicToolCall::RecordingsControl(_) => {
+                self.handle_public_mcp_recordings_control(request, cx)
+            }
+            PublicToolCall::RecordingsStatus(_) => {
+                self.handle_public_mcp_recordings_status(request, cx)
+            }
+            PublicToolCall::RecordingsSearch(_) => {
+                self.handle_public_mcp_recordings_search(request)
+            }
+            PublicToolCall::RecordingsExport(_) => {
+                self.handle_public_mcp_recordings_export(request)
+            }
+            PublicToolCall::OpenDesktop(_) => self.handle_public_mcp_desktop_open(request, cx),
+            PublicToolCall::DesktopState(_) => self.handle_public_mcp_desktop_state(request, cx),
+            PublicToolCall::DesktopFrame(_) => self.handle_public_mcp_desktop_frame(request, cx),
+            PublicToolCall::DesktopInput(_) => self.handle_public_mcp_desktop_input(request, cx),
+            PublicToolCall::ResizeDesktop(_) => self.handle_public_mcp_desktop_resize(request, cx),
+            PublicToolCall::ReadDesktopClipboard(_) => {
+                self.handle_public_mcp_desktop_clipboard_read(request, cx)
+            }
+            PublicToolCall::WriteDesktopClipboard(_) => {
+                self.handle_public_mcp_desktop_clipboard_write(request, cx)
+            }
+            PublicToolCall::ReconnectDesktop(_) => {
+                self.handle_public_mcp_desktop_reconnect(request, cx)
+            }
+            PublicToolCall::CloseDesktop(_) => self.handle_public_mcp_desktop_close(request, cx),
             PublicToolCall::StartCommand(_) => self.handle_public_mcp_start_command(request),
             PublicToolCall::CommandState(_) => self.handle_public_mcp_command_state(request),
             PublicToolCall::CommandOutput(_) => self.handle_public_mcp_command_output(request),
@@ -1000,11 +1347,17 @@ impl WorkspaceApp {
             }
             PublicToolCall::AddonsRemove(_) => self.handle_public_mcp_addons_remove(request, cx),
             PublicToolCall::ForwardsList(_) => self.handle_public_mcp_forwards_list(request),
-            PublicToolCall::ForwardsOpen(_) => self.handle_public_mcp_forwards_open(request),
-            PublicToolCall::ForwardsChange(_) => self.handle_public_mcp_forwards_change(request),
+            PublicToolCall::ForwardsOpen(_) => self.handle_public_mcp_forwards_open(request, cx),
+            PublicToolCall::ForwardsChange(_) => {
+                self.handle_public_mcp_forwards_change(request, cx)
+            }
             PublicToolCall::ForwardsStop(_) => self.handle_public_mcp_forwards_stop(request),
-            PublicToolCall::ForwardsRestart(_) => self.handle_public_mcp_forwards_restart(request),
-            PublicToolCall::ForwardsRemove(_) => self.handle_public_mcp_forwards_remove(request),
+            PublicToolCall::ForwardsRestart(_) => {
+                self.handle_public_mcp_forwards_restart(request, cx)
+            }
+            PublicToolCall::ForwardsRemove(_) => {
+                self.handle_public_mcp_forwards_remove(request, cx)
+            }
             PublicToolCall::ForwardsMetrics(_) => self.handle_public_mcp_forwards_metrics(request),
             PublicToolCall::ForwardsDiscoverPorts(_) => {
                 self.handle_public_mcp_forwards_discover_ports(request)
@@ -1018,6 +1371,271 @@ impl WorkspaceApp {
             PublicToolCall::FilesWrite(_) => self.handle_public_mcp_files_write(request),
             PublicToolCall::FilesMove(_) => self.handle_public_mcp_files_move(request),
             PublicToolCall::FilesRemove(_) => self.handle_public_mcp_files_remove(request),
+            PublicToolCall::TransferStart(_) => self.handle_public_mcp_transfer_start(request),
+            PublicToolCall::TransferStatus(_) => self.handle_public_mcp_transfer_status(request),
+            PublicToolCall::TransferCancel(_) => self.handle_public_mcp_transfer_cancel(request),
+            PublicToolCall::WorkspaceMount(_) => {
+                self.handle_public_mcp_workspace_mount(request, cx)
+            }
+            PublicToolCall::WorkspaceTree(_) => self.handle_public_mcp_workspace_tree(request),
+            PublicToolCall::WorkspaceRead(_) => self.handle_public_mcp_workspace_read(request),
+            PublicToolCall::WorkspaceApplyEdits(_) => {
+                self.handle_public_mcp_workspace_apply_edits(request)
+            }
+            PublicToolCall::WorkspaceSearch(_) => self.handle_public_mcp_workspace_search(request),
+            PublicToolCall::WorkspaceClose(_) => self.handle_public_mcp_workspace_close(request),
+        }
+    }
+
+    fn handle_public_mcp_request_access(&mut self, request: DomainRequest, cx: &mut Context<Self>) {
+        let PublicToolCall::RequestAccess(args) = &request.call else {
+            return;
+        };
+        let Some(client) = self.public_mcp.state.clients.get(&request.client_ref) else {
+            request.finish(ToolEnvelope::failed(
+                "The external MCP client no longer exists",
+            ));
+            return;
+        };
+        let previous_groups = client.tool_groups;
+        let mut tool_groups = previous_groups.clone();
+        tool_groups.extend(args.groups.iter().copied());
+        // Persist the complete grant set before enabling any group-specific runtime behavior.
+        if let Err(error) = self
+            .public_mcp
+            .set_client_groups(&request.client_ref, tool_groups.clone())
+        {
+            request.finish(ToolEnvelope::failed(error));
+            return;
+        }
+        for tool_group in tool_groups.difference(&previous_groups).copied() {
+            self.enable_public_mcp_client_tool_group(&request.client_ref, tool_group, cx);
+        }
+        let client = self.public_mcp.state.clients.get(&request.client_ref);
+        finish_serialized(
+            request,
+            json!({
+                "outcome": "granted",
+                "client": client,
+            }),
+        );
+        cx.notify();
+    }
+
+    fn handle_public_mcp_revoke_access(&mut self, request: DomainRequest, cx: &mut Context<Self>) {
+        let PublicToolCall::RevokeAccess(args) = &request.call else {
+            return;
+        };
+        let Some(client) = self.public_mcp.state.clients.get(&request.client_ref) else {
+            request.finish(ToolEnvelope::failed(
+                "The external MCP client no longer exists",
+            ));
+            return;
+        };
+        let previous_groups = client.tool_groups;
+        let revoked_groups = args
+            .groups
+            .iter()
+            .copied()
+            .filter(|group| previous_groups.contains(group))
+            .collect::<BTreeSet<_>>();
+        let tool_groups = previous_groups
+            .difference(&revoked_groups)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        // Persist revocation first so stale calls fail before owned runtime handles are released.
+        if let Err(error) = self
+            .public_mcp
+            .set_client_groups(&request.client_ref, tool_groups)
+        {
+            request.finish(ToolEnvelope::failed(error));
+            return;
+        }
+        for tool_group in revoked_groups.iter().copied() {
+            self.disable_public_mcp_client_tool_group(&request.client_ref, tool_group, cx);
+        }
+        let client = self.public_mcp.state.clients.get(&request.client_ref);
+        finish_serialized(
+            request,
+            json!({
+                "outcome": "revoked",
+                "revoked_groups": revoked_groups,
+                "client": client,
+            }),
+        );
+        cx.notify();
+    }
+
+    fn handle_public_mcp_operation(&self, request: DomainRequest) {
+        let PublicToolCall::OperationState(args) = &request.call else {
+            return;
+        };
+        let operation_ref = args.operation_ref.clone();
+        let mut handles = self.public_mcp.runtime_handles.lock();
+        let Some(operation) = handles
+            .operations
+            .get(&operation_ref)
+            .filter(|operation| operation.client_ref == request.client_ref)
+            .cloned()
+        else {
+            request.finish(ToolEnvelope::failed(
+                "The background operation handle is unavailable",
+            ));
+            return;
+        };
+        if matches!(&operation.target, PublicMcpOperationTarget::Transfer(_)) {
+            transfers::expire_transfer_records(&mut handles);
+        }
+        // A Basic-group operation handle never bypasses the group that created the operation.
+        let group_enabled = self
+            .public_mcp
+            .state
+            .clients
+            .get(&request.client_ref)
+            .is_some_and(|client| client.tool_groups.contains(&operation.owner_group));
+        if !group_enabled {
+            request.finish(ToolEnvelope::failed(
+                "The operation's tool group is disabled",
+            ));
+            return;
+        }
+        let projection = match operation.target {
+            PublicMcpOperationTarget::Command(command_ref) => {
+                handles.commands.get(&command_ref).map(|record| {
+                    let stage = match record.state {
+                        PublicMcpCommandState::Running => "running",
+                        PublicMcpCommandState::Succeeded => "completed",
+                        PublicMcpCommandState::Failed => "failed",
+                        PublicMcpCommandState::Cancelled => "cancelled",
+                    };
+                    json!({
+                        "operation_ref": operation_ref,
+                        "kind": "command",
+                        "stage": stage,
+                        "cancellable": record.state == PublicMcpCommandState::Running,
+                        "command_ref": command_ref,
+                        "exit_code": record.exit_code,
+                        "truncated": record.truncated,
+                        "error": record.error,
+                    })
+                })
+            }
+            PublicMcpOperationTarget::Transfer(transfer_ref) => {
+                handles.transfers.get(&transfer_ref).map(|record| {
+                    json!({
+                        "operation_ref": operation_ref,
+                        "kind": "transfer",
+                        "stage": record.state,
+                        "cancellable": !record.state.is_finished(),
+                        "transfer_ref": transfer_ref,
+                        "progress": {
+                            "completed_bytes": record.transferred_bytes,
+                            "total_bytes": record.total_bytes,
+                            "speed_bytes_per_second": record.speed_bytes_per_second,
+                        },
+                        "artifact": record.artifact,
+                        "error_code": record.error_code,
+                        "remote_residue": record.remote_residue,
+                    })
+                })
+            }
+        };
+        match projection {
+            Some(projection) => finish_serialized(request, projection),
+            None => {
+                handles.operations.remove(&operation_ref);
+                request.finish(ToolEnvelope::failed(
+                    "The background operation result has expired",
+                ));
+            }
+        }
+    }
+
+    fn handle_public_mcp_cancel_operation(&self, request: DomainRequest) {
+        let PublicToolCall::CancelOperation(args) = &request.call else {
+            return;
+        };
+        let operation_ref = args.operation_ref.clone();
+        let mut handles = self.public_mcp.runtime_handles.lock();
+        let Some(operation) = handles
+            .operations
+            .get(&operation_ref)
+            .filter(|operation| operation.client_ref == request.client_ref)
+            .cloned()
+        else {
+            request.finish(ToolEnvelope::failed(
+                "The background operation handle is unavailable",
+            ));
+            return;
+        };
+        if matches!(&operation.target, PublicMcpOperationTarget::Transfer(_)) {
+            transfers::expire_transfer_records(&mut handles);
+        }
+        let group_enabled = self
+            .public_mcp
+            .state
+            .clients
+            .get(&request.client_ref)
+            .is_some_and(|client| client.tool_groups.contains(&operation.owner_group));
+        if !group_enabled {
+            request.finish(ToolEnvelope::failed(
+                "The operation's tool group is disabled",
+            ));
+            return;
+        }
+        match operation.target {
+            PublicMcpOperationTarget::Command(command_ref) => {
+                let Some(record) = handles.commands.get_mut(&command_ref) else {
+                    handles.operations.remove(&operation_ref);
+                    request.finish(ToolEnvelope::failed(
+                        "The background operation result has expired",
+                    ));
+                    return;
+                };
+                let cancel_requested = record.state == PublicMcpCommandState::Running;
+                if cancel_requested {
+                    record.cancellation.cancel();
+                    record.state = PublicMcpCommandState::Cancelled;
+                }
+                drop(handles);
+                if cancel_requested {
+                    self.schedule_public_mcp_command_expiry(command_ref);
+                }
+                finish_serialized(
+                    request,
+                    json!({
+                        "operation_ref": operation_ref,
+                        "cancel_requested": cancel_requested,
+                        "side_effects_may_remain": cancel_requested,
+                        "undo_ref": null,
+                    }),
+                );
+            }
+            PublicMcpOperationTarget::Transfer(transfer_ref) => {
+                let Some(record) = handles.transfers.get(&transfer_ref) else {
+                    handles.operations.remove(&operation_ref);
+                    request.finish(ToolEnvelope::failed(
+                        "The background operation result has expired",
+                    ));
+                    return;
+                };
+                let internal_id = (!record.state.is_finished()).then(|| record.internal_id.clone());
+                let side_effects_may_remain =
+                    record.direction == "upload" && record.transferred_bytes > 0;
+                drop(handles);
+                let cancel_requested = internal_id
+                    .as_deref()
+                    .is_some_and(|internal_id| self.sftp_transfer_manager.cancel(internal_id));
+                finish_serialized(
+                    request,
+                    json!({
+                        "operation_ref": operation_ref,
+                        "cancel_requested": cancel_requested,
+                        "side_effects_may_remain": side_effects_may_remain,
+                        "undo_ref": null,
+                    }),
+                );
+            }
         }
     }
 
@@ -1039,6 +1657,8 @@ impl WorkspaceApp {
         let includes = |connection_type: &str| {
             requested_types.is_empty() || requested_types.contains(connection_type)
         };
+        self.public_mcp
+            .sync_connection_refs(&request.client_ref, &self.connection_store);
         let mut connections = Vec::new();
         if includes(CONNECTION_TYPE_SSH) {
             for connection in self
@@ -1151,15 +1771,14 @@ impl WorkspaceApp {
             return;
         };
         if let Some(connection_id) = connection_key.strip_prefix(CONNECTION_KEY_SSH_PREFIX)
-            && let Some(info) = self
-                .connection_store
-                .connection_infos()
-                .into_iter()
-                .find(|connection| connection.id == connection_id)
+            && let Some(connection) = self.connection_store.get(connection_id)
         {
-            let projection = self
-                .public_mcp
-                .connection_projection(&request.client_ref, info);
+            let projection = connections::ssh_connection_projection(
+                &connection_ref,
+                connections::connection_revision(&self.connection_store, &connection_key)
+                    .unwrap_or_else(|| "unavailable".to_owned()),
+                connection,
+            );
             finish_serialized(request, json!({ "connection": projection }));
             return;
         }
@@ -1175,9 +1794,11 @@ impl WorkspaceApp {
                 json!({
                     "connection": {
                         "connection_ref": connection_ref,
+                        "revision": connections::connection_revision(&self.connection_store, &connection_key),
                         "type": CONNECTION_TYPE_SERIAL,
                         "name": profile.name,
                         "group": profile.group,
+                        "notes": profile.notes,
                         "port_path": profile.port_path,
                         "baud_rate": profile.baud_rate,
                         "data_bits": profile.data_bits,
@@ -1185,6 +1806,10 @@ impl WorkspaceApp {
                         "parity": profile.parity,
                         "flow_control": profile.flow_control,
                         "connect_on_open": profile.connect_on_open,
+                        "color": profile.color,
+                        "icon_background_color": profile.icon_background_color,
+                        "icon": profile.icon,
+                        "last_used_at": profile.last_used_at.map(|time| time.to_rfc3339()),
                     }
                 }),
             );
@@ -1202,13 +1827,19 @@ impl WorkspaceApp {
                 json!({
                     "connection": {
                         "connection_ref": connection_ref,
+                        "revision": connections::connection_revision(&self.connection_store, &connection_key),
                         "type": CONNECTION_TYPE_TELNET,
                         "name": profile.name,
                         "group": profile.group,
+                        "notes": profile.notes,
                         "host": profile.host,
                         "port": profile.port,
-                        "terminal": profile.terminal,
+                        "terminal": connections::terminal_options_projection(&profile.terminal),
                         "connect_on_open": profile.connect_on_open,
+                        "color": profile.color,
+                        "icon_background_color": profile.icon_background_color,
+                        "icon": profile.icon,
+                        "last_used_at": profile.last_used_at.map(|time| time.to_rfc3339()),
                     }
                 }),
             );
@@ -1226,19 +1857,27 @@ impl WorkspaceApp {
                 json!({
                     "connection": {
                         "connection_ref": connection_ref,
+                        "revision": connections::connection_revision(&self.connection_store, &connection_key),
                         "type": CONNECTION_TYPE_MOSH,
                         "name": profile.name,
                         "group": profile.group,
+                        "notes": profile.notes,
                         "host": profile.host,
                         "ssh_port": profile.ssh_port,
                         "username": profile.username,
-                        "auth_type": profile.auth.auth_type(),
+                        "auth": connections::auth_projection(&profile.auth),
                         "server_executable": profile.server_executable,
                         "udp_host_override": profile.udp_host_override,
                         "udp_port": profile.udp_port,
                         "ip_family": profile.ip_family,
                         "prediction": profile.prediction,
                         "locale": profile.locale,
+                        "identity_agent": profile.identity_agent,
+                        "legacy_ssh_compatibility": profile.legacy_ssh_compatibility,
+                        "color": profile.color,
+                        "icon_background_color": profile.icon_background_color,
+                        "icon": profile.icon,
+                        "last_used_at": profile.last_used_at.map(|time| time.to_rfc3339()),
                     }
                 }),
             );
@@ -1256,16 +1895,22 @@ impl WorkspaceApp {
                 json!({
                     "connection": {
                         "connection_ref": connection_ref,
+                        "revision": connections::connection_revision(&self.connection_store, &connection_key),
                         "type": profile.protocol.provider_id(),
                         "name": profile.name,
                         "group": profile.group,
+                        "notes": profile.notes,
                         "host": profile.host,
                         "port": profile.port,
                         "username": profile.username,
                         "domain": profile.domain,
                         "credential_configured": profile.credential_ref.is_some(),
                         "read_only": profile.read_only,
-                        "session_options": profile.session_options,
+                        "options": connections::remote_desktop_options_projection(&profile.session_options),
+                        "color": profile.color,
+                        "icon_background_color": profile.icon_background_color,
+                        "icon": profile.icon,
+                        "last_used_at": profile.last_used_at.map(|time| time.to_rfc3339()),
                     }
                 }),
             );
@@ -1288,6 +1933,25 @@ impl WorkspaceApp {
             request.finish(ToolEnvelope::failed("The connection handle is unavailable"));
             return;
         };
+        let (retained_total, retained_for_client) = {
+            let handles = self.public_mcp.runtime_handles.lock();
+            (
+                handles.nodes.len(),
+                handles
+                    .nodes
+                    .values()
+                    .filter(|lease| lease.client_ref == request.client_ref)
+                    .count(),
+            )
+        };
+        if retained_total >= PUBLIC_MCP_NODE_CAPACITY
+            || retained_for_client >= PUBLIC_MCP_NODE_CAPACITY_PER_CLIENT
+        {
+            request.finish(ToolEnvelope::failed(
+                "The retained SSH node lease limit has been reached",
+            ));
+            return;
+        }
         let Some(connection) = self.connection_store.get(&connection_id).cloned() else {
             request.finish(ToolEnvelope::failed(
                 "The saved connection no longer exists",
@@ -1454,6 +2118,7 @@ impl WorkspaceApp {
                         .then_some(command_ref.clone())
                 })
                 .collect::<Vec<_>>();
+            remove_command_operations(&mut handles, &command_refs);
             let cancellations = command_refs
                 .into_iter()
                 .filter_map(|command_ref| handles.commands.remove(&command_ref))
@@ -1479,6 +2144,37 @@ impl WorkspaceApp {
         request: DomainRequest,
         cx: &mut Context<Self>,
     ) {
+        if request.is_cancelled() {
+            return;
+        }
+        self.enqueue_public_mcp_node_window_effect(
+            PublicMcpNodeWindowEffect::Disconnect(request),
+            cx,
+        );
+    }
+
+    pub(in crate::workspace) fn apply_public_mcp_node_window_effect(
+        &mut self,
+        effect: PublicMcpNodeWindowEffect,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        match effect {
+            PublicMcpNodeWindowEffect::Disconnect(request) => {
+                self.apply_public_mcp_disconnect_node(request, window, cx)
+            }
+        }
+    }
+
+    fn apply_public_mcp_disconnect_node(
+        &mut self,
+        request: DomainRequest,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if request.is_cancelled() {
+            return;
+        }
         let PublicToolCall::DisconnectNode(args) = &request.call else {
             return;
         };
@@ -1490,9 +2186,13 @@ impl WorkspaceApp {
             request.finish(ToolEnvelope::failed("The node handle is unavailable"));
             return;
         };
-        let disconnected = self.workspace_runtime.update(cx, |runtime, cx| {
-            runtime.disconnect_node_runtime_subtree(&lease.node_id, cx)
-        });
+        let mut disconnected = self.node_router.subtree_postorder(&lease.node_id);
+        if disconnected.is_empty() {
+            disconnected.push(lease.node_id.clone());
+        }
+        // Reuse the product disconnect path so visible tabs, forwarding owners,
+        // runtime tasks, and the physical NodeRouter subtree close together.
+        self.disconnect_ssh_node(&lease.node_id, window, cx);
         let mut handles = self.public_mcp.runtime_handles.lock();
         let disconnected_node_refs = handles
             .nodes
@@ -1515,16 +2215,27 @@ impl WorkspaceApp {
                     .then_some(command_ref.clone())
             })
             .collect::<Vec<_>>();
+        remove_command_operations(&mut handles, &command_refs);
         let cancellations = command_refs
             .into_iter()
             .filter_map(|command_ref| handles.commands.remove(&command_ref))
             .map(|record| record.cancellation)
             .collect::<Vec<_>>();
+        let interrupted_transfers =
+            transfers::invalidate_for_disconnected_nodes(&mut handles, &disconnected);
         forwards::invalidate_for_disconnected_nodes(&mut handles, &disconnected);
         files::invalidate_for_disconnected_nodes(&mut handles, &disconnected);
+        let disconnected_workspaces =
+            workspaces::take_disconnected_workspaces(&mut handles, &disconnected);
         drop(handles);
         for cancellation in cancellations {
             cancellation.cancel();
+        }
+        for transfer_id in interrupted_transfers {
+            self.sftp_transfer_manager.cancel(&transfer_id);
+        }
+        for record in disconnected_workspaces {
+            record.revoke();
         }
         finish_serialized(
             request,
@@ -1565,6 +2276,7 @@ impl WorkspaceApp {
             return;
         };
         let command_ref = CommandRef::new();
+        let operation_ref = OperationRef::new();
         let cancellation = CancellationToken::new();
         let mut handles = self.public_mcp.runtime_handles.lock();
         let client_command_count = handles
@@ -1577,7 +2289,7 @@ impl WorkspaceApp {
         {
             drop(handles);
             request.finish(ToolEnvelope::failed(
-                "The retained command limit was reached; release an unused node lease first",
+                "The retained command limit was reached; wait for old results to expire or release an unused node lease",
             ));
             return;
         }
@@ -1594,6 +2306,14 @@ impl WorkspaceApp {
                 truncated: false,
                 error: None,
                 cancellation: cancellation.clone(),
+            },
+        );
+        handles.operations.insert(
+            operation_ref.clone(),
+            PublicMcpOperationRecord {
+                client_ref: request.client_ref.clone(),
+                owner_group,
+                target: PublicMcpOperationTarget::Command(command_ref.clone()),
             },
         );
         drop(handles);
@@ -1622,40 +2342,49 @@ impl WorkspaceApp {
             let Some(result) = result else {
                 return;
             };
-            let mut handles = handles.lock();
-            let Some(record) = handles.commands.get_mut(&command_ref_for_task) else {
-                return;
-            };
-            if record.state != PublicMcpCommandState::Running {
-                return;
-            }
-            match result {
-                Ok(output) => {
-                    record.stdout = output.stdout;
-                    record.stderr = output.stderr;
-                    record.exit_code = output.exit_code;
-                    record.truncated = output.truncated;
-                    if output.exit_code == Some(0) {
-                        record.state = PublicMcpCommandState::Succeeded;
-                    } else {
+            // The retained result never needs the submitted command text.
+            drop(command);
+            {
+                let mut runtime_handles = handles.lock();
+                let Some(record) = runtime_handles.commands.get_mut(&command_ref_for_task) else {
+                    return;
+                };
+                if record.state != PublicMcpCommandState::Running {
+                    return;
+                }
+                match result {
+                    Ok(output) => {
+                        record.stdout = output.stdout;
+                        record.stderr = output.stderr;
+                        record.exit_code = output.exit_code;
+                        record.truncated = output.truncated;
+                        if output.exit_code == Some(0) {
+                            record.state = PublicMcpCommandState::Succeeded;
+                        } else {
+                            record.state = PublicMcpCommandState::Failed;
+                            record.error = Some(match output.exit_code {
+                                Some(exit_code) => {
+                                    format!("Remote command exited with status {exit_code}")
+                                }
+                                None => "Remote command ended without an exit status".to_owned(),
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        record.error = Some(error);
                         record.state = PublicMcpCommandState::Failed;
-                        record.error = Some(match output.exit_code {
-                            Some(exit_code) => {
-                                format!("Remote command exited with status {exit_code}")
-                            }
-                            None => "Remote command ended without an exit status".to_owned(),
-                        });
                     }
                 }
-                Err(error) => {
-                    record.error = Some(error);
-                    record.state = PublicMcpCommandState::Failed;
-                }
             }
+            expire_public_mcp_command_after_retention(handles, command_ref_for_task).await;
         });
         finish_serialized(
             request,
-            json!({ "command_ref": command_ref, "state": "running" }),
+            json!({
+                "command_ref": command_ref,
+                "operation_ref": operation_ref,
+                "state": "running",
+            }),
         );
     }
 
@@ -1725,10 +2454,11 @@ impl WorkspaceApp {
         let PublicToolCall::CancelCommand(args) = &request.call else {
             return;
         };
+        let command_ref = args.command_ref.clone();
         let mut handles = self.public_mcp.runtime_handles.lock();
         let Some(record) = handles
             .commands
-            .get_mut(&args.command_ref)
+            .get_mut(&command_ref)
             .filter(|record| record.client_ref == request.client_ref)
         else {
             request.finish(ToolEnvelope::failed("The command handle is unavailable"));
@@ -1739,7 +2469,20 @@ impl WorkspaceApp {
             record.cancellation.cancel();
             record.state = PublicMcpCommandState::Cancelled;
         }
+        drop(handles);
+        if cancelled {
+            self.schedule_public_mcp_command_expiry(command_ref);
+        }
         finish_serialized(request, json!({ "cancelled": cancelled }));
+    }
+
+    fn schedule_public_mcp_command_expiry(&self, command_ref: CommandRef) {
+        let handles = self.public_mcp.runtime_handles.clone();
+        self.forwarding_runtime
+            .spawn(expire_public_mcp_command_after_retention(
+                handles,
+                command_ref,
+            ));
     }
 
     fn handle_public_mcp_stage_artifact(&self, request: DomainRequest) {
@@ -1815,6 +2558,7 @@ impl PublicMcpWorkspaceBridge {
                     (&record.client_ref == client_ref).then_some(command_ref.clone())
                 })
                 .collect::<Vec<_>>();
+            remove_command_operations(&mut handles, &command_refs);
             command_refs
                 .into_iter()
                 .filter_map(|command_ref| handles.commands.remove(&command_ref))
@@ -1837,6 +2581,7 @@ impl PublicMcpWorkspaceBridge {
                         .then_some(command_ref.clone())
                 })
                 .collect::<Vec<_>>();
+            remove_command_operations(&mut handles, &command_refs);
             command_refs
                 .into_iter()
                 .filter_map(|command_ref| handles.commands.remove(&command_ref))
@@ -1871,11 +2616,15 @@ impl PublicMcpWorkspaceBridge {
                     (&record.client_ref == client_ref).then_some(command_ref.clone())
                 })
                 .collect::<Vec<_>>();
+            remove_command_operations(&mut handles, &command_refs);
             let cancellations = command_refs
                 .into_iter()
                 .filter_map(|command_ref| handles.commands.remove(&command_ref))
                 .map(|record| record.cancellation)
                 .collect::<Vec<_>>();
+            handles
+                .operations
+                .retain(|_, operation| &operation.client_ref != client_ref);
             (leases, cancellations)
         };
         for cancellation in cancellations {
@@ -1887,6 +2636,48 @@ impl PublicMcpWorkspaceBridge {
             }
         }
     }
+}
+
+fn remove_command_operations(handles: &mut PublicMcpRuntimeHandles, command_refs: &[CommandRef]) {
+    // Generic handles cannot outlive their typed command records.
+    handles.operations.retain(|_, operation| {
+        !matches!(
+            &operation.target,
+            PublicMcpOperationTarget::Command(command_ref)
+                if command_refs.contains(command_ref)
+        )
+    });
+}
+
+async fn expire_public_mcp_command_after_retention(
+    handles: Arc<Mutex<PublicMcpRuntimeHandles>>,
+    command_ref: CommandRef,
+) {
+    tokio::time::sleep(PUBLIC_MCP_COMMAND_RETENTION).await;
+    let mut handles = handles.lock();
+    let is_finished = handles
+        .commands
+        .get(&command_ref)
+        .is_some_and(|record| record.state != PublicMcpCommandState::Running);
+    if !is_finished {
+        return;
+    }
+    remove_command_operations(&mut handles, std::slice::from_ref(&command_ref));
+    handles.commands.remove(&command_ref);
+}
+
+fn remove_transfer_operations(
+    handles: &mut PublicMcpRuntimeHandles,
+    transfer_refs: &[TransferRef],
+) {
+    // Generic handles cannot outlive their typed transfer records.
+    handles.operations.retain(|_, operation| {
+        !matches!(
+            &operation.target,
+            PublicMcpOperationTarget::Transfer(transfer_ref)
+                if transfer_refs.contains(transfer_ref)
+        )
+    });
 }
 
 fn node_lease_for_client(
@@ -2009,14 +2800,25 @@ fn public_command_error(error: SshTransportError) -> String {
     }
 }
 
-fn read_endpoint_port(path: &Path) -> Option<u16> {
+fn read_endpoint_state(path: &Path) -> Option<PublicMcpEndpointState> {
     let bytes = std::fs::read(path).ok()?;
     let state: PublicMcpEndpointState = serde_json::from_slice(&bytes).ok()?;
-    (state.version == 1 && state.port != 0).then_some(state.port)
+    (state.version == 1 && state.port != 0).then_some(state)
 }
 
-fn persist_endpoint_port(path: &Path, port: u16) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec_pretty(&PublicMcpEndpointState { version: 1, port })
-        .map_err(std::io::Error::other)?;
+fn public_mcp_endpoint_state_path(settings_path: &Path) -> PathBuf {
+    settings_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(PUBLIC_MCP_ENDPOINT_FILE)
+}
+
+fn persist_endpoint_state(path: &Path, port: u16, preferred_port: u16) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(&PublicMcpEndpointState {
+        version: 1,
+        port,
+        preferred_port,
+    })
+    .map_err(std::io::Error::other)?;
     oxideterm_atomic_file::durable_write(path, &bytes)
 }

@@ -2,7 +2,7 @@ use gpui::{App, Context, Entity, Window};
 use oxideterm_gpui_terminal::{TerminalPane, TerminalSerialAction, TerminalTelnetAction};
 use oxideterm_public_mcp::{
     DomainRequest, PublicTelnetControl, PublicToolCall, TerminalControlAction, TerminalOpenSource,
-    TerminalRef, ToolEnvelope,
+    TerminalRef, ToolEnvelope, ToolGroup,
 };
 use oxideterm_session_adapter::auth_method_from_saved_auth;
 use oxideterm_ssh::SshConfig;
@@ -26,6 +26,8 @@ use crate::workspace::{
 };
 
 const TERMINAL_READ_OUTPUT_LIMIT_BYTES: usize = 256 * 1024;
+const PUBLIC_MCP_TERMINAL_CAPACITY: usize = 128;
+const PUBLIC_MCP_TERMINAL_CAPACITY_PER_CLIENT: usize = 32;
 const PENDING_MOSH_OPENS_PER_CLIENT: usize = 8;
 
 pub(in crate::workspace) enum PublicMcpTerminalWindowEffect {
@@ -258,6 +260,18 @@ impl WorkspaceApp {
             request.finish(ToolEnvelope::failed("The terminal handle is unavailable"));
             return;
         };
+        let session_kind = pane.read(cx).session_kind();
+        if matches!(
+            action,
+            TerminalControlAction::Terminate | TerminalControlAction::Kill
+        ) && session_kind != TerminalSessionKind::LocalPty
+        {
+            // Remote transports can send an interrupt byte but cannot deliver local OS signals.
+            request.finish(ToolEnvelope::failed(
+                "Process terminate and kill signals are available only for local terminals",
+            ));
+            return;
+        }
         let result = pane.update(cx, |pane, cx| match action {
             TerminalControlAction::Interrupt => pane
                 .send_command_sender_raw_bytes(&[0x03], cx)
@@ -338,6 +352,46 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) {
         if request.is_cancelled() {
+            return;
+        }
+        let session_group_enabled = self
+            .public_mcp
+            .clients()
+            .into_iter()
+            .find(|client| client.client_ref == request.client_ref)
+            .is_some_and(|client| {
+                client.enabled && client.tool_groups.contains(&ToolGroup::TerminalSession)
+            });
+        if !session_group_enabled {
+            request.finish(ToolEnvelope::failed(
+                "The MCP client authorization changed before the terminal opened",
+            ));
+            return;
+        }
+        let retained_total = self
+            .public_mcp
+            .terminals
+            .len()
+            .saturating_add(self.public_mcp.pending_terminal_opens.len());
+        let retained_for_client = self
+            .public_mcp
+            .terminals
+            .values()
+            .filter(|record| record.client_ref == request.client_ref)
+            .count()
+            .saturating_add(
+                self.public_mcp
+                    .pending_terminal_opens
+                    .values()
+                    .filter(|pending| pending.client_ref == request.client_ref)
+                    .count(),
+            );
+        if retained_total >= PUBLIC_MCP_TERMINAL_CAPACITY
+            || retained_for_client >= PUBLIC_MCP_TERMINAL_CAPACITY_PER_CLIENT
+        {
+            request.finish(ToolEnvelope::failed(
+                "The retained terminal session limit has been reached",
+            ));
             return;
         }
         let PublicToolCall::OpenTerminal(args) = &request.call else {
@@ -619,6 +673,7 @@ impl WorkspaceApp {
             request.finish(ToolEnvelope::failed("The terminal handle is unavailable"));
             return;
         }
+        self.stop_public_mcp_recordings_for_terminal(&request.client_ref, &terminal_ref, cx);
         self.public_mcp.terminals.remove(&terminal_ref);
         self.close_terminal_session(record.session_id, window, cx);
         finish_serialized(
@@ -644,6 +699,11 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) {
         let Some(pane) = self.terminal_pane_for_session(session_id, cx) else {
+            // A created session must not survive failure to register its public handle.
+            let _ = self.enqueue_public_mcp_terminal_window_effect(
+                PublicMcpTerminalWindowEffect::Revoke(vec![session_id]),
+                cx,
+            );
             request.finish(ToolEnvelope::failed(
                 "The created terminal did not register its live pane",
             ));
@@ -738,6 +798,9 @@ impl WorkspaceApp {
                 (&record.client_ref == client_ref).then_some(terminal_ref.clone())
             })
             .collect::<Vec<_>>();
+        for terminal_ref in &terminal_refs {
+            self.stop_public_mcp_recordings_for_terminal(client_ref, terminal_ref, cx);
+        }
         let session_ids = terminal_refs
             .into_iter()
             .filter_map(|terminal_ref| self.public_mcp.terminals.remove(&terminal_ref))
@@ -763,6 +826,53 @@ impl WorkspaceApp {
                 PublicMcpTerminalWindowEffect::Revoke(session_ids),
                 cx,
             );
+        }
+    }
+
+    pub(in crate::workspace) fn release_public_mcp_terminal_for_closed_session(
+        &mut self,
+        session_id: TerminalSessionId,
+        cx: &mut Context<Self>,
+    ) {
+        let terminal_refs = self
+            .public_mcp
+            .terminals
+            .iter()
+            .filter_map(|(terminal_ref, record)| {
+                (record.session_id == session_id)
+                    .then_some((terminal_ref.clone(), record.client_ref.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (terminal_ref, client_ref) in terminal_refs {
+            // A UI-owned pane close revokes only its public handle; an SSH node
+            // remains owned by NodeRouter and any other registered consumers.
+            self.stop_public_mcp_recordings_for_terminal(&client_ref, &terminal_ref, cx);
+            self.public_mcp.terminals.remove(&terminal_ref);
+        }
+    }
+
+    pub(in crate::workspace) fn remount_public_mcp_terminal_session(
+        &mut self,
+        old_session_id: TerminalSessionId,
+        new_session_id: TerminalSessionId,
+        cx: &mut Context<Self>,
+    ) {
+        let terminal_refs = self
+            .public_mcp
+            .terminals
+            .iter()
+            .filter_map(|(terminal_ref, record)| {
+                (record.session_id == old_session_id)
+                    .then_some((terminal_ref.clone(), record.client_ref.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (terminal_ref, client_ref) in terminal_refs {
+            // Recorders belong to the old pane, while the public terminal handle
+            // follows the replacement session created for the same NodeRouter node.
+            self.stop_public_mcp_recordings_for_terminal(&client_ref, &terminal_ref, cx);
+            if let Some(record) = self.public_mcp.terminals.get_mut(&terminal_ref) {
+                record.session_id = new_session_id;
+            }
         }
     }
 
@@ -814,13 +924,13 @@ impl WorkspaceApp {
                 "resize": true,
                 "serial_control": session_kind == TerminalSessionKind::Serial,
                 "telnet_control": session_kind == TerminalSessionKind::Telnet,
-                "process_signals": matches!(session_kind, TerminalSessionKind::LocalPty | TerminalSessionKind::SshPty),
+                "process_signals": session_kind == TerminalSessionKind::LocalPty,
                 "node_backed": session_kind == TerminalSessionKind::SshPty,
             }
         }))
     }
 
-    fn public_mcp_terminal_pane(
+    pub(super) fn public_mcp_terminal_pane(
         &self,
         client_ref: &oxideterm_public_mcp::ClientRef,
         terminal_ref: &TerminalRef,

@@ -366,11 +366,17 @@ pub(in crate::workspace) fn form_from_saved_connection(
     form.passphrase = passphrase;
     form.save_password = save_password;
     form.group = group_label_for_form(conn.group.as_deref());
+    form.notes = conn.notes.clone().unwrap_or_default();
     form.color = conn.color.clone().unwrap_or_default();
     form.icon_background_color = conn.icon_background_color.clone().unwrap_or_default();
     form.icon = conn.icon.clone().unwrap_or_default();
     form.tags = conn.tags.clone();
     form.post_connect_command = conn.post_connect_command().unwrap_or_default().to_string();
+    form.proxy_command_enabled = conn.proxy_command.is_some();
+    form.proxy_command_keychain_id = conn
+        .proxy_command
+        .as_ref()
+        .and_then(|command| command.keychain_id.clone());
     form.upstream_proxy_policy = upstream_proxy_form.policy;
     form.upstream_proxy_protocol = upstream_proxy_form.protocol;
     form.upstream_proxy_host = upstream_proxy_form.host;
@@ -393,7 +399,7 @@ pub(in crate::workspace) fn form_from_saved_connection(
     form.dedicated_new_terminal_connection = conn.options.dedicated_new_terminal_connection;
     form.skip_remote_env_detection = conn.options.skip_remote_env_detection;
     form.x11_forwarding = conn.options.x11_forwarding;
-    form.terminal = conn.options.terminal;
+    form.terminal = conn.options.terminal.clone();
     form.save_connection = true;
     form.error = error;
     form
@@ -542,6 +548,7 @@ pub(in crate::workspace) fn save_request_from_form_with_proxy_hop_prefix(
         None,
     )?;
     request.upstream_proxy = saved_upstream_proxy_policy_from_form(form)?;
+    request.proxy_command = saved_proxy_command_from_form(form);
     Ok(request)
 }
 
@@ -558,6 +565,7 @@ pub(in crate::workspace) fn save_request_from_form_with_existing_auth(
         existing_auth,
     )?;
     request.upstream_proxy = saved_upstream_proxy_policy_from_form(form)?;
+    request.proxy_command = saved_proxy_command_from_form(form);
     Ok(request)
 }
 
@@ -597,6 +605,12 @@ fn validate_save_form_non_secret(
             anyhow::bail!("Upstream proxy username is required");
         }
     }
+    if form.proxy_command_enabled
+        && form.proxy_command.trim().is_empty()
+        && form.proxy_command_keychain_id.is_none()
+    {
+        anyhow::bail!("ProxyCommand value is required");
+    }
     Ok(())
 }
 
@@ -612,6 +626,7 @@ fn connection_draft_from_form_with_proxy_hop_prefix(
         username: form.username.clone(),
         auth: auth_draft_from_form(form, persist_password_draft),
         group: form.group.clone(),
+        notes: form.notes.clone(),
         color: form.color.clone(),
         icon_background_color: form.icon_background_color.clone(),
         icon: form.icon.clone(),
@@ -629,7 +644,7 @@ fn connection_draft_from_form_with_proxy_hop_prefix(
         dedicated_new_terminal_connection: form.dedicated_new_terminal_connection,
         x11_forwarding: form.x11_forwarding,
         post_connect_command: form.post_connect_command.clone(),
-        terminal: form.terminal,
+        terminal: form.terminal.clone(),
         skip_remote_env_detection: form.skip_remote_env_detection,
     }
 }
@@ -682,6 +697,15 @@ pub(super) fn auth_draft_from_form(
 pub(super) fn take_secret_from_ui_draft(value: &mut String) -> SecretString {
     // Move the existing allocation into a zeroizing owner at the persistence boundary.
     SecretString::from(std::mem::take(value))
+}
+
+fn saved_proxy_command_from_form(form: &mut NewConnectionForm) -> Option<SavedProxyCommand> {
+    form.proxy_command_enabled.then(|| SavedProxyCommand {
+        keychain_id: form.proxy_command_keychain_id.clone(),
+        // An empty edit draft retains the existing protected value without loading it into UI.
+        plaintext_command: (!form.proxy_command.trim().is_empty())
+            .then(|| take_secret_from_ui_draft(&mut form.proxy_command)),
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

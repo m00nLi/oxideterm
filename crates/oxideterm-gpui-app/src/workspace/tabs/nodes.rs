@@ -160,6 +160,7 @@ impl WorkspaceApp {
         for node_id in &nodes_to_remove {
             // A failed node can still own stale tabs, reconnect jobs, forwards,
             // or transfer records. Clear those owners before dropping the tree.
+            self.close_embedded_sftp_for_node(node_id, cx);
             self.close_tabs_for_node(node_id, window, cx);
             let _ = self.interrupt_sftp_transfers_by_node(
                 node_id,
@@ -948,6 +949,7 @@ impl WorkspaceApp {
                 )
             });
             if let Some(replaced_pane_id) = replaced {
+                self.remount_public_mcp_terminal_session(old_session_id, new_session_id, cx);
                 if let Some(pane) = self.remove_terminal_pane(&replaced_pane_id, cx) {
                     let _ = pane.update(cx, |pane, _cx| pane.shutdown());
                 }

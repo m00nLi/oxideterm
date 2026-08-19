@@ -45,6 +45,7 @@ oxideterm-gpui-ui = { path = "../oxideterm-gpui-ui" }
 oxideterm-editor-syntax = { path = "../oxideterm-editor-syntax" }
 oxideterm-environment = { path = "../oxideterm-environment" }
 oxideterm-i18n = { path = "../oxideterm-i18n" }
+oxideterm-ide-core = { path = "../oxideterm-ide-core" }
 oxideterm-ide-fs = { path = "../oxideterm-ide-fs" }
 oxideterm-launcher = { path = "../oxideterm-launcher" }
 oxideterm-local-files = { path = "../oxideterm-local-files" }
@@ -54,7 +55,6 @@ oxideterm-network-proxy = { path = "../oxideterm-network-proxy" }
 oxideterm-plugin-host-api = { path = "../oxideterm-plugin-host-api" }
 oxideterm-plugin-protocol = { path = "../oxideterm-plugin-protocol" }
 oxideterm-plugin-registry = { path = "../oxideterm-plugin-registry" }
-oxideterm-plugin-runtime-install = { path = "../oxideterm-plugin-runtime-install" }
 oxideterm-portable-runtime = { path = "../oxideterm-portable-runtime" }
 oxideterm-preview = { path = "../oxideterm-preview" }
 oxideterm-public-mcp = { path = "../oxideterm-public-mcp" }
@@ -83,6 +83,7 @@ serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+tempfile = "3.23"
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true

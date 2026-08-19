@@ -1,9 +1,12 @@
-use std::{fmt, sync::Arc};
+use std::{collections::HashMap, fmt, sync::Arc};
 
+use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::{
+    auth::{ClientApprovalMode, ClientRegistry, ToolGroup},
     calls::{PublicToolCall, ToolEnvelope},
     handles::ClientRef,
 };
@@ -11,6 +14,24 @@ use crate::{
 #[derive(Clone)]
 pub struct DomainBroker {
     sender: mpsc::Sender<DomainMessage>,
+    active_requests: Arc<Mutex<HashMap<Uuid, ActiveDomainRequest>>>,
+}
+
+struct ActiveDomainRequest {
+    client_ref: ClientRef,
+    required_groups: Vec<ToolGroup>,
+    cancellation: CancellationToken,
+}
+
+struct ActiveDomainRequestGuard {
+    request_id: Uuid,
+    active_requests: Arc<Mutex<HashMap<Uuid, ActiveDomainRequest>>>,
+}
+
+impl Drop for ActiveDomainRequestGuard {
+    fn drop(&mut self) {
+        self.active_requests.lock().remove(&self.request_id);
+    }
 }
 
 #[derive(Debug)]
@@ -49,6 +70,12 @@ impl DomainRequest {
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancellation.clone()
     }
+
+    /// Retargets a protocol-level alias while preserving the original response and cancellation.
+    pub fn with_call(mut self, call: PublicToolCall) -> Self {
+        self.call = call;
+        self
+    }
 }
 
 pub struct DomainRequestReceiver {
@@ -69,28 +96,66 @@ pub enum BrokerError {
     ResponseDropped,
     #[error("the OxideTerm workspace did not complete the request in time")]
     TimedOut,
+    #[error("the MCP client authorization changed before the request was delivered")]
+    AuthorizationChanged,
 }
 
 const DOMAIN_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+const CLOUD_SYNC_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 impl DomainBroker {
     /// Creates the only typed bridge between protocol tasks and the GPUI domain runtime.
     pub fn channel(capacity: usize) -> (Arc<Self>, DomainRequestReceiver) {
         let (sender, receiver) = mpsc::channel(capacity);
         (
-            Arc::new(Self { sender }),
+            Arc::new(Self {
+                sender,
+                active_requests: Arc::default(),
+            }),
             DomainRequestReceiver { receiver },
         )
     }
 
     pub async fn execute(
         &self,
+        clients: &ClientRegistry,
+        expected_approval_mode: ClientApprovalMode,
         client_ref: ClientRef,
         call: PublicToolCall,
     ) -> Result<ToolEnvelope, BrokerError> {
+        let required_groups = std::iter::once(call.required_group())
+            .chain(call.additional_required_groups().iter().copied())
+            .collect::<Vec<_>>();
+        // Network-backed sync plans may legitimately exceed the interactive broker timeout.
+        let timeout = if matches!(
+            &call,
+            PublicToolCall::SyncPullPreview(_)
+                | PublicToolCall::SyncPublishPreview(_)
+                | PublicToolCall::SyncApplyPlan(_)
+                | PublicToolCall::SyncRestore(_)
+        ) {
+            CLOUD_SYNC_REQUEST_TIMEOUT
+        } else {
+            DOMAIN_REQUEST_TIMEOUT
+        };
         let (response, receiver) = oneshot::channel();
         let cancellation = CancellationToken::new();
         let cancellation_guard = cancellation.clone().drop_guard();
+        let active_request_guard = self.track_active_request(
+            client_ref.clone(),
+            required_groups.clone(),
+            cancellation.clone(),
+        );
+        let authorized = clients.get(&client_ref).is_some_and(|client| {
+            client.enabled
+                && client.approval_mode == expected_approval_mode
+                && required_groups
+                    .iter()
+                    .all(|group| client.tool_groups.contains(group))
+        });
+        if !authorized {
+            return Err(BrokerError::AuthorizationChanged);
+        }
         self.sender
             .send(DomainMessage::Request(Box::new(DomainRequest {
                 client_ref,
@@ -100,15 +165,58 @@ impl DomainBroker {
             })))
             .await
             .map_err(|_| BrokerError::WorkspaceUnavailable)?;
-        let response = tokio::time::timeout(DOMAIN_REQUEST_TIMEOUT, receiver)
+        let response = tokio::time::timeout(timeout, receiver)
             .await
             .map_err(|_| BrokerError::TimedOut)?
             .map_err(|_| BrokerError::ResponseDropped)?;
         cancellation_guard.disarm();
+        drop(active_request_guard);
         Ok(response)
+    }
+
+    pub fn cancel_client(&self, client_ref: &ClientRef) -> usize {
+        self.cancel_matching_requests(|request| &request.client_ref == client_ref)
+    }
+
+    pub fn cancel_client_tool_group(&self, client_ref: &ClientRef, tool_group: ToolGroup) -> usize {
+        self.cancel_matching_requests(|request| {
+            &request.client_ref == client_ref && request.required_groups.contains(&tool_group)
+        })
     }
 
     pub fn notify_state_changed(&self) {
         let _ = self.sender.try_send(DomainMessage::StateChanged);
+    }
+
+    fn track_active_request(
+        &self,
+        client_ref: ClientRef,
+        required_groups: Vec<ToolGroup>,
+        cancellation: CancellationToken,
+    ) -> ActiveDomainRequestGuard {
+        let request_id = Uuid::new_v4();
+        self.active_requests.lock().insert(
+            request_id,
+            ActiveDomainRequest {
+                client_ref,
+                required_groups,
+                cancellation,
+            },
+        );
+        ActiveDomainRequestGuard {
+            request_id,
+            active_requests: self.active_requests.clone(),
+        }
+    }
+
+    fn cancel_matching_requests(&self, matches: impl Fn(&ActiveDomainRequest) -> bool) -> usize {
+        let active_requests = self.active_requests.lock();
+        let mut cancelled = 0;
+        for request in active_requests.values().filter(|request| matches(request)) {
+            // Domain owners observe the same token used for disconnect and timeout cancellation.
+            request.cancellation.cancel();
+            cancelled += 1;
+        }
+        cancelled
     }
 }

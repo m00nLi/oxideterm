@@ -12,7 +12,7 @@
 
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.20-blue" alt="版本">
+  <img src="https://img.shields.io/badge/version-2.0.21-blue" alt="版本">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" alt="平台">
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="授權">
   <img src="https://img.shields.io/badge/rust-2024%20edition-orange" alt="Rust 2024">
@@ -210,7 +210,7 @@ OxideSens 採用 BYOK 模式，並在行程內建立上下文：
 
 原生分支把擴充功能與支援介面保持在 Rust 原生邊界內：
 
-- 外掛支援 manifest-only、WASM 與一般程序三種路徑。WASM 使用 Wasmtime/WASI 或具受控宿主呼叫的 sidecar；程序外掛是沒有作業系統級沙箱的本機程序，需要另外判斷信任邊界。
+- 外掛支援 manifest-only、WASM 與一般程序三種路徑。WASM 使用內建的 Wasmtime/WASI 執行階段；程序外掛是沒有作業系統級沙箱的本機程序，需要另外判斷信任邊界。
 - CLI 直接連結領域 crate，涵蓋 doctor、settings、connections、forwards、便攜包、備份與報告
 - 診斷優先輸出計數、路徑、功能旗標與脫敏提示，避免暴露含密鑰的原始負載
 - 會修改狀態的 CLI flows 使用 dry-run 計畫、`--yes` guards 與回滾備份

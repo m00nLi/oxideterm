@@ -12,7 +12,7 @@
 
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.20-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.0.21-blue" alt="Version">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="License">
   <img src="https://img.shields.io/badge/rust-2024%20edition-orange" alt="Rust 2024">
@@ -205,7 +205,7 @@ UI は GPUI で直接描画され、DOM/CSS/JavaScript rendering pipeline はあ
 
 拡張機能とサポート機能は、Rust が所有する明確な境界内で動作します。
 
-- Plugins は manifest-only、WASM、通常のプロセスの実行経路をサポートします。WASM は Wasmtime/WASI または制御された host 呼び出しを持つ sidecar を使い、プロセス型は OS サンドボックスのないローカルプロセスです。
+- Plugins は manifest-only、WASM、通常のプロセスの実行経路をサポートします。WASM は組み込みの Wasmtime/WASI ランタイムを使い、プロセス型は OS サンドボックスのないローカルプロセスです。
 - CLI はドメイン crate に直接リンクし、doctor、settings、connections、転送、ポータブルバンドル、バックアップ、レポートを扱います
 - 診断は秘密を含む生ペイロードではなく、件数、パス、機能フラグ、マスク済みヒントを優先します
 - 状態を変更する CLI 処理はドライラン計画、`--yes` 保護、ロールバック用バックアップを使います

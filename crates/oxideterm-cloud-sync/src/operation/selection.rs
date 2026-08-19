@@ -62,6 +62,17 @@ pub(super) fn filter_serial_profiles_snapshot(
     }
 }
 
+pub(super) fn filter_telnet_profiles_snapshot(
+    snapshot: &mut TelnetProfilesSyncSnapshot,
+    selected_ids: Option<&BTreeSet<String>>,
+) {
+    if let Some(selected_ids) = selected_ids {
+        snapshot
+            .records
+            .retain(|profile| selected_ids.contains(&profile.id));
+    }
+}
+
 pub(super) fn filter_mosh_profiles_snapshot(
     snapshot: &mut MoshProfilesSyncSnapshot,
     selected_ids: Option<&BTreeSet<String>>,
@@ -112,6 +123,28 @@ pub(super) fn preserve_local_remote_desktop_credential_refs(
         profile.credential_ref = local_refs
             .get(profile.id.as_str())
             .map(|credential_ref| (*credential_ref).clone());
+    }
+}
+
+pub(crate) fn retain_available_remote_desktop_gateway_refs(
+    snapshot: &mut RemoteDesktopProfilesSyncSnapshot,
+    connection_store: &ConnectionStore,
+) {
+    let available_ids = connection_store
+        .connections()
+        .iter()
+        .map(|connection| connection.id.as_str())
+        .collect::<BTreeSet<_>>();
+    // A profile selected without its SSH dependency must remain editable and
+    // must not retain a device-local dangling relation after cloud apply.
+    for profile in &mut snapshot.records {
+        if profile
+            .ssh_gateway_connection_id
+            .as_deref()
+            .is_some_and(|connection_id| !available_ids.contains(connection_id))
+        {
+            profile.ssh_gateway_connection_id = None;
+        }
     }
 }
 
@@ -191,6 +224,7 @@ pub(super) fn has_structured_conflict(
             || dirty_sections.forwards
             || dirty_sections.quick_commands
             || dirty_sections.serial_profiles
+            || dirty_sections.telnet_profiles
             || dirty_sections.mosh_profiles
             || dirty_sections.remote_desktop_profiles
             || dirty_sections.sensitive_credentials
@@ -208,6 +242,9 @@ pub(super) fn has_structured_conflict(
         return true;
     }
     if dirty_sections.serial_profiles && remote.serial_profiles != previous.serial_profiles {
+        return true;
+    }
+    if dirty_sections.telnet_profiles && remote.telnet_profiles != previous.telnet_profiles {
         return true;
     }
     if dirty_sections.mosh_profiles && remote.mosh_profiles != previous.mosh_profiles {

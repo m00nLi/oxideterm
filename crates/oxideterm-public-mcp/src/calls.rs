@@ -8,10 +8,46 @@ use zeroize::Zeroizing;
 use crate::{
     auth::ToolGroup,
     handles::{
-        AddonRef, ArtifactRef, AuditRef, CommandRef, ConnectionRef, FileSessionRef, ForwardRef,
-        NodeRef, QuickCommandRef, TerminalRef,
+        AddonRef, ArtifactRef, AuditRef, CommandRef, ConnectionRef, DesktopRef, FileSessionRef,
+        ForwardRef, NodeRef, OperationRef, QuickCommandRef, RecordingRef, SyncPlanRef, TerminalRef,
+        TransferRef, UndoRef, WorkspaceRef,
     },
 };
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+/// Requests persistent tool groups without allowing an unattended client to self-grant them.
+pub struct RequestAccessArgs {
+    pub groups: Vec<ToolGroup>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+/// Lets a client reduce only its own Public MCP capabilities.
+pub struct RevokeAccessArgs {
+    pub groups: Vec<ToolGroup>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+/// Reads a redacted status projection for a client-owned background operation.
+pub struct OperationStateArgs {
+    pub operation_ref: OperationRef,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+/// Requests cancellation without claiming that external side effects were reversed.
+pub struct CancelOperationArgs {
+    pub operation_ref: OperationRef,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+/// Replays only the exact inverse operation retained behind an opaque undo handle.
+pub struct RevertArgs {
+    pub undo_ref: UndoRef,
+}
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct BrowseConnectionsArgs {
@@ -24,6 +60,552 @@ pub struct BrowseConnectionsArgs {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct DescribeConnectionArgs {
     pub connection_ref: ConnectionRef,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
+pub enum PublicConnectionAuth {
+    Password,
+    Key {
+        key_path: String,
+    },
+    ManagedKey {
+        managed_key_id: String,
+    },
+    Certificate {
+        key_path: String,
+        certificate_path: String,
+    },
+    KeyboardInteractive,
+    Agent,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicTerminalEncoding {
+    #[default]
+    Utf8,
+    Gbk,
+    Gb18030,
+    Big5,
+    ShiftJis,
+    EucJp,
+    EucKr,
+    Windows1252,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicTerminalBackspaceSequence {
+    Delete,
+    ControlH,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicTerminalDeleteSequence {
+    Csi3Tilde,
+    Delete,
+    ControlH,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublicTerminalOptions {
+    #[serde(default)]
+    pub encoding: Option<PublicTerminalEncoding>,
+    #[serde(default)]
+    pub backspace_sequence: Option<PublicTerminalBackspaceSequence>,
+    #[serde(default)]
+    pub delete_sequence: Option<PublicTerminalDeleteSequence>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicX11ForwardingMode {
+    #[default]
+    Untrusted,
+    Trusted,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublicX11ForwardingOptions {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub mode: PublicX11ForwardingMode,
+    #[serde(default)]
+    pub untrusted_timeout_seconds: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicUpstreamProxyProtocol {
+    Socks5,
+    HttpConnect,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, tag = "mode", rename_all = "snake_case")]
+pub enum PublicUpstreamProxy {
+    #[default]
+    UseGlobal,
+    Direct,
+    Custom {
+        protocol: PublicUpstreamProxyProtocol,
+        host: String,
+        port: u16,
+        #[serde(default)]
+        username: Option<String>,
+        #[serde(default = "default_true")]
+        remote_dns: bool,
+        #[serde(default)]
+        no_proxy: String,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublicProxyHopProfile {
+    pub host: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    pub username: String,
+    pub auth: PublicConnectionAuth,
+    #[serde(default)]
+    pub agent_forwarding: bool,
+    #[serde(default)]
+    pub identity_agent: Option<String>,
+    #[serde(default)]
+    pub agent_forwarding_socket: Option<String>,
+    #[serde(default)]
+    pub legacy_ssh_compatibility: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublicSshProfile {
+    pub name: String,
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    pub host: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    pub username: String,
+    pub auth: PublicConnectionAuth,
+    #[serde(default)]
+    pub proxy_chain: Vec<PublicProxyHopProfile>,
+    #[serde(default)]
+    pub upstream_proxy: PublicUpstreamProxy,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub icon_background_color: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub connect_timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub agent_forwarding: bool,
+    #[serde(default)]
+    pub identity_agent: Option<String>,
+    #[serde(default)]
+    pub agent_forwarding_socket: Option<String>,
+    #[serde(default)]
+    pub legacy_ssh_compatibility: bool,
+    #[serde(default)]
+    pub dedicated_new_terminal_connection: bool,
+    #[serde(default)]
+    pub x11_forwarding: PublicX11ForwardingOptions,
+    #[serde(default)]
+    pub post_connect_command: Option<String>,
+    #[serde(default)]
+    pub terminal: PublicTerminalOptions,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicSerialParity {
+    None,
+    Odd,
+    Even,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicSerialFlowControl {
+    None,
+    Software,
+    Hardware,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublicSerialProfile {
+    pub name: String,
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    pub port_path: String,
+    #[serde(default)]
+    pub baud_rate: Option<u32>,
+    #[serde(default)]
+    pub data_bits: Option<u8>,
+    #[serde(default)]
+    pub stop_bits: Option<u8>,
+    #[serde(default)]
+    pub parity: Option<PublicSerialParity>,
+    #[serde(default)]
+    pub flow_control: Option<PublicSerialFlowControl>,
+    #[serde(default)]
+    pub connect_on_open: bool,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub icon_background_color: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublicTelnetProfile {
+    pub name: String,
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    pub host: String,
+    #[serde(default = "default_telnet_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub terminal: PublicTerminalOptions,
+    #[serde(default)]
+    pub connect_on_open: bool,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub icon_background_color: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicMoshIpFamily {
+    #[default]
+    Auto,
+    Ipv4,
+    Ipv6,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum PublicMoshUdpPortSelection {
+    #[default]
+    Automatic,
+    Fixed {
+        port: u16,
+    },
+    Range {
+        start: u16,
+        end: u16,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicMoshPredictionMode {
+    #[default]
+    Adaptive,
+    Always,
+    Never,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublicMoshProfile {
+    pub name: String,
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    pub host: String,
+    #[serde(default = "default_ssh_port")]
+    pub ssh_port: u16,
+    pub username: String,
+    pub auth: PublicConnectionAuth,
+    #[serde(default = "default_mosh_server")]
+    pub server_executable: String,
+    #[serde(default)]
+    pub udp_host_override: Option<String>,
+    #[serde(default)]
+    pub udp_port: PublicMoshUdpPortSelection,
+    #[serde(default)]
+    pub ip_family: PublicMoshIpFamily,
+    #[serde(default)]
+    pub prediction: PublicMoshPredictionMode,
+    #[serde(default)]
+    pub locale: Option<String>,
+    #[serde(default)]
+    pub identity_agent: Option<String>,
+    #[serde(default)]
+    pub legacy_ssh_compatibility: bool,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub icon_background_color: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicVncSecurityPolicy {
+    #[default]
+    RequireVerifiedEncryption,
+    AllowUnverifiedEncryption,
+    AllowLegacy,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicVncSessionMode {
+    #[default]
+    Shared,
+    Exclusive,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicVncImageQuality {
+    Performance,
+    #[default]
+    Balanced,
+    BestQuality,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicVncCompression {
+    Low,
+    #[default]
+    Balanced,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublicRemoteDesktopOptions {
+    #[serde(default = "default_true")]
+    pub clipboard_text: bool,
+    #[serde(default = "default_true")]
+    pub clipboard_images: bool,
+    #[serde(default)]
+    pub clipboard_files: bool,
+    #[serde(default = "default_true")]
+    pub audio_playback: bool,
+    #[serde(default)]
+    pub audio_capture: bool,
+    #[serde(default)]
+    pub use_all_monitors: bool,
+    /// Disables the RDP Graphics Pipeline for hosts affected by EGFX rendering corruption.
+    #[serde(default)]
+    pub disable_rdp_graphics_pipeline: bool,
+    #[serde(default)]
+    pub vnc_security_policy: PublicVncSecurityPolicy,
+    #[serde(default)]
+    pub vnc_session_mode: PublicVncSessionMode,
+    #[serde(default)]
+    pub vnc_image_quality: PublicVncImageQuality,
+    #[serde(default)]
+    pub vnc_compression: PublicVncCompression,
+}
+
+impl Default for PublicRemoteDesktopOptions {
+    fn default() -> Self {
+        Self {
+            clipboard_text: true,
+            clipboard_images: true,
+            clipboard_files: false,
+            audio_playback: true,
+            audio_capture: false,
+            use_all_monitors: false,
+            disable_rdp_graphics_pipeline: false,
+            vnc_security_policy: PublicVncSecurityPolicy::default(),
+            vnc_session_mode: PublicVncSessionMode::default(),
+            vnc_image_quality: PublicVncImageQuality::default(),
+            vnc_compression: PublicVncCompression::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublicRemoteDesktopProfile {
+    pub name: String,
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    pub host: String,
+    pub port: u16,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default)]
+    pub options: PublicRemoteDesktopOptions,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub icon_background_color: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
+pub enum PublicSavedConnectionProfile {
+    Ssh(PublicSshProfile),
+    Serial(PublicSerialProfile),
+    Telnet(PublicTelnetProfile),
+    Mosh(PublicMoshProfile),
+    Rdp(PublicRemoteDesktopProfile),
+    Vnc(PublicRemoteDesktopProfile),
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SavePublicConnectionArgs {
+    #[serde(default)]
+    pub connection_ref: Option<ConnectionRef>,
+    pub profile: PublicSavedConnectionProfile,
+    #[serde(default)]
+    pub expected_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemovePublicConnectionArgs {
+    pub connection_ref: ConnectionRef,
+    #[serde(default)]
+    pub forget_credentials: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PublicCredentialSlot {
+    Primary,
+    ProxyHop { index: u32 },
+    UpstreamProxy,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialStatusArgs {
+    pub connection_ref: ConnectionRef,
+}
+
+pub struct StoreCredentialArgs {
+    pub connection_ref: ConnectionRef,
+    pub slot: PublicCredentialSlot,
+    pub new_secret: Zeroizing<String>,
+}
+
+impl fmt::Debug for StoreCredentialArgs {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StoreCredentialArgs")
+            .field("connection_ref", &self.connection_ref)
+            .field("slot", &self.slot)
+            .field("new_secret", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ForgetCredentialArgs {
+    pub connection_ref: ConnectionRef,
+    pub slot: PublicCredentialSlot,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, JsonSchema, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicSyncSection {
+    Connections,
+    Forwards,
+    QuickCommands,
+    SerialProfiles,
+    TelnetProfiles,
+    MoshProfiles,
+    RemoteDesktopProfiles,
+    SensitiveCredentials,
+    AppSettings,
+    PluginSettings,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicSyncConflictStrategy {
+    #[default]
+    Merge,
+    Replace,
+    Skip,
+    Rename,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SyncStatusArgs {}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SyncSelection {
+    /// Omit this field to use the app's configured Cloud Sync scope.
+    #[serde(default)]
+    pub sections: Option<Vec<PublicSyncSection>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SyncPullPreviewArgs {
+    #[serde(default)]
+    pub selection: SyncSelection,
+    #[serde(default)]
+    pub conflict_strategy: PublicSyncConflictStrategy,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SyncPublishPreviewArgs {
+    #[serde(default)]
+    pub selection: SyncSelection,
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SyncApplyPlanArgs {
+    pub sync_plan_ref: SyncPlanRef,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SyncRestoreArgs {
+    pub undo_ref: UndoRef,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -148,6 +730,240 @@ pub enum TerminalControlAction {
 pub struct ControlTerminalArgs {
     pub terminal_ref: TerminalRef,
     pub action: TerminalControlAction,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, tag = "action", rename_all = "snake_case")]
+pub enum RecordingsControlArgs {
+    Start {
+        terminal_ref: TerminalRef,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        capture_input: bool,
+    },
+    Pause {
+        recording_ref: RecordingRef,
+    },
+    Resume {
+        recording_ref: RecordingRef,
+    },
+    Stop {
+        recording_ref: RecordingRef,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
+pub enum RecordingStatusTarget {
+    Recording { recording_ref: RecordingRef },
+    Terminal { terminal_ref: TerminalRef },
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingsStatusArgs {
+    pub target: RecordingStatusTarget,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingsSearchArgs {
+    pub recording_ref: RecordingRef,
+    pub query: String,
+    #[serde(default = "default_recording_search_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordingExportFormat {
+    AsciicastV2,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingsExportArgs {
+    pub recording_ref: RecordingRef,
+    pub format: RecordingExportFormat,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OpenDesktopArgs {
+    pub connection_ref: ConnectionRef,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DesktopHandleArgs {
+    pub desktop_ref: DesktopRef,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DesktopFrameArgs {
+    pub desktop_ref: DesktopRef,
+    #[serde(default)]
+    pub after_generation: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicDesktopMouseButton {
+    Left,
+    Middle,
+    Right,
+    Back,
+    Forward,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopButtonState {
+    Pressed,
+    Released,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
+pub enum DesktopInputEvent {
+    MouseMove {
+        x: u32,
+        y: u32,
+    },
+    MouseButton {
+        x: u32,
+        y: u32,
+        button: PublicDesktopMouseButton,
+        state: DesktopButtonState,
+    },
+    Wheel {
+        x: u32,
+        y: u32,
+        delta_x: f32,
+        delta_y: f32,
+    },
+    Key {
+        code: String,
+        #[serde(default)]
+        text: Option<Zeroizing<String>>,
+        #[serde(default)]
+        alt: bool,
+        #[serde(default)]
+        ctrl: bool,
+        #[serde(default)]
+        shift: bool,
+        #[serde(default)]
+        meta: bool,
+        state: DesktopButtonState,
+    },
+    Text {
+        text: Zeroizing<String>,
+    },
+    ReleaseAll,
+}
+
+impl fmt::Debug for DesktopInputEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = match self {
+            Self::MouseMove { .. } => "mouse_move",
+            Self::MouseButton { .. } => "mouse_button",
+            Self::Wheel { .. } => "wheel",
+            Self::Key { .. } => "key",
+            Self::Text { .. } => "text",
+            Self::ReleaseAll => "release_all",
+        };
+        formatter
+            .debug_struct("DesktopInputEvent")
+            .field("kind", &kind)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesktopInputArgs {
+    pub desktop_ref: DesktopRef,
+    pub graphics_epoch: u64,
+    pub event: DesktopInputEvent,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResizeDesktopArgs {
+    pub desktop_ref: DesktopRef,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopClipboardKind {
+    Text,
+    Image,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadDesktopClipboardArgs {
+    pub desktop_ref: DesktopRef,
+    #[serde(default = "default_desktop_clipboard_kind")]
+    pub kind: DesktopClipboardKind,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopClipboardImageFormat {
+    Png,
+    Jpeg,
+    Webp,
+    Gif,
+    Svg,
+    Bmp,
+    Tiff,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
+pub enum DesktopClipboardPayload {
+    Text {
+        text: Zeroizing<String>,
+    },
+    Image {
+        artifact_ref: ArtifactRef,
+        format: DesktopClipboardImageFormat,
+    },
+}
+
+impl fmt::Debug for DesktopClipboardPayload {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Text { text } => formatter
+                .debug_struct("DesktopClipboardPayload")
+                .field("kind", &"text")
+                .field("bytes", &text.len())
+                .finish(),
+            Self::Image {
+                artifact_ref,
+                format,
+            } => formatter
+                .debug_struct("DesktopClipboardPayload")
+                .field("kind", &"image")
+                .field("artifact_ref", artifact_ref)
+                .field("format", format)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WriteDesktopClipboardArgs {
+    pub desktop_ref: DesktopRef,
+    pub payload: DesktopClipboardPayload,
 }
 
 pub struct StartCommandArgs {
@@ -573,6 +1389,107 @@ pub struct FilesRemoveArgs {
     pub expected_revision: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, tag = "direction", rename_all = "snake_case")]
+pub enum StartTransferArgs {
+    Upload {
+        file_session_ref: FileSessionRef,
+        remote_path: String,
+        artifact_ref: ArtifactRef,
+        #[serde(default)]
+        overwrite: bool,
+        #[serde(default)]
+        resume: bool,
+    },
+    Download {
+        file_session_ref: FileSessionRef,
+        remote_path: String,
+        #[serde(default)]
+        resume: bool,
+    },
+}
+
+impl StartTransferArgs {
+    pub fn remote_path(&self) -> &str {
+        match self {
+            Self::Upload { remote_path, .. } | Self::Download { remote_path, .. } => remote_path,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TransferHandleArgs {
+    pub transfer_ref: TransferRef,
+}
+
+/// Mounts an IDE workspace beneath an existing authorized SFTP root.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceMountArgs {
+    pub file_session_ref: FileSessionRef,
+    #[serde(default)]
+    pub root: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTreeArgs {
+    pub workspace_ref: WorkspaceRef,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub cursor: u32,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceReadArgs {
+    pub workspace_ref: WorkspaceRef,
+    pub path: String,
+}
+
+#[derive(Clone)]
+pub struct WorkspaceTextEdit {
+    pub start_byte: u32,
+    pub end_byte: u32,
+    pub replacement: Zeroizing<String>,
+}
+
+#[derive(Clone)]
+pub struct WorkspaceFileEdits {
+    pub path: String,
+    pub expected_revision: String,
+    pub edits: Vec<WorkspaceTextEdit>,
+}
+
+#[derive(Clone)]
+pub struct WorkspaceApplyEditsArgs {
+    pub workspace_ref: WorkspaceRef,
+    pub files: Vec<WorkspaceFileEdits>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceSearchArgs {
+    pub workspace_ref: WorkspaceRef,
+    pub pattern: String,
+    #[serde(default)]
+    pub root: Option<String>,
+    #[serde(default)]
+    pub case_sensitive: bool,
+    #[serde(default)]
+    pub maximum_results: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceCloseArgs {
+    pub workspace_ref: WorkspaceRef,
+}
+
 fn default_output_limit() -> u32 {
     64 * 1024
 }
@@ -589,9 +1506,31 @@ fn default_host_tool_limit() -> u32 {
     200
 }
 
+fn sync_selection_summary(selection: &SyncSelection) -> String {
+    selection.sections.as_ref().map_or_else(
+        || "configured".to_owned(),
+        |sections| format!("{} selected", sections.len()),
+    )
+}
+
 pub enum PublicToolCall {
+    RequestAccess(RequestAccessArgs),
+    RevokeAccess(RevokeAccessArgs),
+    OperationState(OperationStateArgs),
+    CancelOperation(CancelOperationArgs),
+    Revert(RevertArgs),
     BrowseConnections(BrowseConnectionsArgs),
     DescribeConnection(DescribeConnectionArgs),
+    SaveConnection(Box<SavePublicConnectionArgs>),
+    RemoveConnection(RemovePublicConnectionArgs),
+    CredentialStatus(CredentialStatusArgs),
+    StoreCredential(StoreCredentialArgs),
+    ForgetCredential(ForgetCredentialArgs),
+    SyncStatus(SyncStatusArgs),
+    SyncPullPreview(SyncPullPreviewArgs),
+    SyncPublishPreview(SyncPublishPreviewArgs),
+    SyncApplyPlan(SyncApplyPlanArgs),
+    SyncRestore(SyncRestoreArgs),
     ConnectNode(ConnectNodeArgs),
     InspectNode(InspectNodeArgs),
     ReleaseNode(ReleaseNodeArgs),
@@ -604,6 +1543,19 @@ pub enum PublicToolCall {
     ResizeTerminal(ResizeTerminalArgs),
     ControlTerminal(ControlTerminalArgs),
     CloseTerminal(TerminalHandleArgs),
+    RecordingsControl(RecordingsControlArgs),
+    RecordingsStatus(RecordingsStatusArgs),
+    RecordingsSearch(RecordingsSearchArgs),
+    RecordingsExport(RecordingsExportArgs),
+    OpenDesktop(OpenDesktopArgs),
+    DesktopState(DesktopHandleArgs),
+    DesktopFrame(DesktopFrameArgs),
+    DesktopInput(DesktopInputArgs),
+    ResizeDesktop(ResizeDesktopArgs),
+    ReadDesktopClipboard(ReadDesktopClipboardArgs),
+    WriteDesktopClipboard(WriteDesktopClipboardArgs),
+    ReconnectDesktop(DesktopHandleArgs),
+    CloseDesktop(DesktopHandleArgs),
     StartCommand(StartCommandArgs),
     CommandState(CommandStateArgs),
     CommandOutput(CommandOutputArgs),
@@ -640,13 +1592,37 @@ pub enum PublicToolCall {
     FilesWrite(FilesWriteArgs),
     FilesMove(FilesMoveArgs),
     FilesRemove(FilesRemoveArgs),
+    TransferStart(StartTransferArgs),
+    TransferStatus(TransferHandleArgs),
+    TransferCancel(TransferHandleArgs),
+    WorkspaceMount(WorkspaceMountArgs),
+    WorkspaceTree(WorkspaceTreeArgs),
+    WorkspaceRead(WorkspaceReadArgs),
+    WorkspaceApplyEdits(WorkspaceApplyEditsArgs),
+    WorkspaceSearch(WorkspaceSearchArgs),
+    WorkspaceClose(WorkspaceCloseArgs),
 }
 
 impl PublicToolCall {
     pub fn tool_name(&self) -> &'static str {
         match self {
+            Self::RequestAccess(_) => "mcp_request_access",
+            Self::RevokeAccess(_) => "mcp_revoke_access",
+            Self::OperationState(_) => "mcp_operation",
+            Self::CancelOperation(_) => "mcp_cancel_operation",
+            Self::Revert(_) => "mcp_revert",
             Self::BrowseConnections(_) => "connections_browse",
             Self::DescribeConnection(_) => "connections_describe",
+            Self::SaveConnection(_) => "connections_save",
+            Self::RemoveConnection(_) => "connections_remove",
+            Self::CredentialStatus(_) => "credentials_status",
+            Self::StoreCredential(_) => "credentials_store",
+            Self::ForgetCredential(_) => "credentials_forget",
+            Self::SyncStatus(_) => "sync_status",
+            Self::SyncPullPreview(_) => "sync_pull_preview",
+            Self::SyncPublishPreview(_) => "sync_publish_preview",
+            Self::SyncApplyPlan(_) => "sync_apply_plan",
+            Self::SyncRestore(_) => "sync_restore",
             Self::ConnectNode(_) => "nodes_connect",
             Self::InspectNode(_) => "nodes_inspect",
             Self::ReleaseNode(_) => "nodes_release",
@@ -659,6 +1635,19 @@ impl PublicToolCall {
             Self::ResizeTerminal(_) => "terminals_resize",
             Self::ControlTerminal(_) => "terminals_control",
             Self::CloseTerminal(_) => "terminals_close",
+            Self::RecordingsControl(_) => "recordings_control",
+            Self::RecordingsStatus(_) => "recordings_status",
+            Self::RecordingsSearch(_) => "recordings_search",
+            Self::RecordingsExport(_) => "recordings_export",
+            Self::OpenDesktop(_) => "desktops_open",
+            Self::DesktopState(_) => "desktops_state",
+            Self::DesktopFrame(_) => "desktops_frame",
+            Self::DesktopInput(_) => "desktops_input",
+            Self::ResizeDesktop(_) => "desktops_resize",
+            Self::ReadDesktopClipboard(_) => "desktops_clipboard_read",
+            Self::WriteDesktopClipboard(_) => "desktops_clipboard_write",
+            Self::ReconnectDesktop(_) => "desktops_reconnect",
+            Self::CloseDesktop(_) => "desktops_close",
             Self::StartCommand(_) => "commands_start",
             Self::CommandState(_) => "commands_state",
             Self::CommandOutput(_) => "commands_output",
@@ -695,13 +1684,36 @@ impl PublicToolCall {
             Self::FilesWrite(_) => "files_write",
             Self::FilesMove(_) => "files_move",
             Self::FilesRemove(_) => "files_remove",
+            Self::TransferStart(_) => "transfers_start",
+            Self::TransferStatus(_) => "transfers_status",
+            Self::TransferCancel(_) => "transfers_cancel",
+            Self::WorkspaceMount(_) => "workspaces_mount",
+            Self::WorkspaceTree(_) => "workspaces_tree",
+            Self::WorkspaceRead(_) => "workspaces_read",
+            Self::WorkspaceApplyEdits(_) => "workspaces_apply_edits",
+            Self::WorkspaceSearch(_) => "workspaces_search",
+            Self::WorkspaceClose(_) => "workspaces_close",
         }
     }
 
     pub fn required_group(&self) -> ToolGroup {
         match self {
+            Self::RequestAccess(_)
+            | Self::RevokeAccess(_)
+            | Self::OperationState(_)
+            | Self::CancelOperation(_)
+            | Self::Revert(_) => ToolGroup::Basic,
             Self::BrowseConnections(_) => ToolGroup::ConnectionDirectory,
             Self::DescribeConnection(_) => ToolGroup::ConnectionRead,
+            Self::SaveConnection(_) | Self::RemoveConnection(_) => ToolGroup::ConnectionManage,
+            Self::CredentialStatus(_) | Self::StoreCredential(_) | Self::ForgetCredential(_) => {
+                ToolGroup::CredentialManage
+            }
+            Self::SyncStatus(_)
+            | Self::SyncPullPreview(_)
+            | Self::SyncPublishPreview(_)
+            | Self::SyncApplyPlan(_)
+            | Self::SyncRestore(_) => ToolGroup::CloudSync,
             Self::ConnectNode(_)
             | Self::InspectNode(_)
             | Self::ReleaseNode(_)
@@ -713,6 +1725,16 @@ impl PublicToolCall {
                 ToolGroup::TerminalObserve
             }
             Self::SubmitTerminal(_) | Self::ControlTerminal(_) => ToolGroup::TerminalInput,
+            Self::RecordingsControl(_) | Self::RecordingsStatus(_) => ToolGroup::RecordingControl,
+            Self::RecordingsSearch(_) | Self::RecordingsExport(_) => ToolGroup::RecordingContent,
+            Self::OpenDesktop(_) | Self::ReconnectDesktop(_) | Self::CloseDesktop(_) => {
+                ToolGroup::DesktopSession
+            }
+            Self::DesktopState(_) | Self::DesktopFrame(_) => ToolGroup::DesktopObserve,
+            Self::DesktopInput(_) | Self::ResizeDesktop(_) => ToolGroup::DesktopInput,
+            Self::ReadDesktopClipboard(_) | Self::WriteDesktopClipboard(_) => {
+                ToolGroup::DesktopClipboard
+            }
             Self::StartCommand(_) | Self::CancelCommand(_) => ToolGroup::CommandExecute,
             Self::CommandState(_) | Self::CommandOutput(_) => ToolGroup::CommandObserve,
             Self::StageArtifact(_) | Self::ReadArtifact(_) => ToolGroup::ArtifactTransfer,
@@ -744,17 +1766,67 @@ impl PublicToolCall {
             | Self::FilesRead(_)
             | Self::FilesCompare(_) => ToolGroup::FileRead,
             Self::FilesWrite(_) | Self::FilesMove(_) | Self::FilesRemove(_) => ToolGroup::FileWrite,
+            Self::TransferStart(_) | Self::TransferStatus(_) | Self::TransferCancel(_) => {
+                ToolGroup::ArtifactTransfer
+            }
+            Self::WorkspaceMount(_)
+            | Self::WorkspaceTree(_)
+            | Self::WorkspaceRead(_)
+            | Self::WorkspaceSearch(_)
+            | Self::WorkspaceClose(_) => ToolGroup::WorkspaceRead,
+            Self::WorkspaceApplyEdits(_) => ToolGroup::WorkspaceEdit,
+        }
+    }
+
+    pub fn additional_required_groups(&self) -> &'static [ToolGroup] {
+        match self {
+            Self::RecordingsExport(_)
+            | Self::DesktopFrame(_)
+            | Self::AddonsInstall(_)
+            | Self::FilesRead(_)
+            | Self::FilesCompare(_)
+            | Self::FilesWrite(_) => &[ToolGroup::ArtifactTransfer],
+            Self::ReadDesktopClipboard(args)
+                if matches!(args.kind, DesktopClipboardKind::Image) =>
+            {
+                &[ToolGroup::ArtifactTransfer]
+            }
+            Self::WriteDesktopClipboard(args)
+                if matches!(args.payload, DesktopClipboardPayload::Image { .. }) =>
+            {
+                &[ToolGroup::ArtifactTransfer]
+            }
+            Self::TransferStart(StartTransferArgs::Upload { .. }) => &[ToolGroup::FileWrite],
+            Self::TransferStart(StartTransferArgs::Download { .. }) => &[ToolGroup::FileRead],
+            Self::WorkspaceMount(_) => &[ToolGroup::FileRead],
+            Self::WorkspaceApplyEdits(_) => &[ToolGroup::FileWrite],
+            Self::Revert(_) => &[ToolGroup::CloudSync],
+            _ => &[],
         }
     }
 
     pub fn requires_approval(&self) -> bool {
         matches!(
             self,
-            Self::ConnectNode(_)
+            Self::RequestAccess(_)
+                | Self::Revert(_)
+                | Self::SaveConnection(_)
+                | Self::RemoveConnection(_)
+                | Self::StoreCredential(_)
+                | Self::ForgetCredential(_)
+                | Self::SyncApplyPlan(_)
+                | Self::SyncRestore(_)
+                | Self::ConnectNode(_)
                 | Self::DisconnectNode(_)
                 | Self::OpenTerminal(_)
                 | Self::SubmitTerminal(_)
                 | Self::ControlTerminal(_)
+                | Self::RecordingsControl(RecordingsControlArgs::Start { .. })
+                | Self::RecordingsExport(_)
+                | Self::OpenDesktop(_)
+                | Self::DesktopInput(_)
+                | Self::WriteDesktopClipboard(_)
+                | Self::ReconnectDesktop(_)
                 | Self::StartCommand(_)
                 | Self::HostToolsOperate(_)
                 | Self::QuickCommandsSave(_)
@@ -771,13 +1843,66 @@ impl PublicToolCall {
                 | Self::FilesWrite(_)
                 | Self::FilesMove(_)
                 | Self::FilesRemove(_)
+                | Self::TransferStart(StartTransferArgs::Upload { .. })
+                | Self::WorkspaceApplyEdits(_)
         )
+    }
+
+    pub fn requires_explicit_app_approval(&self) -> bool {
+        matches!(self, Self::RequestAccess(_))
     }
 
     pub fn target_summary(&self) -> String {
         match self {
+            Self::RequestAccess(args) => {
+                let groups = args
+                    .groups
+                    .iter()
+                    .map(|group| group.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("enable tool groups: {groups}")
+            }
+            Self::RevokeAccess(args) => format!(
+                "disable tool groups: {}",
+                args.groups
+                    .iter()
+                    .map(|group| group.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::OperationState(args) => args.operation_ref.to_string(),
+            Self::CancelOperation(args) => args.operation_ref.to_string(),
+            Self::Revert(args) => args.undo_ref.to_string(),
             Self::BrowseConnections(_) => "connection directory".to_owned(),
             Self::DescribeConnection(args) => args.connection_ref.to_string(),
+            Self::SaveConnection(args) => args
+                .connection_ref
+                .as_ref()
+                .map_or_else(|| "new saved connection".to_owned(), ToString::to_string),
+            Self::RemoveConnection(args) => format!(
+                "{} remove forget_credentials={}",
+                args.connection_ref, args.forget_credentials
+            ),
+            Self::CredentialStatus(args) => args.connection_ref.to_string(),
+            Self::StoreCredential(args) => {
+                format!("{} {:?}", args.connection_ref, args.slot)
+            }
+            Self::ForgetCredential(args) => {
+                format!("{} {:?}", args.connection_ref, args.slot)
+            }
+            Self::SyncStatus(_) => "cloud sync state".to_owned(),
+            Self::SyncPullPreview(args) => format!(
+                "cloud sync pull preview sections={}",
+                sync_selection_summary(&args.selection)
+            ),
+            Self::SyncPublishPreview(args) => format!(
+                "cloud sync publish preview sections={} force={}",
+                sync_selection_summary(&args.selection),
+                args.force
+            ),
+            Self::SyncApplyPlan(args) => args.sync_plan_ref.to_string(),
+            Self::SyncRestore(args) => args.undo_ref.to_string(),
             Self::ConnectNode(args) => args.connection_ref.to_string(),
             Self::InspectNode(args) => args.node_ref.to_string(),
             Self::ReleaseNode(args) => args.node_ref.to_string(),
@@ -801,6 +1926,43 @@ impl PublicToolCall {
                 format!("{} {}x{}", args.terminal_ref, args.cols, args.rows)
             }
             Self::ControlTerminal(args) => format!("{} {:?}", args.terminal_ref, args.action),
+            Self::RecordingsControl(args) => match args {
+                RecordingsControlArgs::Start { terminal_ref, .. } => {
+                    format!("{terminal_ref} start recording")
+                }
+                RecordingsControlArgs::Pause { recording_ref } => {
+                    format!("{recording_ref} pause")
+                }
+                RecordingsControlArgs::Resume { recording_ref } => {
+                    format!("{recording_ref} resume")
+                }
+                RecordingsControlArgs::Stop { recording_ref } => {
+                    format!("{recording_ref} stop")
+                }
+            },
+            Self::RecordingsStatus(args) => match &args.target {
+                RecordingStatusTarget::Recording { recording_ref } => recording_ref.to_string(),
+                RecordingStatusTarget::Terminal { terminal_ref } => terminal_ref.to_string(),
+            },
+            Self::RecordingsSearch(args) => args.recording_ref.to_string(),
+            Self::RecordingsExport(args) => args.recording_ref.to_string(),
+            Self::OpenDesktop(args) => args.connection_ref.to_string(),
+            Self::DesktopState(args) | Self::ReconnectDesktop(args) | Self::CloseDesktop(args) => {
+                args.desktop_ref.to_string()
+            }
+            Self::DesktopFrame(args) => args.desktop_ref.to_string(),
+            Self::DesktopInput(args) => {
+                format!("{} {:?}", args.desktop_ref, args.event)
+            }
+            Self::ResizeDesktop(args) => {
+                format!("{} {}x{}", args.desktop_ref, args.width, args.height)
+            }
+            Self::ReadDesktopClipboard(args) => {
+                format!("{} {:?}", args.desktop_ref, args.kind)
+            }
+            Self::WriteDesktopClipboard(args) => {
+                format!("{} {:?}", args.desktop_ref, args.payload)
+            }
             Self::StartCommand(args) => args.node_ref.to_string(),
             Self::CommandState(args) => args.command_ref.to_string(),
             Self::CommandOutput(args) => args.command_ref.to_string(),
@@ -892,12 +2054,79 @@ impl PublicToolCall {
                 "{} {} recursive={}",
                 args.file_session_ref, args.path, args.recursive
             ),
+            Self::WorkspaceMount(args) => format!(
+                "{} root={}",
+                args.file_session_ref,
+                args.root.as_deref().unwrap_or(".")
+            ),
+            Self::WorkspaceTree(args) => format!(
+                "{} {}",
+                args.workspace_ref,
+                args.path.as_deref().unwrap_or(".")
+            ),
+            Self::WorkspaceRead(args) => format!("{} {}", args.workspace_ref, args.path),
+            Self::WorkspaceApplyEdits(args) => format!(
+                "{} {}",
+                args.workspace_ref,
+                args.files
+                    .iter()
+                    .map(|file| format!(
+                        "{} ({} edits, {} replacement bytes)",
+                        file.path,
+                        file.edits.len(),
+                        file.edits
+                            .iter()
+                            .map(|edit| edit.replacement.len())
+                            .sum::<usize>()
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::WorkspaceSearch(args) => {
+                format!("{} search {} bytes", args.workspace_ref, args.pattern.len())
+            }
+            Self::WorkspaceClose(args) => args.workspace_ref.to_string(),
+            Self::TransferStart(args) => match args {
+                StartTransferArgs::Upload {
+                    file_session_ref,
+                    remote_path,
+                    artifact_ref,
+                    overwrite,
+                    resume,
+                } => format!(
+                    "{file_session_ref} upload {artifact_ref} to {remote_path} overwrite={overwrite} resume={resume}"
+                ),
+                StartTransferArgs::Download {
+                    file_session_ref,
+                    remote_path,
+                    resume,
+                } => format!("{file_session_ref} download {remote_path} resume={resume}"),
+            },
+            Self::TransferStatus(args) | Self::TransferCancel(args) => {
+                args.transfer_ref.to_string()
+            }
         }
     }
 }
 
 const fn default_terminal_cols() -> u16 {
     80
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_ssh_port() -> u16 {
+    22
+}
+
+const fn default_telnet_port() -> u16 {
+    23
+}
+
+fn default_mosh_server() -> String {
+    "mosh-server".to_owned()
 }
 
 const fn default_terminal_rows() -> u16 {
@@ -910,6 +2139,14 @@ const fn default_terminal_line_limit() -> u32 {
 
 const fn default_terminal_match_limit() -> u32 {
     100
+}
+
+const fn default_recording_search_limit() -> u32 {
+    50
+}
+
+const fn default_desktop_clipboard_kind() -> DesktopClipboardKind {
+    DesktopClipboardKind::Text
 }
 
 impl fmt::Debug for PublicToolCall {

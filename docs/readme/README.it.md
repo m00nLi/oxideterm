@@ -12,7 +12,7 @@
 
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.20-blue" alt="Versione">
+  <img src="https://img.shields.io/badge/version-2.0.21-blue" alt="Versione">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" alt="Piattaforma">
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="Licenza">
   <img src="https://img.shields.io/badge/rust-2024%20edition-orange" alt="Rust 2024">
@@ -210,7 +210,7 @@ I file remoti fanno parte dello stesso node spazio di lavoro, non di una funzion
 
 Estensioni e superfici di supporto seguono confini espliciti definiti in Rust:
 
-- I plugin supportano percorsi manifest-only, WASM e processi normali. WASM usa Wasmtime/WASI o un sidecar con chiamate host controllate; i plugin di processo sono processi locali senza sandbox del sistema operativo.
+- I plugin supportano percorsi manifest-only, WASM e processi normali. WASM usa il runtime Wasmtime/WASI integrato; i plugin di processo sono processi locali senza sandbox del sistema operativo.
 - La CLI linka direttamente crate di dominio per doctor, settings, connections, forwards, portable bundles, backups e reports
 - Diagnostica preferisce conteggi, percorsi, flag funzionali e indizi redatti rispetto a payload grezzi con segreti
 - I CLI flows mutanti usano dry-run plans, `--yes` guards e rollback backups quando applicabile

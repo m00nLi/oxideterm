@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use gpui::SharedString;
 use oxideterm_terminal::{TerminalCell, TerminalColor, TerminalSnapshot};
 
 #[derive(Clone, Debug)]
@@ -12,31 +13,39 @@ struct LinkText {
     boundaries: Vec<usize>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct TerminalLinkRange {
     pub(crate) row: usize,
     pub(crate) start_col: usize,
     pub(crate) end_col: usize,
-    pub(crate) target: String,
+    // Cached visible link ranges are rebuilt every frame, so targets must remain cheap to clone.
+    pub(crate) target: SharedString,
     pub(crate) kind: TerminalLinkKind,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum TerminalLinkKind {
     Url,
     Path,
 }
 
-pub(crate) fn link_ranges_contain(ranges: &[TerminalLinkRange], row: usize, col: usize) -> bool {
+pub(crate) fn link_should_be_styled(
+    ranges: &[TerminalLinkRange],
+    hovered: Option<&TerminalLinkRange>,
+    row: usize,
+    col: usize,
+) -> bool {
     ranges
         .iter()
-        .any(|range| range.row == row && col >= range.start_col && col < range.end_col)
+        .find(|range| range.row == row && col >= range.start_col && col < range.end_col)
+        .is_some_and(|range| range.kind == TerminalLinkKind::Url || hovered == Some(range))
 }
 
 pub(crate) fn is_link_stylable_cell(cell: &TerminalCell) -> bool {
     cell.bg == TerminalColor::rgb(0x0d, 0x0f, 0x12)
 }
 
+#[cfg(test)]
 pub(crate) fn display_link_ranges_with_path_detection(
     snapshot: &TerminalSnapshot,
     detect_file_paths: bool,
@@ -162,7 +171,7 @@ pub(crate) fn detect_osc8_ranges(
             row,
             start_col,
             end_col: col,
-            target: uri.to_string(),
+            target: uri.into(),
             kind: terminal_link_kind_for_target(uri),
         });
     }
@@ -214,7 +223,7 @@ fn detect_url_ranges(
                 row,
                 start_col,
                 end_col,
-                target: chars[start..end].iter().collect(),
+                target: chars[start..end].iter().collect::<String>().into(),
                 kind: TerminalLinkKind::Url,
             });
         }
@@ -256,7 +265,7 @@ fn detect_path_ranges(
                 row,
                 start_col,
                 end_col,
-                target: token,
+                target: token.into(),
                 kind: TerminalLinkKind::Path,
             });
         }

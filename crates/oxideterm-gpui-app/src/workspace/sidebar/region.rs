@@ -4,6 +4,9 @@ pub(in crate::workspace) const SIDEBAR_RESIZE_HOTZONE_PADDING: f32 = 4.0;
 pub(in crate::workspace) const SIDEBAR_RESIZE_DIVIDER_WIDTH: f32 = 1.0;
 pub(in crate::workspace) const SIDEBAR_RESIZE_HOTZONE_WIDTH: f32 =
     SIDEBAR_RESIZE_DIVIDER_WIDTH + SIDEBAR_RESIZE_HOTZONE_PADDING * 2.0;
+const EMBEDDED_SFTP_SPLIT_HANDLE_SIZE: f32 = 7.0;
+const EMBEDDED_SFTP_SPLIT_LINE_SIZE: f32 = 1.0;
+const EMBEDDED_SFTP_SPLIT_HOVER_ALPHA: u32 = 0x1f;
 const ACTIVITY_TOOLBAR_BUTTON_SIZE: f32 = 28.0;
 const ACTIVITY_TOOLBAR_ICON_SIZE: f32 = 15.0;
 const ACTIVITY_TOOLBAR_GROUP_PADDING: f32 = 2.0;
@@ -62,6 +65,7 @@ pub(in crate::workspace) fn sidebar_resize_hotzone_origin(seam: f32) -> f32 {
 impl WorkspaceApp {
     pub(in crate::workspace) fn render_animated_sidebar_region(
         &mut self,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let expanded_width = self.sidebar_panel_width();
@@ -70,7 +74,7 @@ impl WorkspaceApp {
             .flex_none()
             .w(px(expanded_width))
             .h_full()
-            .child(self.render_sidebar_region(cx));
+            .child(self.render_sidebar_region(window, cx));
         oxideterm_gpui_ui::motion::horizontal_reveal(
             &self.tokens,
             "workspace-left-sidebar-motion",
@@ -102,13 +106,14 @@ impl WorkspaceApp {
 
     pub(in crate::workspace) fn render_sidebar_region(
         &mut self,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()
             .relative()
             .w(px(self.sidebar_panel_width()))
             .h_full()
-            .child(self.render_sidebar(cx))
+            .child(self.render_sidebar(window, cx))
             .into_any_element()
     }
 
@@ -355,7 +360,11 @@ impl WorkspaceApp {
         )
     }
 
-    pub(in crate::workspace) fn render_sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(in crate::workspace) fn render_sidebar(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = self.tokens.ui;
         div()
             .w_full()
@@ -375,7 +384,7 @@ impl WorkspaceApp {
                     // Keep the body on the lighter sidebar tint while the
                     // fixed header independently matches workspace chrome.
                     .bg(self.workspace_sidebar_background(theme.bg_panel))
-                    .child(self.render_sidebar_content(cx)),
+                    .child(self.render_sidebar_content(window, cx)),
             )
             .into_any_element()
     }
@@ -404,7 +413,6 @@ impl WorkspaceApp {
             })
             .flatten();
         let title_key = match panel_section {
-            SidebarSection::Sftp => "sidebar.panels.sftp",
             SidebarSection::Forwards => "forwards.table.title",
             SidebarSection::Extensions => "sidebar.panels.plugins",
             SidebarSection::CloudSync => "plugin.cloud_sync.panel_title",
@@ -524,11 +532,95 @@ impl WorkspaceApp {
 
     pub(in crate::workspace) fn render_sidebar_content(
         &mut self,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let panel_section = self.effective_sidebar_panel_section();
         if panel_section == SidebarSection::Sessions {
-            return self.render_active_sessions_sidebar_content(cx);
+            let sessions = self.render_active_sessions_sidebar_content(cx);
+            if self.embedded_sftp_node_id.is_none() {
+                return sessions;
+            }
+            let sftp = self.render_sftp_sidebar_surface(window, cx);
+            let session_fraction = self
+                .settings_store
+                .settings()
+                .sftp
+                .sidebar_session_fraction
+                .clamp(
+                    EMBEDDED_SFTP_MIN_SESSION_FRACTION,
+                    EMBEDDED_SFTP_MAX_SESSION_FRACTION,
+                );
+            let file_fraction = 1.0 - session_fraction;
+            let split_line_top =
+                (EMBEDDED_SFTP_SPLIT_HANDLE_SIZE - EMBEDDED_SFTP_SPLIT_LINE_SIZE) / 2.0;
+            let split_line_color = if self.embedded_sftp_sidebar_resizing {
+                rgb(self.tokens.ui.accent)
+            } else {
+                rgb(self.tokens.ui.border)
+            };
+            let split_hover_bg =
+                rgba((self.tokens.ui.accent << 8) | EMBEDDED_SFTP_SPLIT_HOVER_ALPHA);
+            // Embedded SFTP is a subordinate surface of Active Sessions. The
+            // upper navigator and lower file browser scroll independently,
+            // while the divider keeps them visually in one sidebar shell.
+            return div()
+                .flex_1()
+                .min_h(px(0.0))
+                .w_full()
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex_grow_0()
+                        .flex_shrink()
+                        .flex_basis(relative(session_fraction))
+                        .min_h(px(0.0))
+                        .flex()
+                        .flex_col()
+                        .overflow_hidden()
+                        .child(sessions),
+                )
+                .child(
+                    div()
+                        .id("embedded-sftp-sidebar-splitter")
+                        .flex_none()
+                        .relative()
+                        .h(px(EMBEDDED_SFTP_SPLIT_HANDLE_SIZE))
+                        .w_full()
+                        .cursor(CursorStyle::ResizeRow)
+                        .hover(move |handle| handle.bg(split_hover_bg))
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .top(px(split_line_top))
+                                .h(px(EMBEDDED_SFTP_SPLIT_LINE_SIZE))
+                                .bg(split_line_color),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                this.start_embedded_sftp_sidebar_resize(event, window, cx);
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            }),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_grow_0()
+                        .flex_shrink()
+                        .flex_basis(relative(file_fraction))
+                        .min_h(px(0.0))
+                        .flex()
+                        .flex_col()
+                        .overflow_hidden()
+                        .child(sftp),
+                )
+                .into_any_element();
         }
         if panel_section == SidebarSection::Extensions {
             return self.render_native_plugin_sidebar_content(cx);
@@ -536,10 +628,7 @@ impl WorkspaceApp {
         if panel_section == SidebarSection::CloudSync {
             return self.render_cloud_sync_sidebar_content(cx);
         }
-        if matches!(
-            panel_section,
-            SidebarSection::Sftp | SidebarSection::Forwards
-        ) {
+        if panel_section == SidebarSection::Forwards {
             // Tauri only persists these command-palette section keys here; it
             // does not reuse the Sessions empty state for their sidebar body.
             return self.render_blank_sidebar_content();

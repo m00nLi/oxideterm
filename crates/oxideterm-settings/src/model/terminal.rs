@@ -245,8 +245,20 @@ fn default_detect_file_paths_as_links() -> bool {
     true
 }
 
+fn default_terminal_semantic_coloring() -> bool {
+    true
+}
+
 fn default_confirm_before_closing_ssh() -> bool {
     true
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TerminalSemanticScheme {
+    #[default]
+    Balanced,
+    Conservative,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -316,7 +328,20 @@ pub struct TerminalSettings {
     #[serde(default)]
     pub background_scope: BackgroundScope,
     pub background_enabled_tabs: Vec<String>,
+    // Semantic coloring supplements only terminal cells without explicit ANSI styling.
+    #[serde(default = "default_terminal_semantic_coloring")]
+    pub semantic_coloring: bool,
+    #[serde(default)]
+    pub semantic_scheme: TerminalSemanticScheme,
+    #[serde(default)]
+    pub semantic_custom_scheme: Option<String>,
+    #[serde(default)]
+    pub custom_semantic_schemes: Vec<SemanticSchemeDocument>,
     pub highlight_rules: Vec<HighlightRule>,
+    #[serde(default)]
+    pub highlight_rule_sets: Vec<HighlightRuleSet>,
+    #[serde(default)]
+    pub default_highlight_rule_set: Option<String>,
     pub in_band_transfer: InBandTransferSettings,
     pub graphics: TerminalGraphicsSettings,
     pub unicode: TerminalUnicodeSettings,
@@ -329,6 +354,50 @@ pub struct TerminalSettings {
 pub const DEFAULT_TERMINAL_BACKGROUND_OPACITY: f64 = 0.15;
 pub const MIN_TERMINAL_BACKGROUND_OPACITY: f64 = 0.03;
 pub const MAX_TERMINAL_BACKGROUND_OPACITY: f64 = 1.0;
+pub const MAX_CUSTOM_SEMANTIC_SCHEMES: usize = 32;
+
+impl TerminalSettings {
+    pub fn active_custom_semantic_scheme(&self) -> Option<&SemanticSchemeDocument> {
+        let active_id = self.semantic_custom_scheme.as_deref()?;
+        self.custom_semantic_schemes
+            .iter()
+            .find(|scheme| scheme.id == active_id)
+    }
+
+    pub fn highlight_rule_set(&self, id: &str) -> Option<&HighlightRuleSet> {
+        self.highlight_rule_sets
+            .iter()
+            .find(|rule_set| rule_set.id == id)
+    }
+
+    pub fn effective_highlight_rules(&self) -> &[HighlightRule] {
+        self.default_highlight_rule_set
+            .as_deref()
+            .and_then(|id| self.highlight_rule_set(id))
+            .map(|rule_set| rule_set.rules.as_slice())
+            .unwrap_or(&self.highlight_rules)
+    }
+
+    pub fn effective_highlight_rules_mut(&mut self) -> &mut Vec<HighlightRule> {
+        let selected = self.default_highlight_rule_set.clone();
+        if let Some(id) = selected
+            && let Some(index) = self
+                .highlight_rule_sets
+                .iter()
+                .position(|rule_set| rule_set.id == id)
+        {
+            return &mut self.highlight_rule_sets[index].rules;
+        }
+        &mut self.highlight_rules
+    }
+
+    pub fn default_highlight_rule_set_name(&self) -> Option<&str> {
+        self.default_highlight_rule_set
+            .as_deref()
+            .and_then(|id| self.highlight_rule_set(id))
+            .map(|rule_set| rule_set.name.as_str())
+    }
+}
 
 impl Default for TerminalSettings {
     fn default() -> Self {
@@ -374,7 +443,13 @@ impl Default for TerminalSettings {
             background_fit: BackgroundFit::Cover,
             background_scope: BackgroundScope::Content,
             background_enabled_tabs: vec!["terminal".to_string(), "local_terminal".to_string()],
+            semantic_coloring: true,
+            semantic_scheme: TerminalSemanticScheme::default(),
+            semantic_custom_scheme: None,
+            custom_semantic_schemes: Vec::new(),
             highlight_rules: Vec::new(),
+            highlight_rule_sets: Vec::new(),
+            default_highlight_rule_set: None,
             in_band_transfer: InBandTransferSettings::default(),
             graphics: TerminalGraphicsSettings::default(),
             unicode: TerminalUnicodeSettings::default(),
@@ -427,7 +502,7 @@ mod tests {
 
     #[test]
     fn terminal_settings_restore_legacy_presentation_defaults() {
-        let defaults: [(&str, bool, fn(&TerminalSettings) -> bool); 5] = [
+        let defaults: [(&str, bool, fn(&TerminalSettings) -> bool); 6] = [
             ("smoothScroll", true, |settings| settings.smooth_scroll),
             ("highlightTabOnNewOutput", true, |settings| {
                 settings.highlight_tab_on_new_output
@@ -439,6 +514,9 @@ mod tests {
             ),
             ("fontLigatures", false, |settings| settings.font_ligatures),
             ("rightClickPaste", false, |settings| settings.right_click_paste),
+            ("semanticColoring", true, |settings| {
+                settings.semantic_coloring
+            }),
         ];
 
         for (field, expected, read) in defaults {
@@ -448,6 +526,63 @@ mod tests {
             let settings: TerminalSettings = serde_json::from_value(value).unwrap();
             assert_eq!(read(&settings), expected, "legacy {field} default");
         }
+    }
+
+    #[test]
+    fn terminal_semantic_scheme_defaults_and_serializes_stably() {
+        let mut value = serde_json::to_value(TerminalSettings::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("semanticScheme");
+
+        let legacy: TerminalSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(legacy.semantic_scheme, TerminalSemanticScheme::Balanced);
+
+        let mut conservative = TerminalSettings::default();
+        conservative.semantic_scheme = TerminalSemanticScheme::Conservative;
+        let value = serde_json::to_value(conservative).unwrap();
+        assert_eq!(value["semanticScheme"], serde_json::json!("conservative"));
+    }
+
+    #[test]
+    fn custom_semantic_schemes_round_trip_and_resolve_by_id() {
+        let mut scheme = oxideterm_terminal_semantic::built_in_scheme_document(
+            oxideterm_terminal_semantic::SemanticScheme::Balanced,
+        );
+        scheme.id = "custom:operations".to_string();
+        scheme.name = "Operations".to_string();
+
+        let mut settings = TerminalSettings::default();
+        settings.semantic_custom_scheme = Some(scheme.id.clone());
+        settings.custom_semantic_schemes.push(scheme.clone());
+        let value = serde_json::to_value(settings).unwrap();
+        let decoded: TerminalSettings = serde_json::from_value(value).unwrap();
+
+        assert_eq!(decoded.active_custom_semantic_scheme(), Some(&scheme));
+    }
+
+    #[test]
+    fn selected_highlight_rule_set_replaces_global_base_rules() {
+        let mut settings = TerminalSettings::default();
+        settings.highlight_rules.push(HighlightRule {
+            id: "base".to_string(),
+            ..HighlightRule::default()
+        });
+        settings.highlight_rule_sets.push(HighlightRuleSet {
+            id: "operations".to_string(),
+            name: "Operations".to_string(),
+            rules: vec![HighlightRule {
+                id: "override".to_string(),
+                ..HighlightRule::default()
+            }],
+        });
+
+        assert_eq!(settings.effective_highlight_rules()[0].id, "base");
+        settings.default_highlight_rule_set = Some("operations".to_string());
+        assert_eq!(settings.effective_highlight_rules()[0].id, "override");
+        settings.effective_highlight_rules_mut()[0].label = "edited".to_string();
+        assert_eq!(settings.highlight_rule_sets[0].rules[0].label, "edited");
     }
 
     #[test]

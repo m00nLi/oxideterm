@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::workspace::delivery;
+use oxideterm_remote_desktop::RemoteDesktopEndpoint;
 #[cfg(test)]
 use oxideterm_ssh::ConnectionPoolConfig;
 use oxideterm_ssh::{ReconnectForwardRuleSnapshot, SshConnectionRegistry};
@@ -16,6 +17,10 @@ use std::{
 };
 
 const FORWARDING_SESSION_SHUTTING_DOWN: &str = "workspace forwarding session is shutting down";
+// The reserved marker keeps session-owned desktop tunnels out of every user
+// forward surface while still allowing reconnect restoration to identify them.
+const REMOTE_DESKTOP_TUNNEL_DESCRIPTION_PREFIX: &str =
+    "__oxideterm_internal_remote_desktop_tunnel_v1__:";
 const WORKSPACE_SESSION_SERVICE_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,6 +77,11 @@ pub(in crate::workspace) struct PublicMcpForwardMutation {
 #[derive(Default)]
 struct ForwardingBindingState {
     consumers: HashMap<String, (String, ConnectionConsumer)>,
+}
+
+#[derive(Default)]
+struct RemoteDesktopTunnelState {
+    leases: HashMap<String, (NodeId, String)>,
 }
 
 impl ForwardingBindingState {
@@ -142,6 +152,7 @@ pub(in crate::workspace) struct ForwardingRuntimeService {
     node_router: NodeRouter,
     task_runtime: Arc<tokio::runtime::Runtime>,
     bindings: Arc<Mutex<ForwardingBindingState>>,
+    remote_desktop_tunnels: Arc<Mutex<RemoteDesktopTunnelState>>,
 }
 
 impl ForwardingRuntimeService {
@@ -157,6 +168,7 @@ impl ForwardingRuntimeService {
             node_router,
             task_runtime,
             bindings: Arc::new(Mutex::new(ForwardingBindingState::default())),
+            remote_desktop_tunnels: Arc::new(Mutex::new(RemoteDesktopTunnelState::default())),
         }
     }
 
@@ -250,8 +262,60 @@ impl ForwardingRuntimeService {
         &self,
         node_id: &NodeId,
     ) -> Vec<ForwardRule> {
+        let hidden_forward_ids = self.remote_desktop_tunnel_forward_ids();
         self.manager_for_node(node_id)
-            .map_or_else(Vec::new, |manager| manager.list_forwards())
+            .map_or_else(Vec::new, |manager| {
+                manager
+                    .list_forwards()
+                    .into_iter()
+                    .filter(|rule| {
+                        !hidden_forward_ids.contains(&rule.id)
+                            && Self::remote_desktop_tunnel_lease_id(rule).is_none()
+                    })
+                    .collect()
+            })
+    }
+
+    pub(in crate::workspace) async fn open_remote_desktop_tunnel(
+        &self,
+        lease_id: String,
+        node_id: &NodeId,
+        owner_connection_id: &str,
+        target_host: String,
+        target_port: u16,
+    ) -> Result<RemoteDesktopEndpoint, String> {
+        let manager = self
+            .owned_manager_for_node(node_id, Some(owner_connection_id))
+            .await?;
+        let mut rule = ForwardRule::local("127.0.0.1", 0, target_host, target_port);
+        rule.description = format!("{REMOTE_DESKTOP_TUNNEL_DESCRIPTION_PREFIX}{lease_id}");
+        let rule = manager
+            .create_forward_with_health_check(rule, true)
+            .await
+            .map_err(|error| error.to_string())?;
+        self.remote_desktop_tunnel_state()
+            .leases
+            .insert(lease_id, (node_id.clone(), rule.id.clone()));
+        Ok(RemoteDesktopEndpoint::new(
+            rule.bind_address,
+            rule.bind_port,
+        ))
+    }
+
+    pub(in crate::workspace) fn close_remote_desktop_tunnel(&self, lease_id: String) {
+        let Some((node_id, forward_id)) =
+            self.remote_desktop_tunnel_state().leases.remove(&lease_id)
+        else {
+            return;
+        };
+        let service = self.clone();
+        self.task_runtime.spawn(async move {
+            if let Some(manager) = service.manager_for_node(&node_id) {
+                // The remote desktop lease owns only this hidden listener; the
+                // forwarding service and NodeRouter continue owning SSH liveness.
+                let _ = manager.delete_forward(&forward_id).await;
+            }
+        });
     }
 
     pub(in crate::workspace) fn public_mcp_forward_is_persisted(&self, forward_id: &str) -> bool {
@@ -281,7 +345,7 @@ impl ForwardingRuntimeService {
         persist: bool,
     ) -> Result<PublicMcpForwardMutation, String> {
         let manager = self
-            .public_mcp_manager_for_node(node_id, owner_connection_id)
+            .owned_manager_for_node(node_id, owner_connection_id)
             .await?;
         let rule = manager
             .create_forward_with_health_check(rule, check_health)
@@ -310,7 +374,7 @@ impl ForwardingRuntimeService {
         persist: bool,
     ) -> Result<PublicMcpForwardMutation, String> {
         let manager = self
-            .public_mcp_manager_for_node(node_id, owner_connection_id)
+            .owned_manager_for_node(node_id, owner_connection_id)
             .await?;
         let original = manager
             .list_forwards()
@@ -371,7 +435,7 @@ impl ForwardingRuntimeService {
         owner_connection_id: Option<&str>,
         forward_id: &str,
     ) -> Result<ForwardRule, String> {
-        self.public_mcp_manager_for_node(node_id, owner_connection_id)
+        self.owned_manager_for_node(node_id, owner_connection_id)
             .await?
             .stop_forward(forward_id)
             .await
@@ -386,7 +450,7 @@ impl ForwardingRuntimeService {
         persist: bool,
     ) -> Result<PublicMcpForwardMutation, String> {
         let manager = self
-            .public_mcp_manager_for_node(node_id, owner_connection_id)
+            .owned_manager_for_node(node_id, owner_connection_id)
             .await?;
         let rule = manager
             .restart_forward(forward_id)
@@ -412,7 +476,7 @@ impl ForwardingRuntimeService {
         forward_id: &str,
         remove_saved: bool,
     ) -> Result<bool, String> {
-        self.public_mcp_manager_for_node(node_id, owner_connection_id)
+        self.owned_manager_for_node(node_id, owner_connection_id)
             .await?
             .delete_forward(forward_id)
             .await
@@ -439,7 +503,7 @@ impl ForwardingRuntimeService {
         node_id: &NodeId,
         owner_connection_id: Option<&str>,
     ) -> Result<PortDetectionSnapshot, String> {
-        self.public_mcp_manager_for_node(node_id, owner_connection_id)
+        self.owned_manager_for_node(node_id, owner_connection_id)
             .await?
             .scan_remote_ports()
             .await
@@ -465,7 +529,75 @@ impl ForwardingRuntimeService {
         }
     }
 
-    async fn public_mcp_manager_for_node(
+    pub(in crate::workspace) async fn public_mcp_restore_forward_after_revocation(
+        &self,
+        node_id: &NodeId,
+        owner_connection_id: Option<&str>,
+        original_rule: &ForwardRule,
+        revoked_rule: &ForwardRule,
+        created_by_client: bool,
+        persisted: bool,
+    ) -> bool {
+        let Some(manager) = self.manager_for_node(node_id) else {
+            return false;
+        };
+        let Some(current_rule) = manager
+            .list_forwards()
+            .into_iter()
+            .find(|rule| rule.id == original_rule.id)
+        else {
+            return false;
+        };
+        if created_by_client {
+            // Client-owned revocation may already have stopped the late rule.
+            let mut current_definition = current_rule.clone();
+            current_definition.status = revoked_rule.status.clone();
+            if current_definition != *revoked_rule {
+                return false;
+            }
+        } else if current_rule != *revoked_rule {
+            // Do not overwrite a newer UI or client edit that followed the revoked operation.
+            return false;
+        }
+        if created_by_client && !persisted {
+            return manager.delete_forward(&current_rule.id).await.is_ok();
+        }
+
+        if current_rule.status == ForwardStatus::Active
+            && manager.stop_forward(&current_rule.id).await.is_err()
+        {
+            return false;
+        }
+        let Ok(restored_stopped) =
+            manager.update_forward(&original_rule.id, forward_update_from_rule(original_rule))
+        else {
+            return false;
+        };
+        let restored_rule = if !created_by_client && original_rule.status == ForwardStatus::Active {
+            let Ok(restored_active) = manager.restart_forward(&original_rule.id).await else {
+                return false;
+            };
+            restored_active
+        } else {
+            restored_stopped
+        };
+
+        if persisted {
+            let restored_forward_id = restored_rule.id.clone();
+            return self
+                .registry
+                .sync_persisted_forward_rule(
+                    &restored_forward_id,
+                    &Self::session_id_for_node(node_id),
+                    owner_connection_id.map(ToOwned::to_owned),
+                    restored_rule,
+                )
+                .is_ok();
+        }
+        true
+    }
+
+    async fn owned_manager_for_node(
         &self,
         node_id: &NodeId,
         owner_connection_id: Option<&str>,
@@ -482,7 +614,15 @@ impl ForwardingRuntimeService {
         let Some(manager) = self.manager_for_node(node_id) else {
             return ForwardingRuntimeSnapshot::default();
         };
-        let rules = manager.list_forwards();
+        let hidden_forward_ids = self.remote_desktop_tunnel_forward_ids();
+        let rules = manager
+            .list_forwards()
+            .into_iter()
+            .filter(|rule| {
+                !hidden_forward_ids.contains(&rule.id)
+                    && Self::remote_desktop_tunnel_lease_id(rule).is_none()
+            })
+            .collect::<Vec<_>>();
         let stats_by_forward_id = rules
             .iter()
             .filter(|rule| matches!(rule.status, ForwardStatus::Active))
@@ -497,6 +637,45 @@ impl ForwardingRuntimeService {
             rules,
             stats_by_forward_id,
         }
+    }
+
+    fn remote_desktop_tunnel_state(&self) -> MutexGuard<'_, RemoteDesktopTunnelState> {
+        self.remote_desktop_tunnels
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn remote_desktop_tunnel_forward_ids(&self) -> HashSet<String> {
+        self.remote_desktop_tunnel_state()
+            .leases
+            .values()
+            .map(|(_, forward_id)| forward_id.clone())
+            .collect()
+    }
+
+    fn remote_desktop_tunnel_lease_id(rule: &ForwardRule) -> Option<&str> {
+        rule.description
+            .strip_prefix(REMOTE_DESKTOP_TUNNEL_DESCRIPTION_PREFIX)
+    }
+
+    fn remote_desktop_tunnel_lease_is_active(&self, lease_id: &str) -> bool {
+        self.remote_desktop_tunnel_state()
+            .leases
+            .contains_key(lease_id)
+    }
+
+    fn restore_remote_desktop_tunnel_binding(
+        &self,
+        lease_id: &str,
+        node_id: NodeId,
+        forward_id: String,
+    ) -> bool {
+        let mut state = self.remote_desktop_tunnel_state();
+        let Some(binding) = state.leases.get_mut(lease_id) else {
+            return false;
+        };
+        *binding = (node_id, forward_id);
+        true
     }
 
     pub(super) fn ignore_detected_port_for_node(&self, node_id: &NodeId, port: u16) {
@@ -667,6 +846,17 @@ impl ForwardingRuntimeService {
                     .map(|rule| forward_restore_key_for_rule(&rule))
                     .collect::<HashSet<_>>();
                 for snapshot_rule in entry.rules {
+                    let remote_desktop_lease_id = snapshot_rule
+                        .description
+                        .strip_prefix(REMOTE_DESKTOP_TUNNEL_DESCRIPTION_PREFIX)
+                        .map(ToOwned::to_owned);
+                    if remote_desktop_lease_id.as_deref().is_some_and(|lease_id| {
+                        !service.remote_desktop_tunnel_lease_is_active(lease_id)
+                    }) {
+                        // A closed desktop must not be resurrected by a node
+                        // reconnect that captured its listener moments earlier.
+                        continue;
+                    }
                     let key = forward_restore_key_for_snapshot_rule(&snapshot_rule);
                     for live_rule in manager.list_forwards() {
                         live_keys.insert(forward_restore_key_for_rule(&live_rule));
@@ -692,9 +882,16 @@ impl ForwardingRuntimeService {
                     match manager.create_forward_with_health_check(rule, true).await {
                         Ok(created) => {
                             live_keys.insert(forward_restore_key_for_rule(&created));
-                            restored += 1;
-                            created_forwards.push((session_id.clone(), created.id.clone()));
-                            if let Some(owner_connection_id) =
+                            if let Some(lease_id) = remote_desktop_lease_id {
+                                if !service.restore_remote_desktop_tunnel_binding(
+                                    &lease_id,
+                                    entry_node_id.clone(),
+                                    created.id.clone(),
+                                ) {
+                                    let _ = manager.delete_forward(&created.id).await;
+                                    continue;
+                                }
+                            } else if let Some(owner_connection_id) =
                                 owner_connection_ids.get(&entry.node_id).cloned().flatten()
                             {
                                 let created_id = created.id.clone();
@@ -702,9 +899,11 @@ impl ForwardingRuntimeService {
                                     &created_id,
                                     &session_id,
                                     Some(owner_connection_id),
-                                    created,
+                                    created.clone(),
                                 );
                             }
+                            restored += 1;
+                            created_forwards.push((session_id.clone(), created.id.clone()));
                         }
                         Err(error) => {
                             failures += 1;

@@ -76,6 +76,401 @@ impl SftpWorkspaceEntity {
 }
 
 impl WorkspaceApp {
+    pub(in crate::workspace) fn render_sftp_presentation_dialog(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        self.sftp_presentation_request.as_ref()?;
+        let theme = self.tokens.ui;
+        let choice = |preference, icon, title_key, description_key, cx: &mut Context<Self>| {
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_3()
+                .rounded(px(self.tokens.radii.lg))
+                .border_1()
+                .border_color(rgb(theme.border))
+                .cursor_pointer()
+                .hover(move |card| card.border_color(rgb(theme.accent)).bg(rgb(theme.bg_hover)))
+                .child(Self::render_lucide_icon(icon, 20.0, rgb(theme.accent)))
+                .child(
+                    div()
+                        .text_size(px(SFTP_TEXT_SM))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(rgb(theme.text))
+                        .child(self.i18n.t(title_key)),
+                )
+                .child(
+                    div()
+                        .text_size(px(SFTP_TEXT_XS))
+                        .text_color(rgb(theme.text_muted))
+                        .child(self.i18n.t(description_key)),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _event, _window, cx| {
+                        this.choose_sftp_presentation(preference, cx);
+                        cx.stop_propagation();
+                    }),
+                )
+        };
+        Some(
+            dismissible_dialog_backdrop()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.sftp_presentation_request = None;
+                        cx.stop_propagation();
+                        cx.notify();
+                    }),
+                )
+                .child(
+                    div()
+                        .w(px(520.0))
+                        .max_w(relative(0.9))
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .p_4()
+                        .rounded(px(self.tokens.radii.lg))
+                        .border_1()
+                        .border_color(rgb(theme.border))
+                        .bg(rgb(theme.bg_elevated))
+                        .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                            cx.stop_propagation();
+                        })
+                        .child(
+                            div()
+                                .text_size(px(18.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(rgb(theme.text))
+                                .child(self.i18n.t("sftp.presentation.title")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(SFTP_TEXT_SM))
+                                .text_color(rgb(theme.text_muted))
+                                .child(self.i18n.t("sftp.presentation.description")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .gap_3()
+                                .child(choice(
+                                    oxideterm_settings::SftpPresentationPreference::Tab,
+                                    LucideIcon::ExternalLink,
+                                    "sftp.presentation.tab",
+                                    "sftp.presentation.tab_description",
+                                    cx,
+                                ))
+                                .child(choice(
+                                    oxideterm_settings::SftpPresentationPreference::Sidebar,
+                                    LucideIcon::PanelLeft,
+                                    "sftp.presentation.sidebar",
+                                    "sftp.presentation.sidebar_description",
+                                    cx,
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(SFTP_TEXT_XS))
+                                .text_color(rgb(theme.text_muted))
+                                .child(self.i18n.t("sftp.presentation.remember_hint")),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    pub(in crate::workspace) fn render_sftp_sidebar_surface(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = self.tokens.ui;
+        let Some(node_id) = self.embedded_sftp_node_id.clone() else {
+            return div()
+                .flex_1()
+                .min_h(px(0.0))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .px_4()
+                .text_size(px(SFTP_TEXT_XS))
+                .text_color(rgb(theme.text_muted))
+                .child(Self::render_lucide_icon(
+                    LucideIcon::FolderOpen,
+                    28.0,
+                    rgb(theme.text_muted),
+                ))
+                .child(self.i18n.t("sftp.sidebar.no_session"))
+                .into_any_element();
+        };
+        if self
+            .active_tab(cx)
+            .is_some_and(|tab| tab.kind == TabKind::Sftp)
+        {
+            return div()
+                .flex_1()
+                .min_h(px(0.0))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .px_4()
+                .text_size(px(SFTP_TEXT_XS))
+                .text_color(rgb(theme.text_muted))
+                .child(self.i18n.t("sftp.sidebar.active_tab_notice"))
+                .into_any_element();
+        }
+        let context_menu_exit_delay = oxideterm_gpui_ui::motion::duration(
+            &self.tokens,
+            oxideterm_gpui_ui::motion::MotionDuration::Micro,
+        );
+        self.sftp_view.update(cx, |sftp, cx| {
+            sftp.schedule_context_menu_exit(context_menu_exit_delay, cx);
+        });
+        let snapshot = self.sftp_view.read(cx).surface_render_snapshot();
+        let dialog_open = snapshot.dialog_open;
+        let context_menu = snapshot.context_menu.clone();
+        let node_title = self
+            .ssh_nodes
+            .get(&node_id)
+            .map(|node| node.title.clone())
+            .unwrap_or_else(|| self.i18n.t("sftp.sidebar.remote_host"));
+        let path = if snapshot.remote.path.is_empty() {
+            "/".to_string()
+        } else {
+            snapshot.remote.path.clone()
+        };
+        let open_node_id = node_id.clone();
+        let close_node_id = node_id.clone();
+
+        let mut root = div()
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .border_b_1()
+                    .border_color(rgb(theme.border))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(SFTP_TEXT_XS))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(node_title),
+                            )
+                            .child(self.render_sftp_nav_button(
+                                SftpPane::Remote,
+                                "..",
+                                LucideIcon::ArrowUp,
+                                "sftp.toolbar.go_up",
+                                cx,
+                            ))
+                            .child(self.render_sftp_refresh_button(SftpPane::Remote, cx))
+                            .child(self.render_sftp_icon_button(
+                                LucideIcon::Upload,
+                                self.i18n.t("sftp.context.upload"),
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.browse_sftp_upload_files(cx);
+                                    cx.stop_propagation();
+                                }),
+                                cx.entity(),
+                            ))
+                            .child(self.render_sftp_icon_button(
+                                LucideIcon::MoreVertical,
+                                self.i18n.t("sftp.sidebar.actions"),
+                                cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                                    this.sftp_view.update(cx, |sftp, cx| {
+                                        let selected_file = sftp
+                                            .remote_last_selected
+                                            .as_ref()
+                                            .and_then(|name| {
+                                                sftp.remote_files
+                                                    .iter()
+                                                    .find(|file| &file.name == name)
+                                            })
+                                            .cloned();
+                                        sftp.open_context_menu(
+                                            SftpPane::Remote,
+                                            selected_file,
+                                            f32::from(event.position.x),
+                                            f32::from(event.position.y),
+                                            cx,
+                                        );
+                                    });
+                                    cx.stop_propagation();
+                                }),
+                                cx.entity(),
+                            ))
+                            .child(self.render_sftp_icon_button(
+                                LucideIcon::ExternalLink,
+                                self.i18n.t("sftp.sidebar.open_tab"),
+                                cx.listener(move |this, _event, _window, cx| {
+                                    let current_path = this.sftp_view.read(cx).remote_path.clone();
+                                    this.open_sftp_tab_surface(
+                                        open_node_id.clone(),
+                                        Some(current_path),
+                                        cx,
+                                    );
+                                    cx.stop_propagation();
+                                }),
+                                cx.entity(),
+                            ))
+                            // Dismissing the embedded surface leaves the node
+                            // and its other consumers connected.
+                            .child(self.render_sftp_icon_button(
+                                LucideIcon::X,
+                                self.i18n.t("sftp.preview.close"),
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.close_embedded_sftp_for_node(&close_node_id, cx);
+                                    cx.stop_propagation();
+                                }),
+                                cx.entity(),
+                            )),
+                    )
+                    .child(self.render_sftp_sidebar_path_bar(
+                        &path,
+                        &snapshot.remote.path_input,
+                        snapshot.remote.path_editing,
+                        snapshot.focused_input,
+                        cx,
+                    )),
+            )
+            .child(self.render_sftp_filter(
+                SftpPane::Remote,
+                &snapshot.remote.filter,
+                snapshot.focused_input,
+                false,
+                cx,
+            ))
+            .child(self.render_sftp_file_list(SftpPane::Remote, snapshot.remote.loading, false, cx))
+            .when_some(
+                self.render_sftp_sidebar_transfer_queue(&node_id, cx),
+                |surface, queue| surface.child(queue),
+            );
+        if !dialog_open && let Some(menu) = context_menu {
+            // The menu is window-anchored so it can extend beyond the narrow
+            // sidebar without being clipped by the sidebar scroll region.
+            root = root.child(self.render_sftp_context_menu(menu, window, false, cx));
+        }
+        if !dialog_open
+            && snapshot.focused_input == Some(SftpInput::RemotePath)
+            && let Some(completion) =
+                self.render_path_completion_overlay(PathCompletionOwner::SftpRemote, cx)
+        {
+            root = root.child(completion);
+        }
+        root.into_any_element()
+    }
+
+    fn render_sftp_sidebar_path_bar(
+        &self,
+        path: &str,
+        path_input: &str,
+        editing: bool,
+        focused_input: Option<SftpInput>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = self.tokens.ui;
+        let focused = focused_input == Some(SftpInput::RemotePath);
+        let mut path_bar = div()
+            .id("sftp-sidebar-path-input")
+            .w_full()
+            .min_w(px(0.0))
+            .h(px(24.0))
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .rounded(px(self.tokens.radii.sm))
+            .border_1()
+            .border_color(if focused {
+                rgb(theme.accent)
+            } else {
+                rgb(theme.border)
+            })
+            .bg(rgb(theme.bg_sunken));
+
+        if editing {
+            // The sidebar uses one compact text field instead of the full breadcrumb row.
+            path_bar = path_bar
+                .child(self.render_sftp_inline_text(
+                    SftpInput::RemotePath,
+                    Some(SftpPane::Remote),
+                    path_input,
+                    "sftp.file_list.path_placeholder",
+                    focused,
+                    cx,
+                ))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(16.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(self.tokens.radii.sm))
+                        .cursor_pointer()
+                        .hover(move |button| button.bg(rgb(theme.bg_hover)))
+                        .child(Self::render_lucide_icon(
+                            LucideIcon::CornerDownLeft,
+                            SFTP_ICON_SM,
+                            rgb(theme.text),
+                        ))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.commit_sftp_path_input(SftpPane::Remote, cx);
+                                cx.stop_propagation();
+                            }),
+                        ),
+                );
+        } else {
+            path_bar = path_bar
+                .cursor(CursorStyle::IBeam)
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .text_size(px(SFTP_TEXT_10))
+                        .text_color(rgb(theme.text_muted))
+                        .child(path.to_string()),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _event, window, cx| {
+                        window.focus(&this.focus_handle, cx);
+                        this.start_sftp_path_edit(SftpPane::Remote, cx);
+                        cx.stop_propagation();
+                    }),
+                );
+        }
+
+        path_bar.into_any_element()
+    }
+
     pub(in crate::workspace) fn render_sftp_surface(
         &self,
         window: &mut Window,

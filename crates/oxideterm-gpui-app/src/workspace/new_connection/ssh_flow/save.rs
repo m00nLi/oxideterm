@@ -39,6 +39,11 @@ fn mosh_password_draft_is_persistent(form: &NewConnectionForm) -> bool {
     form.save_password || (form.mosh_profile_id.is_some() && !form.password.is_empty())
 }
 
+fn saved_profile_notes(notes: &str) -> Option<String> {
+    let notes = notes.trim();
+    (!notes.is_empty()).then(|| notes.to_string())
+}
+
 fn saved_mosh_auth_from_form(form: &mut NewConnectionForm) -> SavedAuth {
     match form.auth_tab {
         SshAuthTab::Password => {
@@ -857,6 +862,7 @@ impl WorkspaceApp {
                     id: editing_profile_id,
                     name: serial_profile_name_or_port(&form.serial_profile_name, &port_path),
                     group: serial_profile_group_from_form(&form.group, &this.i18n),
+                    notes: saved_profile_notes(&form.notes),
                     icon: asset_icon_from_form(&form.icon),
                     color: asset_color_from_form(&form.color),
                     icon_background_color: asset_color_from_form(&form.icon_background_color),
@@ -988,16 +994,17 @@ impl WorkspaceApp {
                     id: editing_profile_id,
                     name: telnet_profile_name_or_endpoint(&form.telnet_profile_name, &host, port),
                     group: serial_profile_group_from_form(&form.group, &this.i18n),
+                    notes: saved_profile_notes(&form.notes),
                     icon: asset_icon_from_form(&form.icon),
                     color: asset_color_from_form(&form.color),
                     icon_background_color: asset_color_from_form(&form.icon_background_color),
                     host: host.clone(),
                     port,
-                    terminal: form.terminal,
+                    terminal: form.terminal.clone(),
                     connect_on_open: existing_connect_on_open,
                 });
                 let config = TelnetSessionConfig { host, port };
-                let terminal_options = form.terminal;
+                let terminal_options = form.terminal.clone();
                 form.pending = true;
                 form.error = None;
                 Some((config, terminal_options, save_request))
@@ -1030,12 +1037,16 @@ impl WorkspaceApp {
             return;
         }
 
+        let mut connected_profile_id = None;
         if action == NewConnectionSubmitAction::SaveAndConnect {
             let request = save_request
                 .take()
                 .expect("telnet save-and-open action must build a telnet profile request");
             match self.connection_store.upsert_telnet_profile(request) {
-                Ok(_) => self.queue_cloud_sync_dirty_refresh(cx),
+                Ok(profile) => {
+                    connected_profile_id = Some(profile.id);
+                    self.queue_cloud_sync_dirty_refresh(cx);
+                }
                 Err(error) => {
                     self.update_connection_form_state(cx, |state| {
                         if let Some(form) = state.form.as_mut() {
@@ -1055,10 +1066,13 @@ impl WorkspaceApp {
         // Telnet is opened as a native local terminal transport. It does not
         // create an SSH node, so SSH-only saved-connection/test flows stay out.
         match self.create_telnet_terminal_tab(config, terminal_options, window, cx) {
-            Ok(_) => {
+            Ok(session_id) => {
                 if let Some(request) = save_request {
                     match self.connection_store.upsert_telnet_profile(request) {
-                        Ok(_) => self.queue_cloud_sync_dirty_refresh(cx),
+                        Ok(profile) => {
+                            connected_profile_id = Some(profile.id);
+                            self.queue_cloud_sync_dirty_refresh(cx);
+                        }
                         Err(error) => {
                             let message = format!(
                                 "{}: {error}",
@@ -1069,6 +1083,10 @@ impl WorkspaceApp {
                             });
                         }
                     }
+                }
+                if let Some(profile_id) = connected_profile_id {
+                    self.telnet_terminal_profile_ids
+                        .insert(session_id, profile_id);
                 }
                 self.update_connection_form_state(cx, ConnectionFormState::clear);
             }
@@ -1192,6 +1210,7 @@ impl WorkspaceApp {
                 id: form.mosh_profile_id.clone(),
                 name: title,
                 group: serial_profile_group_from_form(&form.group, &this.i18n),
+                notes: saved_profile_notes(&form.notes),
                 icon: asset_icon_from_form(&form.icon),
                 color: asset_color_from_form(&form.color),
                 icon_background_color: asset_color_from_form(&form.icon_background_color),
@@ -1291,8 +1310,8 @@ impl WorkspaceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((mut profile, save_request, mut runtime_password)) = self
-            .with_connection_form_mut(cx, |this, form, cx| {
+        let Some((mut profile, save_request, mut runtime_password, ssh_gateway_connection_id)) =
+            self.with_connection_form_mut(cx, |this, form, cx| {
                 let form = form?;
                 let Some(protocol) = remote_desktop_protocol_for_transport(form.transport) else {
                     return None;
@@ -1328,6 +1347,18 @@ impl WorkspaceApp {
                     cx.notify();
                     return None;
                 }
+                if form
+                    .remote_desktop_ssh_gateway_connection_id
+                    .as_deref()
+                    .is_some_and(|connection_id| this.connection_store.get(connection_id).is_none())
+                {
+                    form.error = Some(
+                        this.i18n
+                            .t("modals.new_connection.remote_desktop_ssh_gateway_missing"),
+                    );
+                    cx.notify();
+                    return None;
+                }
                 let editing_profile_id = form.remote_desktop_profile_id.clone();
                 let existing_profile = editing_profile_id
                     .as_deref()
@@ -1357,6 +1388,8 @@ impl WorkspaceApp {
                     None
                 };
                 let save_credential = form.save_password;
+                let ssh_gateway_connection_id =
+                    form.remote_desktop_ssh_gateway_connection_id.clone();
                 let should_save =
                     editing_profile_id.is_some() || action != NewConnectionSubmitAction::Connect;
                 let clear_credential =
@@ -1377,6 +1410,7 @@ impl WorkspaceApp {
                     id: editing_profile_id,
                     name: label.clone(),
                     group: serial_profile_group_from_form(&form.group, &this.i18n),
+                    notes: saved_profile_notes(&form.notes),
                     icon: asset_icon_from_form(&form.icon),
                     color: asset_color_from_form(&form.color),
                     icon_background_color: asset_color_from_form(&form.icon_background_color),
@@ -1385,6 +1419,9 @@ impl WorkspaceApp {
                     port,
                     username: username.clone(),
                     domain: domain.clone(),
+                    ssh_gateway_connection_id: form
+                        .remote_desktop_ssh_gateway_connection_id
+                        .clone(),
                     credential_ref: None,
                     credential: credential_to_save,
                     clear_credential,
@@ -1396,6 +1433,7 @@ impl WorkspaceApp {
                     label,
                     protocol,
                     endpoint: RemoteDesktopEndpoint::new(host, port),
+                    transport_endpoint: None,
                     username,
                     domain,
                     credential_ref: None,
@@ -1406,7 +1444,12 @@ impl WorkspaceApp {
                 };
                 form.pending = true;
                 form.error = None;
-                Some((profile, save_request, runtime_password))
+                Some((
+                    profile,
+                    save_request,
+                    runtime_password,
+                    ssh_gateway_connection_id,
+                ))
             })
         else {
             return;
@@ -1464,7 +1507,13 @@ impl WorkspaceApp {
         if action != NewConnectionSubmitAction::Save {
             let runtime_password =
                 runtime_password.map(|secret| RemoteDesktopSecret::from(secret.into_zeroizing()));
-            self.open_remote_desktop_connection_tab(profile, runtime_password, window, cx);
+            self.open_remote_desktop_connection_with_gateway(
+                profile,
+                runtime_password,
+                ssh_gateway_connection_id,
+                window,
+                cx,
+            );
         }
         cx.notify();
     }
@@ -1550,7 +1599,7 @@ impl WorkspaceApp {
         cx.notify();
     }
 
-    pub(in crate::workspace) fn open_saved_connection(
+    pub(crate) fn open_saved_connection(
         &mut self,
         id: &str,
         window: &mut Window,
@@ -1718,7 +1767,23 @@ impl WorkspaceApp {
         let Some((mut config, title)) = self.build_new_connection_config(secret_handoff, cx) else {
             return;
         };
+        if config.proxy_command.is_none()
+            && let Some(conn) = self.connection_store.get(&id)
+            && let Some(saved_config) = ssh_config_from_saved_connection_with_auth(
+                &self.connection_store,
+                self.settings_store.settings(),
+                conn,
+                Some(AuthMethod::Agent),
+            )
+            && saved_config.proxy_command.is_some()
+        {
+            // Imported ProxyCommand routing remains attached when only auth is supplied by a prompt.
+            config.proxy_command = saved_config.proxy_command;
+            config.proxy_chain = None;
+            config.upstream_proxy = None;
+        }
         if config.proxy_chain.is_none()
+            && config.proxy_command.is_none()
             && let Some(conn) = self.connection_store.get(&id)
             && let Some(proxy_chain) =
                 proxy_chain_config_from_saved_connection(&self.connection_store, conn)
@@ -1904,21 +1969,33 @@ impl WorkspaceApp {
         let source_auth = source_connection
             .as_ref()
             .map(|connection| connection.auth.clone());
-        let Some(save_request) = self.with_connection_form_mut(cx, |_this, form, _cx| {
+        let Some(save_request) = self.with_connection_form_mut(cx, |this, form, _cx| {
             let form = form?;
-            Some(
-                save_request_from_form_with_existing_auth(form, None, source_auth.as_ref()).map(
-                    |mut request| {
-                        if form.proxy_hops.is_empty()
-                            && let Some(connection) = source_connection.as_ref()
-                        {
-                            // Preserve the source chain when it was not expanded for editing.
-                            request.proxy_chain = connection.proxy_chain.clone();
-                        }
-                        request
-                    },
-                ),
-            )
+            Some((|| {
+                let mut request =
+                    save_request_from_form_with_existing_auth(form, None, source_auth.as_ref())?;
+                if form.proxy_hops.is_empty()
+                    && let Some(connection) = source_connection.as_ref()
+                {
+                    // Preserve the source chain when it was not expanded for editing.
+                    request.proxy_chain = connection.proxy_chain.clone();
+                }
+                if request.proxy_command.is_some()
+                    && let Some(source_command) = source_connection
+                        .as_ref()
+                        .and_then(|connection| connection.proxy_command.as_ref())
+                {
+                    // A duplicate receives a new protected-store owner instead of sharing an id.
+                    request.proxy_command = Some(SavedProxyCommand {
+                        keychain_id: None,
+                        plaintext_command: Some(
+                            this.connection_store
+                                .get_saved_proxy_command(source_command)?,
+                        ),
+                    });
+                }
+                Ok::<SaveConnectionRequest, anyhow::Error>(request)
+            })())
         }) else {
             return;
         };
@@ -2059,11 +2136,12 @@ impl WorkspaceApp {
         let worker_title = title;
         std::thread::spawn(move || {
             let status = match tokio::runtime::Runtime::new() {
-                Ok(runtime) => runtime.block_on(check_host_key_with_upstream_proxy(
+                Ok(runtime) => runtime.block_on(check_host_key_with_route(
                     &host,
                     port,
                     connect_timeout_seconds,
                     upstream_proxy.as_ref(),
+                    worker_config.proxy_command.as_ref(),
                 )),
                 Err(error) => HostKeyStatus::Error {
                     message: format!("failed to initialize SSH runtime: {error}"),

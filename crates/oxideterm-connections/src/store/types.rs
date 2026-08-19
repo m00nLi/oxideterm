@@ -135,7 +135,7 @@ pub enum ConnectionTerminalDeleteSequence {
     ControlH,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionTerminalOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -144,6 +144,10 @@ pub struct ConnectionTerminalOptions {
     pub backspace_sequence: Option<ConnectionTerminalBackspaceSequence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delete_sequence: Option<ConnectionTerminalDeleteSequence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_scheme: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight_rule_set: Option<String>,
 }
 
 impl ConnectionTerminalOptions {
@@ -151,6 +155,8 @@ impl ConnectionTerminalOptions {
         self.encoding.is_none()
             && self.backspace_sequence.is_none()
             && self.delete_sequence.is_none()
+            && self.semantic_scheme.is_none()
+            && self.highlight_rule_set.is_none()
     }
 }
 
@@ -324,6 +330,30 @@ impl Default for SavedUpstreamProxyPolicy {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SavedProxyCommand {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keychain_id: Option<String>,
+    #[serde(skip)]
+    pub plaintext_command: Option<SecretString>,
+}
+
+impl fmt::Debug for SavedProxyCommand {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SavedProxyCommand")
+            .field("keychain_id", &self.keychain_id)
+            .field(
+                "plaintext_command",
+                &self
+                    .plaintext_command
+                    .as_ref()
+                    .map(|_| "[redacted secret]"),
+            )
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PrivilegeCredentialKind {
@@ -399,6 +429,9 @@ pub struct SavedConnection {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// Free-form user metadata. UI copy warns against storing credentials here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
@@ -408,6 +441,9 @@ pub struct SavedConnection {
     pub proxy_chain: Vec<SavedProxyHop>,
     #[serde(default, skip_serializing_if = "SavedUpstreamProxyPolicy::is_use_global")]
     pub upstream_proxy: SavedUpstreamProxyPolicy,
+    /// Manual ProxyCommand text stays in the protected store; metadata keeps only its reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_command: Option<SavedProxyCommand>,
     #[serde(default)]
     pub options: ConnectionOptions,
     pub created_at: DateTime<Utc>,
@@ -466,6 +502,9 @@ pub struct ConnectionInfo {
     pub id: String,
     pub name: String,
     pub group: Option<String>,
+    /// Free-form user metadata. It is intentionally excluded from connection search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     pub host: String,
     pub port: u16,
     pub username: String,
@@ -574,6 +613,7 @@ impl From<&SavedConnection> for ConnectionInfo {
             id: conn.id.clone(),
             name: conn.name.clone(),
             group: conn.group.clone(),
+            notes: conn.notes.clone(),
             host: conn.host.clone(),
             port: conn.port,
             username: conn.username.clone(),
@@ -622,6 +662,9 @@ pub struct SerialProfile {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// Free-form user metadata. UI copy warns against storing credentials here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -647,6 +690,7 @@ pub struct SaveSerialProfileRequest {
     pub id: Option<String>,
     pub name: String,
     pub group: Option<String>,
+    pub notes: Option<String>,
     pub icon: Option<String>,
     pub color: Option<String>,
     pub icon_background_color: Option<String>,
@@ -665,6 +709,9 @@ pub struct TelnetProfile {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// Free-form user metadata. UI copy warns against storing credentials here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -691,6 +738,7 @@ pub struct SaveTelnetProfileRequest {
     pub id: Option<String>,
     pub name: String,
     pub group: Option<String>,
+    pub notes: Option<String>,
     pub icon: Option<String>,
     pub color: Option<String>,
     pub icon_background_color: Option<String>,
@@ -733,6 +781,9 @@ pub struct MoshProfile {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// Free-form user metadata. UI copy warns against storing credentials here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -775,6 +826,7 @@ pub struct SaveMoshProfileRequest {
     pub id: Option<String>,
     pub name: String,
     pub group: Option<String>,
+    pub notes: Option<String>,
     pub icon: Option<String>,
     pub color: Option<String>,
     pub icon_background_color: Option<String>,
@@ -812,6 +864,9 @@ pub struct RemoteDesktopProfile {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// Free-form user metadata. UI copy warns against storing credentials here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -825,6 +880,9 @@ pub struct RemoteDesktopProfile {
     pub username: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
+    /// Saved SSH connection used to reach this endpoint through a local tunnel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_gateway_connection_id: Option<String>,
     /// Stable protected-store reference; the credential value is never serialized here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_ref: Option<String>,
@@ -843,6 +901,7 @@ pub struct SaveRemoteDesktopProfileRequest {
     pub id: Option<String>,
     pub name: String,
     pub group: Option<String>,
+    pub notes: Option<String>,
     pub icon: Option<String>,
     pub color: Option<String>,
     pub icon_background_color: Option<String>,
@@ -851,6 +910,7 @@ pub struct SaveRemoteDesktopProfileRequest {
     pub port: u16,
     pub username: Option<String>,
     pub domain: Option<String>,
+    pub ssh_gateway_connection_id: Option<String>,
     /// An explicit reference is primarily used by trusted import and sync paths.
     pub credential_ref: Option<String>,
     /// The store moves this secret into the protected credential backend.
@@ -868,6 +928,7 @@ impl SerialProfile {
             id: Uuid::new_v4().to_string(),
             name: name.into(),
             group: None,
+            notes: None,
             icon: None,
             color: None,
             icon_background_color: None,
@@ -914,6 +975,7 @@ impl TelnetProfile {
             id: Uuid::new_v4().to_string(),
             name: name.into(),
             group: None,
+            notes: None,
             icon: None,
             color: None,
             icon_background_color: None,
@@ -954,6 +1016,7 @@ impl MoshProfile {
             id: Uuid::new_v4().to_string(),
             name: name.into(),
             group: None,
+            notes: None,
             icon: None,
             color: None,
             icon_background_color: None,
@@ -1027,6 +1090,7 @@ impl RemoteDesktopProfile {
             id: Uuid::new_v4().to_string(),
             name: name.into(),
             group: None,
+            notes: None,
             icon: None,
             color: None,
             icon_background_color: None,
@@ -1035,6 +1099,7 @@ impl RemoteDesktopProfile {
             port,
             username: None,
             domain: None,
+            ssh_gateway_connection_id: None,
             credential_ref: None,
             read_only: false,
             session_options: RemoteDesktopSessionOptions::default(),
@@ -1058,6 +1123,13 @@ impl RemoteDesktopProfile {
             bail!("Remote desktop port must be greater than zero");
         }
         if self
+            .ssh_gateway_connection_id
+            .as_deref()
+            .is_some_and(|connection_id| connection_id.trim().is_empty())
+        {
+            bail!("Remote desktop SSH gateway connection id cannot be empty");
+        }
+        if self
             .credential_ref
             .as_deref()
             .is_some_and(|reference| reference.trim().is_empty())
@@ -1077,12 +1149,14 @@ pub struct SaveConnectionRequest {
     pub id: Option<String>,
     pub name: String,
     pub group: Option<String>,
+    pub notes: Option<String>,
     pub host: String,
     pub port: u16,
     pub username: String,
     pub auth: SavedAuth,
     pub proxy_chain: Vec<SavedProxyHop>,
     pub upstream_proxy: SavedUpstreamProxyPolicy,
+    pub proxy_command: Option<SavedProxyCommand>,
     pub color: Option<String>,
     pub icon_background_color: Option<String>,
     pub icon: Option<String>,
@@ -1106,6 +1180,15 @@ pub struct SavedConnectionRuntimeSecrets {
     pub auth: Option<SecretString>,
     pub proxy_chain: Vec<Option<SecretString>>,
     pub upstream_proxy: Option<SecretString>,
+    pub proxy_command: Option<SecretString>,
+}
+
+/// Identifies one typed secret-bearing slot without exposing its protected-store key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectionCredentialSlot {
+    Primary,
+    ProxyHop { index: usize },
+    UpstreamProxy,
 }
 
 impl fmt::Debug for SavedConnectionRuntimeSecrets {
@@ -1125,6 +1208,13 @@ impl fmt::Debug for SavedConnectionRuntimeSecrets {
                 "upstream_proxy",
                 &self
                     .upstream_proxy
+                    .as_ref()
+                    .map(|_| "[redacted secret]"),
+            )
+            .field(
+                "proxy_command",
+                &self
+                    .proxy_command
                     .as_ref()
                     .map(|_| "[redacted secret]"),
             )
@@ -1189,6 +1279,15 @@ pub struct SerialProfilesSyncSnapshot {
     pub exported_at: String,
     #[serde(default)]
     pub records: Vec<SerialProfile>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelnetProfilesSyncSnapshot {
+    pub revision: String,
+    pub exported_at: String,
+    #[serde(default)]
+    pub records: Vec<TelnetProfile>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

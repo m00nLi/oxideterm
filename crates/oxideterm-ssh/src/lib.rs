@@ -46,7 +46,8 @@ pub use connection_trace::{
     parse_algorithm_negotiation_error, server_offers_legacy_cipher, server_only_offers_ssh_rsa,
 };
 pub use host_key::{
-    HostKeyStatus, check_host_key, check_host_key_with_upstream_proxy, remove_host_key,
+    HostKeyStatus, check_host_key, check_host_key_with_route, check_host_key_with_upstream_proxy,
+    remove_host_key,
 };
 pub use monitor::reconnectable_monitor_sampler;
 #[cfg(feature = "monitor-probe")]

@@ -8,6 +8,7 @@ use oxideterm_terminal::{
     TerminalSearchMatch, TerminalSnapshot,
 };
 
+use crate::command_facts::TransientCommandHighlight;
 use crate::terminal_ui::*;
 
 fn test_metrics() -> TerminalMetrics {
@@ -52,6 +53,7 @@ fn cursor_snapshot() -> TerminalSnapshot {
                 wide: false,
                 fg: TerminalColor::rgb(0xe6, 0xe8, 0xeb),
                 bg: TerminalColor::rgb(0x0d, 0x0f, 0x12),
+                style_origin: Default::default(),
                 attrs: Default::default(),
                 hyperlink: None,
                 cursor: true,
@@ -62,6 +64,7 @@ fn cursor_snapshot() -> TerminalSnapshot {
                 wide: false,
                 fg: TerminalColor::rgb(0xe6, 0xe8, 0xeb),
                 bg: TerminalColor::rgb(0x0d, 0x0f, 0x12),
+                style_origin: Default::default(),
                 attrs: Default::default(),
                 hyperlink: None,
                 cursor: false,
@@ -83,6 +86,7 @@ fn row_from_text(text: &str, cols: usize) -> oxideterm_terminal::TerminalRow {
             wide: false,
             fg: TerminalColor::rgb(0xe6, 0xe8, 0xeb),
             bg: TerminalColor::rgb(0x0d, 0x0f, 0x12),
+            style_origin: Default::default(),
             attrs: Default::default(),
             hyperlink: None,
             cursor: false,
@@ -95,6 +99,7 @@ fn row_from_text(text: &str, cols: usize) -> oxideterm_terminal::TerminalRow {
             wide: false,
             fg: TerminalColor::rgb(0xe6, 0xe8, 0xeb),
             bg: TerminalColor::rgb(0x0d, 0x0f, 0x12),
+            style_origin: Default::default(),
             attrs: Default::default(),
             hyperlink: None,
             cursor: false,
@@ -139,6 +144,7 @@ fn row_from_text_with_wide_spacers(text: &str) -> oxideterm_terminal::TerminalRo
             wide,
             fg: TerminalColor::rgb(0xe6, 0xe8, 0xeb),
             bg: TerminalColor::rgb(0x0d, 0x0f, 0x12),
+            style_origin: Default::default(),
             attrs: Default::default(),
             hyperlink: None,
             cursor: false,
@@ -150,6 +156,7 @@ fn row_from_text_with_wide_spacers(text: &str) -> oxideterm_terminal::TerminalRo
                 wide: false,
                 fg: TerminalColor::rgb(0xe6, 0xe8, 0xeb),
                 bg: TerminalColor::rgb(0x0d, 0x0f, 0x12),
+                style_origin: Default::default(),
                 attrs: Default::default(),
                 hyperlink: None,
                 cursor: false,

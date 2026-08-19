@@ -47,11 +47,14 @@ oxideterm settings diff ./settings-snapshot.json --section appearance
 ```sh
 oxideterm connections list
 oxideterm connections search prod --json
+oxideterm connections open prod
 oxideterm connections create --name prod --host example.internal --user deploy --port 22 --dry-run
 oxideterm connections rename prod production --yes
 oxideterm connections validate --strict
 oxideterm connections export --format raw-safe --json
 ```
+
+`connections open` resolves an exact saved SSH connection name or id, then opens it through the native application's normal saved-connection flow. The GUI remains responsible for loading credentials, proxy settings, and other connection options.
 
 For password or passphrase input, prefer `--password-stdin`, `--password-env`, `--passphrase-stdin`, or `--passphrase-env`. Do not pass secret values directly as shell arguments.
 
@@ -78,6 +81,30 @@ oxideterm cloud-sync secrets status --json
 ```
 
 Secret commands must only print hints or status. Use stdin or environment variables for secret writes.
+
+## External MCP stdio bridge
+
+When an external client supports stdio MCP only, first create a client under **Settings → Network & Proxy → External MCP Control** and copy its one-time credential. Configure the client command as:
+
+```sh
+OXIDETERM_MCP_TOKEN='<client credential>' oxideterm mcp bridge
+```
+
+CC Switch and similar clients that accept one MCP server object can use:
+
+```json
+{
+  "command": "oxideterm",
+  "args": ["mcp", "bridge"],
+  "env": {
+    "OXIDETERM_MCP_TOKEN": "<client credential>"
+  }
+}
+```
+
+For clients that require a top-level `mcpServers` object, place this object under `mcpServers.oxideterm`.
+
+The bridge discovers the running loopback endpoint from the active configuration directory. Add the same `--profile` or `--config-dir` used by the app when applicable. Set `OXIDETERM_MCP_ENDPOINT` or `--endpoint` only when automatic discovery is unavailable; the override must still be an HTTP `/mcp` URL on `localhost`, `127.0.0.1`, or `::1`. Store the credential in the external client's secret environment settings, never in command arguments, logs, or project files.
 
 ## Batch Plans
 

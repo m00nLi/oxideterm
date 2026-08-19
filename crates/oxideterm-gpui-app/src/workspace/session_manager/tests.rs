@@ -15,6 +15,7 @@ pub(super) fn connection_info_fixture(icon: Option<&str>) -> ConnectionInfo {
         id: "conn-1".to_string(),
         name: "Home".to_string(),
         group: Some("Ungrouped".to_string()),
+        notes: None,
         host: "192.168.1.2".to_string(),
         port: 22,
         username: "me".to_string(),
@@ -61,12 +62,14 @@ pub(super) fn saved_connection_fixture(auth: SavedAuth) -> SavedConnection {
         version: 1,
         name: "Home".to_string(),
         group: Some("Ungrouped".to_string()),
+        notes: None,
         host: "192.168.1.2".to_string(),
         port: 22,
         username: "me".to_string(),
         auth,
         proxy_chain: Vec::new(),
         upstream_proxy: SavedUpstreamProxyPolicy::UseGlobal,
+        proxy_command: None,
         options: oxideterm_connections::ConnectionOptions::default(),
         created_at: now,
         last_used_at: None,
@@ -324,6 +327,7 @@ pub(super) fn saved_profile_selection_is_typed_separately_from_ssh_ids() {
         id: "shared-id".to_string(),
         name: "Remote desktop".to_string(),
         group: None,
+        notes: None,
         icon: None,
         color: None,
         icon_background_color: None,
@@ -333,6 +337,7 @@ pub(super) fn saved_profile_selection_is_typed_separately_from_ssh_ids() {
         username: Some("operator".to_string()),
         domain: None,
         credential_ref: None,
+        ssh_gateway_connection_id: None,
         read_only: false,
         session_options: oxideterm_remote_desktop::RemoteDesktopSessionOptions::default(),
         created_at: now,
@@ -382,6 +387,27 @@ pub(super) fn save_request_from_form_preserves_custom_icon_and_independent_color
     assert_eq!(request.icon.as_deref(), Some("cloud"));
     assert_eq!(request.color.as_deref(), Some("#7dd3fc"));
     assert_eq!(request.icon_background_color.as_deref(), Some("#082f49"));
+}
+
+#[test]
+pub(super) fn save_request_moves_manual_proxy_command_into_a_redacted_secret_owner() {
+    let mut form = base_form();
+    form.proxy_command_enabled = true;
+    form.proxy_command = "helper --token proxy-command-secret".to_string();
+
+    let request = save_request_from_form(&mut form, None).unwrap();
+    let saved_command = request.proxy_command.unwrap();
+
+    assert!(form.proxy_command.is_empty());
+    assert_eq!(
+        saved_command
+            .plaintext_command
+            .as_ref()
+            .unwrap()
+            .expose_secret(),
+        "helper --token proxy-command-secret"
+    );
+    assert!(!format!("{saved_command:?}").contains("proxy-command-secret"));
 }
 
 #[test]
@@ -657,6 +683,8 @@ pub(super) fn edit_properties_round_trips_host_terminal_overrides() {
             oxideterm_connections::ConnectionTerminalBackspaceSequence::ControlH,
         ),
         delete_sequence: Some(oxideterm_connections::ConnectionTerminalDeleteSequence::Delete),
+        semantic_scheme: Some("conservative".to_string()),
+        highlight_rule_set: Some("network-devices".to_string()),
     };
 
     let mut form = form_from_saved_connection(&saved_connection, None);

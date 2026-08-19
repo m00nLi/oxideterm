@@ -353,6 +353,7 @@ fn client_loop_prioritizes_queued_close_over_pending_output_error() {
     request_tx.send(RemoteDesktopHelperRequest::Close).unwrap();
     let mut config = RdpWorkerConfig {
         endpoint: RemoteDesktopEndpoint::new("example.test", 3389),
+        transport_endpoint: None,
         size: RemoteDesktopSize {
             width: 1280,
             height: 720,
@@ -631,8 +632,9 @@ fn lock_key_sync_request_emits_fastpath_sync_event() {
 
 #[test]
 fn client_config_withholds_credentials_until_certificate_acceptance() {
-    let config = RdpWorkerConfig {
+    let mut config = RdpWorkerConfig {
         endpoint: RemoteDesktopEndpoint::new("example.test", 3389),
+        transport_endpoint: Some(RemoteDesktopEndpoint::new("127.0.0.1", 43891)),
         size: RemoteDesktopSize {
             width: 1280,
             height: 720,
@@ -648,6 +650,8 @@ fn client_config_withholds_credentials_until_certificate_acceptance() {
 
     assert_eq!(client_config.destination.host(), "example.test");
     assert_eq!(client_config.destination.port(), 3389);
+    assert_eq!(client_config.transport_destination.host(), "127.0.0.1");
+    assert_eq!(client_config.transport_destination.port(), 43891);
     assert!(client_config.connector.enable_tls);
     assert!(client_config.connector.enable_credssp);
     assert!(!client_config.connector.autologon);
@@ -664,12 +668,17 @@ fn client_config_withholds_credentials_until_certificate_acceptance() {
     assert!(bitmap.lossy_compression);
     assert_eq!(bitmap.color_depth, 32);
     assert_eq!(rdp_bitmap_codec_labels(&bitmap.codecs), "remotefx");
+
+    config.session_options.rdp.disable_graphics_pipeline = true;
+    let compatibility_config = build_client_rdp_config(&config).unwrap();
+    assert!(!compatibility_config.connector.support_dyn_vc_gfx_protocol);
 }
 
 #[test]
 fn client_config_adjusts_initial_display_size_for_rdp() {
     let config = RdpWorkerConfig {
         endpoint: RemoteDesktopEndpoint::new("example.test", 3389),
+        transport_endpoint: None,
         size: RemoteDesktopSize {
             width: 1601,
             height: 899,
@@ -751,6 +760,7 @@ fn resize_request_enters_client_loop_with_normalized_rdp_size() {
 fn reconnect_state_remembers_latest_resize() {
     let mut config = RdpWorkerConfig {
         endpoint: RemoteDesktopEndpoint::new("example.test", 3389),
+        transport_endpoint: None,
         size: RemoteDesktopSize {
             width: 1280,
             height: 720,

@@ -246,6 +246,7 @@ pub fn initial_connect_request(
     RemoteDesktopHelperRequest::StartConnect {
         protocol: profile.protocol,
         endpoint: profile.endpoint.clone(),
+        transport_endpoint: profile.transport_endpoint.clone(),
         password_available,
         size: RemoteDesktopSize::clamped(initial_size.width, initial_size.height),
         scale_factor,
@@ -273,6 +274,8 @@ pub fn effective_session_options(
         display: crate::RemoteDesktopDisplayOptions {
             use_all_monitors: requested.display.use_all_monitors && capabilities.multi_monitor,
         },
+        // RDP compatibility is a connection policy, not a negotiated provider capability.
+        rdp: requested.rdp,
         // VNC connection preferences are policy inputs, not negotiated provider capabilities.
         vnc: requested.vnc,
     }
@@ -434,6 +437,7 @@ mod tests {
                 "preview.local",
                 RemoteDesktopProtocol::Rdp,
             ),
+            transport_endpoint: None,
             username: None,
             domain: None,
             credential_ref: None,
@@ -522,6 +526,9 @@ mod tests {
             display: crate::RemoteDesktopDisplayOptions {
                 use_all_monitors: true,
             },
+            rdp: crate::RemoteDesktopRdpOptions {
+                disable_graphics_pipeline: true,
+            },
             vnc: crate::RemoteDesktopVncOptions::default(),
         };
 
@@ -533,6 +540,7 @@ mod tests {
         assert!(effective.audio.playback);
         assert!(!effective.audio.capture);
         assert!(effective.display.use_all_monitors);
+        assert!(effective.rdp.disable_graphics_pipeline);
     }
 
     #[test]

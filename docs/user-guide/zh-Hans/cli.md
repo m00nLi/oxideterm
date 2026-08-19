@@ -47,11 +47,14 @@ oxideterm settings diff ./settings-snapshot.json --section appearance
 ```sh
 oxideterm connections list
 oxideterm connections search prod --json
+oxideterm connections open prod
 oxideterm connections create --name prod --host example.internal --user deploy --port 22 --dry-run
 oxideterm connections rename prod production --yes
 oxideterm connections validate --strict
 oxideterm connections export --format raw-safe --json
 ```
+
+`connections open` 会按完整名称或 ID 查找已保存的 SSH 连接，再通过原生应用既有的保存连接流程打开。凭据、代理设置和其他连接选项仍由 GUI 负责读取。
 
 密码或密钥口令输入优先使用 `--password-stdin`、`--password-env`、`--passphrase-stdin` 或 `--passphrase-env`。不要把凭据值直接写进 shell 参数。
 
@@ -78,6 +81,30 @@ oxideterm cloud-sync secrets status --json
 ```
 
 凭据命令只能输出提示或状态。写入凭据时使用标准输入或环境变量。
+
+## 外部 MCP stdio bridge
+
+外部客户端只支持 stdio MCP 时，先在 OxideTerm 的“设置 → 网络与代理 → 外部 MCP 控制”创建客户端并复制只显示一次的凭据，再把客户端命令配置为：
+
+```sh
+OXIDETERM_MCP_TOKEN='<客户端凭据>' oxideterm mcp bridge
+```
+
+CC Switch 等接受单个 MCP 服务对象的客户端可以使用：
+
+```json
+{
+  "command": "oxideterm",
+  "args": ["mcp", "bridge"],
+  "env": {
+    "OXIDETERM_MCP_TOKEN": "<客户端凭据>"
+  }
+}
+```
+
+需要顶层 `mcpServers` 的客户端则把该对象放到 `mcpServers.oxideterm` 下。
+
+bridge 会从当前配置目录发现正在运行的回环端点。使用命名 profile 时，客户端命令也要带相同的 `--profile`；自定义配置目录则带 `--config-dir`。只有自动发现不可用时才设置 `OXIDETERM_MCP_ENDPOINT` 或 `--endpoint`，且它必须是 `http://localhost.../mcp`、`127.0.0.1` 或 `::1`。凭据只能放在外部客户端的秘密环境设置中，不要放进命令参数、日志或项目文件。
 
 ## Batch Plans
 

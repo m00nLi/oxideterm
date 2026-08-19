@@ -114,6 +114,8 @@ pub struct OxideMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial_profiles_count: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telnet_profiles_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mosh_profiles_count: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_desktop_profiles_count: Option<usize>,
@@ -135,6 +137,8 @@ pub struct EncryptedPayload {
     pub quick_commands_json: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial_profiles_json: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telnet_profiles_json: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mosh_profiles_json: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -161,6 +165,10 @@ impl fmt::Debug for EncryptedPayload {
             .field(
                 "has_serial_profiles_json",
                 &self.serial_profiles_json.is_some(),
+            )
+            .field(
+                "has_telnet_profiles_json",
+                &self.telnet_profiles_json.is_some(),
             )
             .field("has_mosh_profiles_json", &self.mosh_profiles_json.is_some())
             .field(
@@ -210,8 +218,13 @@ impl fmt::Debug for EncryptedPortableSecret {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct EncryptedConnection {
+    /// Stable relation key used only inside the encrypted archive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_connection_id: Option<String>,
     pub name: String,
     pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     pub host: String,
     pub port: u16,
     pub username: String,
@@ -240,8 +253,14 @@ pub struct EncryptedConnection {
 impl fmt::Debug for EncryptedConnection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EncryptedConnection")
+            .field(
+                "has_source_connection_id",
+                &self.source_connection_id.is_some(),
+            )
             .field("name", &self.name)
             .field("group", &self.group)
+            // Notes are free-form and may contain operationally sensitive context.
+            .field("has_notes", &self.notes.is_some())
             .field("host", &self.host)
             .field("port", &self.port)
             .field("username", &self.username)

@@ -251,6 +251,7 @@ impl WorkspaceApp {
             self.active_ssh_node_id = Some(node_id.clone());
             self.expanded_ssh_nodes.insert(node_id.clone());
         }
+        self.activate_embedded_sftp_sidebar_if_visible(cx);
     }
 
     pub(in crate::workspace) fn focus_active_pane(&mut self, window: &mut Window, cx: &mut App) {
@@ -320,7 +321,7 @@ impl WorkspaceApp {
     pub(in crate::workspace) fn unregister_ssh_terminal_session(
         &mut self,
         session_id: TerminalSessionId,
-        cx: &mut App,
+        cx: &mut Context<Self>,
     ) {
         // This method is also the shared terminal-session close path for local
         // panes. Revoke only this session; NodeRouter remains the SSH owner.
@@ -357,6 +358,15 @@ impl WorkspaceApp {
         }
         if projection_changed {
             self.persist_session_tree_snapshot();
+        }
+        if let Some(node_id) = node_id
+            && self
+                .workspace_runtime
+                .read(cx)
+                .ssh_terminal_session_ids_for_node(&node_id)
+                .is_empty()
+        {
+            self.close_embedded_sftp_for_node(&node_id, cx);
         }
     }
 
@@ -500,6 +510,7 @@ impl WorkspaceApp {
                 "Connection closed".to_string(),
                 cx,
             );
+            self.close_embedded_sftp_for_node(affected_node_id, cx);
         }
         for affected_node_id in &nodes_to_disconnect {
             self.forwarding.update(cx, |forwarding, _cx| {
@@ -978,7 +989,9 @@ impl WorkspaceApp {
             root_pane.collect_session_ids(&mut session_ids);
         }
         for session_id in session_ids {
+            self.release_public_mcp_terminal_for_closed_session(session_id, cx);
             self.serial_terminal_configs.remove(&session_id);
+            self.telnet_terminal_profile_ids.remove(&session_id);
             self.unregister_ssh_terminal_session(session_id, cx);
         }
         for pane_id in pane_ids {

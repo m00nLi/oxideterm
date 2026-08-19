@@ -6,7 +6,7 @@ use gpui::{
     TextRun, Timer, UTF16Selection, Window, font, point, px, rgb,
 };
 use oxideterm_editor_core::utf16::{
-    control_k_delete_end, floor_char_boundary, line_end_for_utf16_offset,
+    byte_index_for_utf16, control_k_delete_end, floor_char_boundary, line_end_for_utf16_offset,
     line_range_for_utf16_offset, line_ranges_utf16, line_start_for_utf16_offset,
     next_utf16_boundary, next_word_boundary, previous_utf16_boundary, previous_word_boundary,
     replace_utf16, transpose_text_at_utf16_offset, utf16_offset_for_byte_index,
@@ -20,7 +20,10 @@ use super::file_manager::FileManagerInput;
 use super::forwards::ForwardInput;
 use super::graphics::GraphicsInput;
 use super::launcher::LauncherInput;
-use super::new_connection::{NewConnectionField, refresh_identity_agent_availability};
+use super::new_connection::{
+    CONNECTION_NOTES_LINE_HEIGHT, CONNECTION_NOTES_VERTICAL_PADDING, NewConnectionField,
+    refresh_identity_agent_availability,
+};
 use super::quick_commands::QuickCommandInput;
 use super::session_manager::{SessionManagerInput, SessionManagerState};
 use super::sftp::SftpInput;
@@ -403,6 +406,17 @@ pub(super) struct WorkspaceImeSelection {
     reversed: bool,
 }
 
+impl WorkspaceImeSelection {
+    /// Returns the moving edge that a text viewport must keep visible.
+    fn active_offset(&self) -> usize {
+        if self.reversed {
+            self.range.start
+        } else {
+            self.range.end
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct WorkspaceImeDragSelection {
     target: WorkspaceImeTarget,
@@ -758,7 +772,7 @@ impl InputHandler for WorkspaceInputHandler {
 
     fn bounds_for_range(
         &mut self,
-        _range_utf16: Range<usize>,
+        range_utf16: Range<usize>,
         _window: &mut Window,
         cx: &mut App,
     ) -> Option<Bounds<Pixels>> {
@@ -768,6 +782,21 @@ impl InputHandler for WorkspaceInputHandler {
                 .text_input_anchors
                 .bounds(target.anchor_id())
                 .unwrap_or(self.fallback_bounds);
+            if let WorkspaceImeTarget::QuickCommand(input) = target {
+                let visible_text = view.ime_text_with_marked_text_for_target(target, cx)?;
+                let byte_index = byte_index_for_utf16(&visible_text, range_utf16.end);
+                let viewport = view.terminal.read(cx).quick_commands.input_viewport(input);
+                if let Some(position) = viewport.position_for_byte_index(byte_index) {
+                    // Keep the platform candidate window aligned with the scrolled caret.
+                    return Some(Bounds {
+                        origin: point(position.x, bounds.bottom()),
+                        size: gpui::size(
+                            px(view.tokens.metrics.form_caret_width),
+                            bounds.size.height,
+                        ),
+                    });
+                }
+            }
             Some(Bounds {
                 origin: bounds.origin + point(px(0.0), bounds.size.height),
                 size: bounds.size,
@@ -1138,6 +1167,19 @@ impl WorkspaceApp {
         self.ime_selection_range_for_target(target, cx)
     }
 
+    pub(in crate::workspace) fn ime_active_offset_for_target(
+        &self,
+        target: WorkspaceImeTarget,
+        cx: &App,
+    ) -> Option<usize> {
+        self.ime_selection_for_target(target)
+            .map(|selection| selection.active_offset())
+            .or_else(|| {
+                self.ime_selection_range_for_target(target, cx)
+                    .map(|range| range.end)
+            })
+    }
+
     pub(super) fn ime_selection_range_for_target(
         &self,
         target: WorkspaceImeTarget,
@@ -1407,6 +1449,19 @@ impl WorkspaceApp {
             return Some(index.min(text_len));
         }
 
+        if let WorkspaceImeTarget::QuickCommand(input) = target {
+            let viewport = self.terminal.read(cx).quick_commands.input_viewport(input);
+            if let Some(byte_index) = viewport.byte_index_for_position(position) {
+                let visible_text = self
+                    .ime_text_with_marked_text_for_target(target, cx)
+                    .unwrap_or_else(|| text.clone());
+                return Some(utf16_offset_for_byte_index(
+                    &visible_text,
+                    byte_index.min(visible_text.len()),
+                ));
+            }
+        }
+
         let bounds = self.text_input_anchors.bounds(target.anchor_id())?;
         let padding =
             Self::ime_target_horizontal_padding(target, self.tokens.metrics.ui_control_padding_x);
@@ -1496,6 +1551,9 @@ impl WorkspaceApp {
                 // y-to-line mapping tied to the shared textarea renderer.
                 px(input.textarea_line_height())
             }
+            WorkspaceImeTarget::NewConnection(NewConnectionField::Notes) => {
+                px(CONNECTION_NOTES_LINE_HEIGHT)
+            }
             _ if ime_target_is_read_only(target) && line_count > 0 => {
                 let inferred = f32::from(bounds.size.height) / line_count as f32;
                 px(inferred.clamp(16.0, 40.0))
@@ -1527,6 +1585,9 @@ impl WorkspaceApp {
                 // hit-testing starts from the content box, so subtract that top
                 // inset before mapping y to a UTF-16 line.
                 px(8.0)
+            }
+            WorkspaceImeTarget::NewConnection(NewConnectionField::Notes) => {
+                px(CONNECTION_NOTES_VERTICAL_PADDING)
             }
             _ => px(0.0),
         }
@@ -1711,6 +1772,9 @@ impl WorkspaceApp {
                 // These controls are painted with the terminal/settings mono
                 // family. Hit-testing with the UI font shifts caret placement
                 // across long JSON and command lines.
+                super::settings_mono_font_family(self.settings_store.settings())
+            }
+            WorkspaceImeTarget::QuickCommand(_) => {
                 super::settings_mono_font_family(self.settings_store.settings())
             }
             _ => tauri_ui_font_family(&self.settings_store.settings().appearance.ui_font_family),
@@ -2897,7 +2961,9 @@ fn new_connection_field_value(
         NewConnectionField::Passphrase => &form.passphrase,
         NewConnectionField::IdentityAgent => &form.identity_agent,
         NewConnectionField::Group => &form.group,
+        NewConnectionField::Notes => &form.notes,
         NewConnectionField::PostConnectCommand => &form.post_connect_command,
+        NewConnectionField::ProxyCommand => &form.proxy_command,
         NewConnectionField::UpstreamProxyHost => &form.upstream_proxy_host,
         NewConnectionField::UpstreamProxyPort => &form.upstream_proxy_port,
         NewConnectionField::UpstreamProxyNoProxy => &form.upstream_proxy_no_proxy,
@@ -2941,7 +3007,9 @@ fn connection_field_value_mut(
         NewConnectionField::Passphrase => &mut form.passphrase,
         NewConnectionField::IdentityAgent => &mut form.identity_agent,
         NewConnectionField::Group => &mut form.group,
+        NewConnectionField::Notes => &mut form.notes,
         NewConnectionField::PostConnectCommand => &mut form.post_connect_command,
+        NewConnectionField::ProxyCommand => &mut form.proxy_command,
         NewConnectionField::UpstreamProxyHost => &mut form.upstream_proxy_host,
         NewConnectionField::UpstreamProxyPort => &mut form.upstream_proxy_port,
         NewConnectionField::UpstreamProxyNoProxy => &mut form.upstream_proxy_no_proxy,
@@ -3053,6 +3121,7 @@ fn ime_target_accepts_newline(target: WorkspaceImeTarget) -> bool {
         WorkspaceImeTarget::ReadOnlyText(_) => true,
         WorkspaceImeTarget::Settings(input) => input.accepts_newline(),
         WorkspaceImeTarget::AiChatInput | WorkspaceImeTarget::AiMessageEdit => true,
+        WorkspaceImeTarget::NewConnection(NewConnectionField::Notes) => true,
         WorkspaceImeTarget::SessionManager(SessionManagerInput::OxideExportDescription) => true,
         _ => false,
     }
@@ -3318,13 +3387,13 @@ mod tests {
 
     use super::{
         CopyShortcutOwner, FileManagerInput, HostToolsPlainTextImeFrame, HostToolsTextInput,
-        NewConnectionField, PendingPlatformTextCommit, SettingsInput, SftpInput, TextInputAnchor,
-        TextInputAnchorId, TextInputAnchorStore, TextInputContentAlign, WorkspaceApp,
-        WorkspaceCaretState, WorkspaceCaretVisibility, WorkspaceImeMarkedText, WorkspaceImeTarget,
-        active_ime_should_defer_input_key, collapsed_copy_shortcut_is_owned_by_target,
-        control_k_delete_end, copy_shortcut_owner_for_target,
-        effective_platform_text_replacement_range, ime_target_is_secret,
-        ime_target_should_blink_caret, ime_text_snapshot, keystroke_platform_text,
+        NewConnectionField, PendingPlatformTextCommit, QuickCommandInput, SettingsInput, SftpInput,
+        TextInputAnchor, TextInputAnchorId, TextInputAnchorStore, TextInputContentAlign,
+        WorkspaceApp, WorkspaceCaretState, WorkspaceCaretVisibility, WorkspaceImeMarkedText,
+        WorkspaceImeSelection, WorkspaceImeTarget, active_ime_should_defer_input_key,
+        collapsed_copy_shortcut_is_owned_by_target, control_k_delete_end,
+        copy_shortcut_owner_for_target, effective_platform_text_replacement_range,
+        ime_target_is_secret, ime_text_snapshot, keystroke_platform_text,
         keystroke_uses_text_edit_modifier, line_end_for_utf16_offset, line_range_for_utf16_offset,
         line_start_for_utf16_offset, next_utf16_boundary, next_word_boundary,
         normalize_clipboard_text_for_ime_target, path_completion_owns_vertical_navigation,
@@ -3531,6 +3600,23 @@ mod tests {
                 size: size(px(80.0), px(30.0)),
             })
         );
+    }
+
+    #[test]
+    fn reversed_selection_reports_the_left_edge_as_active() {
+        let target = WorkspaceImeTarget::QuickCommand(QuickCommandInput::CommandText);
+        let forward = WorkspaceImeSelection {
+            target,
+            range: 12..28,
+            reversed: false,
+        };
+        let reversed = WorkspaceImeSelection {
+            reversed: true,
+            ..forward.clone()
+        };
+
+        assert_eq!(forward.active_offset(), 28);
+        assert_eq!(reversed.active_offset(), 12);
     }
 
     #[test]

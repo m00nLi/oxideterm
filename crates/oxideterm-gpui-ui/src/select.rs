@@ -77,6 +77,7 @@ pub enum SelectAnchorId {
     SettingsRemoteShellIntegrationMode,
     SettingsIdeAgentMode,
     SettingsLocalShell,
+    SettingsLocalShellSemanticScheme(usize),
     SettingsLocalPrivilegeKind,
     SettingsConnectionIdleTimeout,
     SettingsReconnectMaxAttempts,
@@ -93,10 +94,15 @@ pub enum SelectAnchorId {
     SettingsKnowledgeDocumentFormat,
     SettingsAiMcpTransport,
     SettingsAiMcpAuthMode,
+    SettingsSftpPresentation,
     SettingsSftpProtocol,
     SettingsSftpConcurrent,
     SettingsSftpDirectoryParallelism,
     SettingsSftpConflict,
+    SettingsTerminalSemanticScheme,
+    SettingsSemanticSchemeRuleClass(usize),
+    SettingsSemanticSchemeRuleContext(usize),
+    SettingsHighlightRuleSet,
     SettingsHighlightPreset,
     SettingsHighlightRenderMode(usize),
     SettingsHighlightMatchScope(usize),
@@ -113,12 +119,14 @@ pub enum SelectAnchorId {
     NewConnectionKeyAuthSource,
     NewConnectionManagedKey,
     NewConnectionJumpSavedConnection,
+    NewConnectionRemoteDesktopSshGateway,
     NewConnectionJumpKeyAuthSource,
     NewConnectionJumpManagedKey,
     NewConnectionPrivilegeKind,
     NewConnectionUpstreamProxyPolicy,
     NewConnectionUpstreamProxyProtocol,
     NewConnectionUpstreamProxyAuth,
+    NewConnectionLocalShell,
     NewConnectionSerialPort,
     NewConnectionSerialDataBits,
     NewConnectionSerialStopBits,
@@ -127,6 +135,8 @@ pub enum SelectAnchorId {
     NewConnectionTerminalEncoding,
     NewConnectionTerminalBackspaceSequence,
     NewConnectionTerminalDeleteSequence,
+    NewConnectionTerminalSemanticScheme,
+    NewConnectionTerminalHighlightRuleSet,
     SettingsConnectionImportSource,
     SettingsConnectionImportDuplicateStrategy,
     CloudSyncBackend,
@@ -134,6 +144,7 @@ pub enum SelectAnchorId {
     CloudSyncConflictStrategy,
     IdeAgentStatus,
     TerminalBroadcastMenu,
+    TerminalHighlightRuleSet,
     TerminalCommandBar,
     TerminalCwdMenu,
     TerminalGitBranchMenu,
@@ -173,6 +184,7 @@ impl SelectAnchorId {
                 | Self::SettingsRemoteShellIntegrationMode
                 | Self::SettingsIdeAgentMode
                 | Self::SettingsLocalShell
+                | Self::SettingsLocalShellSemanticScheme(_)
                 | Self::SettingsLocalPrivilegeKind
                 | Self::SettingsConnectionIdleTimeout
                 | Self::SettingsReconnectMaxAttempts
@@ -189,10 +201,15 @@ impl SelectAnchorId {
                 | Self::SettingsKnowledgeDocumentFormat
                 | Self::SettingsAiMcpTransport
                 | Self::SettingsAiMcpAuthMode
+                | Self::SettingsSftpPresentation
                 | Self::SettingsSftpProtocol
                 | Self::SettingsSftpConcurrent
                 | Self::SettingsSftpDirectoryParallelism
                 | Self::SettingsSftpConflict
+                | Self::SettingsTerminalSemanticScheme
+                | Self::SettingsSemanticSchemeRuleClass(_)
+                | Self::SettingsSemanticSchemeRuleContext(_)
+                | Self::SettingsHighlightRuleSet
                 | Self::SettingsHighlightPreset
                 | Self::SettingsHighlightRenderMode(_)
                 | Self::SettingsHighlightMatchScope(_)
@@ -210,12 +227,14 @@ impl SelectAnchorId {
                 | Self::NewConnectionKeyAuthSource
                 | Self::NewConnectionManagedKey
                 | Self::NewConnectionJumpSavedConnection
+                | Self::NewConnectionRemoteDesktopSshGateway
                 | Self::NewConnectionJumpKeyAuthSource
                 | Self::NewConnectionJumpManagedKey
                 | Self::NewConnectionPrivilegeKind
                 | Self::NewConnectionUpstreamProxyPolicy
                 | Self::NewConnectionUpstreamProxyProtocol
                 | Self::NewConnectionUpstreamProxyAuth
+                | Self::NewConnectionLocalShell
                 | Self::NewConnectionSerialPort
                 | Self::NewConnectionSerialDataBits
                 | Self::NewConnectionSerialStopBits
@@ -224,6 +243,8 @@ impl SelectAnchorId {
                 | Self::NewConnectionTerminalEncoding
                 | Self::NewConnectionTerminalBackspaceSequence
                 | Self::NewConnectionTerminalDeleteSequence
+                | Self::NewConnectionTerminalSemanticScheme
+                | Self::NewConnectionTerminalHighlightRuleSet
         )
     }
 

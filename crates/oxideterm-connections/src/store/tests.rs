@@ -19,12 +19,14 @@ mod tests {
             id: Some(id.to_string()),
             name: "Home".to_string(),
             group: None,
+            notes: None,
             host: "192.168.1.2".to_string(),
             port: 22,
             username: "me".to_string(),
             auth,
             proxy_chain: Vec::new(),
             upstream_proxy: SavedUpstreamProxyPolicy::UseGlobal,
+            proxy_command: None,
             color: None,
             icon_background_color: None,
             icon: None,
@@ -57,11 +59,44 @@ mod tests {
         assert!(connection.options.skip_remote_env_detection);
     }
 
+    #[test]
+    fn connection_notes_are_optional_multiline_metadata_and_not_searchable() {
+        let mut store = load_empty_store("connection-notes");
+        let mut with_notes = request("conn-notes", SavedAuth::Agent);
+        with_notes.notes = Some("  Rack B\nOwned by Network Operations  ".to_string());
+        let info = store.upsert(with_notes).unwrap();
+
+        assert_eq!(
+            info.notes.as_deref(),
+            Some("Rack B\nOwned by Network Operations")
+        );
+        assert!(!info.matches_search_query("Network Operations"));
+
+        let saved = store.get("conn-notes").unwrap();
+        let mut legacy_value = serde_json::to_value(saved).unwrap();
+        legacy_value.as_object_mut().unwrap().remove("notes");
+        let legacy: SavedConnection = serde_json::from_value(legacy_value).unwrap();
+        assert!(legacy.notes.is_none());
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("notes")
+                .is_none()
+        );
+        assert!(
+            serde_json::to_value(ConnectionInfo::from(&legacy))
+                .unwrap()
+                .get("notes")
+                .is_none()
+        );
+    }
+
     fn mosh_request(id: &str, auth: SavedAuth) -> SaveMoshProfileRequest {
         SaveMoshProfileRequest {
             id: Some(id.to_string()),
             name: "Mobile shell".to_string(),
             group: None,
+            notes: None,
             icon: None,
             color: None,
             icon_background_color: None,
@@ -102,6 +137,8 @@ mod tests {
                 encoding: Some(ConnectionTerminalEncoding::Utf8),
                 backspace_sequence: Some(ConnectionTerminalBackspaceSequence::ControlH),
                 delete_sequence: Some(ConnectionTerminalDeleteSequence::Delete),
+                semantic_scheme: Some("conservative".to_string()),
+                highlight_rule_set: Some("network-devices".to_string()),
             },
             ..ConnectionOptions::default()
         };
@@ -109,6 +146,11 @@ mod tests {
         assert_eq!(serialized["terminal"]["encoding"], "utf-8");
         assert_eq!(serialized["terminal"]["backspaceSequence"], "controlH");
         assert_eq!(serialized["terminal"]["deleteSequence"], "delete");
+        assert_eq!(serialized["terminal"]["semanticScheme"], "conservative");
+        assert_eq!(
+            serialized["terminal"]["highlightRuleSet"],
+            "network-devices"
+        );
         assert_eq!(serialized["dedicated_new_terminal_connection"], true);
         assert_eq!(
             serde_json::to_value(ConnectionTerminalEncoding::EucJp).unwrap(),
@@ -140,6 +182,39 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(custom_timeout.effective_connect_timeout_seconds(), 120);
+    }
+
+    #[test]
+    fn terminal_highlight_rule_set_update_persists_without_touching_connection_identity() {
+        let path = temp_store_path("highlight-rule-set");
+        let mut store = ConnectionStore::load(&path).unwrap();
+        store
+            .upsert(request("conn-1", SavedAuth::Agent))
+            .expect("connection saved");
+
+        assert!(
+            store
+                .set_terminal_highlight_rule_set(
+                    "conn-1",
+                    Some(" network-devices ".to_string())
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            store
+                .get("conn-1")
+                .and_then(|connection| connection.options.terminal.highlight_rule_set.as_deref()),
+            Some("network-devices")
+        );
+
+        let reloaded = ConnectionStore::load(&path).unwrap();
+        assert_eq!(
+            reloaded
+                .get("conn-1")
+                .and_then(|connection| connection.options.terminal.highlight_rule_set.as_deref()),
+            Some("network-devices")
+        );
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -419,6 +494,66 @@ mod tests {
             other => panic!("unexpected auth: {other:?}"),
         }
         assert_eq!(store.get_connection_password("conn-1").unwrap(), "secret");
+
+        store
+            .store_connection_credential(
+                "conn-1",
+                ConnectionCredentialSlot::Primary,
+                &SecretString::from("replacement"),
+            )
+            .unwrap();
+        assert_eq!(
+            store.get_connection_password("conn-1").unwrap(),
+            "replacement"
+        );
+        assert!(store.get("conn-1").unwrap().last_used_at.is_none());
+        assert!(
+            store
+                .forget_connection_credential("conn-1", ConnectionCredentialSlot::Primary)
+                .unwrap()
+        );
+        assert!(store.get_connection_password("conn-1").is_err());
+    }
+
+    #[test]
+    fn proxy_command_is_protected_and_returned_for_one_runtime_handoff() {
+        let mut store = load_empty_store("proxy-command-save");
+        let store_path = store.path().to_path_buf();
+        let mut save_request = request("conn-1", SavedAuth::Agent);
+        save_request.proxy_command = Some(SavedProxyCommand {
+            keychain_id: None,
+            plaintext_command: Some(SecretString::from(
+                "helper --token proxy-command-secret",
+            )),
+        });
+
+        let (_, runtime_secrets) = store
+            .upsert_with_runtime_secrets(save_request)
+            .unwrap();
+        let connection = store.get("conn-1").unwrap();
+        let saved_command = connection.proxy_command.as_ref().unwrap();
+        let keychain_id = saved_command.keychain_id.clone().unwrap();
+
+        assert_eq!(
+            runtime_secrets.proxy_command.as_ref().unwrap(),
+            "helper --token proxy-command-secret"
+        );
+        assert_eq!(
+            store.get_saved_proxy_command(saved_command).unwrap(),
+            "helper --token proxy-command-secret"
+        );
+        let persisted = fs::read_to_string(store_path).unwrap();
+        assert!(persisted.contains(&keychain_id));
+        assert!(!persisted.contains("proxy-command-secret"));
+        assert!(!format!("{saved_command:?}").contains("proxy-command-secret"));
+        let decoded: SavedProxyCommand = serde_json::from_str(
+            r#"{"keychain_id":"reference","command":"proxy-command-secret"}"#,
+        )
+        .unwrap();
+        assert!(decoded.plaintext_command.is_none());
+
+        store.delete("conn-1").unwrap();
+        assert!(store.keychain.get(&keychain_id).is_err());
     }
 
     #[test]
@@ -448,6 +583,16 @@ mod tests {
             store.get_saved_auth_password(&profile.auth).unwrap(),
             secret
         );
+        store
+            .store_mosh_profile_credential("mosh-1", &SecretString::from("replacement"))
+            .unwrap();
+        let profile = store.get_mosh_profile("mosh-1").unwrap();
+        assert_eq!(
+            store.get_saved_auth_password(&profile.auth).unwrap(),
+            "replacement"
+        );
+        assert!(profile.last_used_at.is_none());
+        assert!(store.forget_mosh_profile_credential("mosh-1").unwrap());
         let saved = fs::read_to_string(store.path()).unwrap();
         assert!(!saved.contains(secret));
     }
@@ -583,12 +728,14 @@ mod tests {
             version: CONFIG_VERSION,
             name: "Work Host".to_string(),
             group: Some("Work".to_string()),
+            notes: None,
             host: "work.example.com".to_string(),
             port: 22,
             username: "me".to_string(),
             auth: SavedAuth::Agent,
             proxy_chain: Vec::new(),
             upstream_proxy: SavedUpstreamProxyPolicy::UseGlobal,
+            proxy_command: None,
             options: ConnectionOptions {
                 post_connect_command: Some("uptime".to_string()),
                 ..ConnectionOptions::default()
@@ -676,7 +823,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_preserves_tauri_connection_options_and_marks_used() {
+    fn edit_preserves_tauri_connection_options_without_changing_recency() {
         let path = temp_store_path("preserve-options");
         fs::write(
             &path,
@@ -718,7 +865,7 @@ mod tests {
         assert_eq!(conn.options.jump_host.as_deref(), Some("legacy-jump"));
         assert_eq!(conn.options.term_type.as_deref(), Some("vt100"));
         assert!(conn.options.agent_forwarding);
-        assert!(conn.last_used_at.is_some());
+        assert!(conn.last_used_at.is_none());
     }
 
     #[test]
@@ -1477,6 +1624,7 @@ mod tests {
             version: CONFIG_VERSION,
             name: "Good".to_string(),
             group: None,
+            notes: None,
             host: "good.example.com".to_string(),
             port: 22,
             username: "me".to_string(),
@@ -1486,6 +1634,7 @@ mod tests {
             },
             proxy_chain: Vec::new(),
             upstream_proxy: SavedUpstreamProxyPolicy::UseGlobal,
+            proxy_command: None,
             options: ConnectionOptions::default(),
             created_at: chrono::Utc::now(),
             last_used_at: None,
@@ -1929,6 +2078,7 @@ mod tests {
         let mut source_request = request("conn-1", SavedAuth::Agent);
         source_request.name = "Production".to_string();
         source_request.group = Some("Operations".to_string());
+        source_request.notes = Some("Primary host\nOwner: Platform".to_string());
         source_request.color = Some("#123456".to_string());
         source_request.icon = Some("server".to_string());
         source_request.tags = vec!["prod".to_string(), "critical".to_string()];
@@ -1971,6 +2121,8 @@ mod tests {
         source.save().unwrap();
 
         let snapshot = source.export_saved_connections_snapshot().unwrap();
+        let snapshot_json = serde_json::to_string(&snapshot).unwrap();
+        assert!(!snapshot_json.contains("proxy-keychain-id"));
         let mut target = load_empty_store("sync-all-fields-target");
         target
             .apply_saved_connections_snapshot(snapshot, SavedConnectionsConflictStrategy::Replace)
@@ -1979,6 +2131,10 @@ mod tests {
         let imported = target.get("conn-1").unwrap();
         assert_eq!(imported.name, "Production");
         assert_eq!(imported.group.as_deref(), Some("Operations"));
+        assert_eq!(
+            imported.notes.as_deref(),
+            Some("Primary host\nOwner: Platform")
+        );
         assert_eq!(imported.color.as_deref(), Some("#123456"));
         assert_eq!(imported.icon.as_deref(), Some("server"));
         assert_eq!(imported.tags, vec!["prod", "critical"]);
@@ -2019,7 +2175,7 @@ mod tests {
             panic!("proxy password metadata should survive sync");
         };
         assert_eq!(username, "proxy-user");
-        assert_eq!(keychain_id.as_deref(), Some("proxy-keychain-id"));
+        assert!(keychain_id.is_none());
         assert!(plaintext_password.is_none());
     }
 
@@ -2096,6 +2252,7 @@ mod tests {
             id: "serial-1".to_string(),
             name: "Lab console".to_string(),
             group: Some("Lab".to_string()),
+            notes: Some("Rack B".to_string()),
             icon: Some("radio".to_string()),
             color: Some("#fcd34d".to_string()),
             icon_background_color: Some("#451a03".to_string()),
@@ -2141,6 +2298,7 @@ mod tests {
             id: "telnet-1".to_string(),
             name: "Router console".to_string(),
             group: Some("Lab".to_string()),
+            notes: Some("Legacy management plane".to_string()),
             icon: Some("network".to_string()),
             color: Some("#86efac".to_string()),
             icon_background_color: Some("#052e16".to_string()),
@@ -2150,6 +2308,8 @@ mod tests {
                 encoding: Some(ConnectionTerminalEncoding::Big5),
                 backspace_sequence: None,
                 delete_sequence: Some(ConnectionTerminalDeleteSequence::ControlH),
+                semantic_scheme: None,
+                highlight_rule_set: None,
             },
             connect_on_open: true,
             created_at: now,
@@ -2541,6 +2701,7 @@ mod tests {
             version: CONFIG_VERSION,
             name: "Managed".to_string(),
             group: None,
+            notes: None,
             host: "example.com".to_string(),
             port: 22,
             username: "deploy".to_string(),
@@ -2551,6 +2712,7 @@ mod tests {
             },
             proxy_chain: Vec::new(),
             upstream_proxy: SavedUpstreamProxyPolicy::UseGlobal,
+            proxy_command: None,
             options: ConnectionOptions::default(),
             created_at: Utc::now(),
             last_used_at: None,
@@ -2642,6 +2804,9 @@ mod tests {
             },
             display: oxideterm_remote_desktop::RemoteDesktopDisplayOptions {
                 use_all_monitors: true,
+            },
+            rdp: oxideterm_remote_desktop::RemoteDesktopRdpOptions {
+                disable_graphics_pipeline: true,
             },
             vnc: oxideterm_remote_desktop::RemoteDesktopVncOptions {
                 security_policy:

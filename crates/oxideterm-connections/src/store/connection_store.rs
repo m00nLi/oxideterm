@@ -198,6 +198,10 @@ impl ConnectionStore {
         request: SaveConnectionRequest,
     ) -> Result<(ConnectionInfo, SavedConnectionRuntimeSecrets)> {
         let group = normalize_optional_group_name(request.group.as_deref())?;
+        let notes = request.notes.and_then(|notes| {
+            let notes = notes.trim().to_string();
+            (!notes.is_empty()).then_some(notes)
+        });
         let now = Utc::now();
         let id = request.id.unwrap_or_else(|| Uuid::new_v4().to_string());
         let old_keychain_ids = self
@@ -205,7 +209,7 @@ impl ConnectionStore {
             .map(collect_connection_keychain_ids)
             .unwrap_or_default();
         let existing = self.get(&id).cloned();
-        let is_update = existing.is_some();
+        let previous_last_used_at = existing.as_ref().and_then(|conn| conn.last_used_at);
         let existing_auth = existing.as_ref().map(|conn| conn.auth.clone());
         let mut options = existing
             .as_ref()
@@ -234,8 +238,19 @@ impl ConnectionStore {
                 request.upstream_proxy,
                 existing.as_ref().map(|conn| &conn.upstream_proxy),
             )?;
-        let next_keychain_ids =
-            collect_keychain_ids_for_parts(&auth, &proxy_chain, &upstream_proxy);
+        let (proxy_command, proxy_command_secret) = self
+            .materialize_proxy_command_with_runtime_secret(
+                request.proxy_command,
+                existing
+                    .as_ref()
+                    .and_then(|connection| connection.proxy_command.as_ref()),
+            )?;
+        let next_keychain_ids = collect_keychain_ids_for_parts(
+            &auth,
+            &proxy_chain,
+            &upstream_proxy,
+            proxy_command.as_ref(),
+        );
         let post_connect_command = request.post_connect_command.and_then(|command| {
             let command = command.trim().to_string();
             (!command.is_empty()).then_some(command)
@@ -255,19 +270,18 @@ impl ConnectionStore {
                 .unwrap_or(CONFIG_VERSION),
             name: non_empty(request.name.trim(), "Connection name")?.to_string(),
             group: group.clone(),
+            notes,
             host: non_empty(request.host.trim(), "Host")?.to_string(),
             port: request.port.max(1),
             username: non_empty(request.username.trim(), "Username")?.to_string(),
             auth,
             proxy_chain,
             upstream_proxy,
+            proxy_command,
             options,
             created_at: self.get(&id).map(|conn| conn.created_at).unwrap_or(now),
-            last_used_at: if is_update {
-                Some(now)
-            } else {
-                self.get(&id).and_then(|conn| conn.last_used_at)
-            },
+            // Editing metadata must not change recent-connection ordering.
+            last_used_at: previous_last_used_at,
             updated_at: Some(now),
             color: request.color,
             icon_background_color: request.icon_background_color,
@@ -300,6 +314,7 @@ impl ConnectionStore {
                 auth: auth_secret,
                 proxy_chain: proxy_chain_secrets,
                 upstream_proxy: upstream_proxy_secret,
+                proxy_command: proxy_command_secret,
             },
         ))
     }
@@ -327,6 +342,155 @@ impl ConnectionStore {
             }
         }
         Ok(deleted)
+    }
+
+    /// Stores a new SSH credential in the selected protected slot without touching recency.
+    pub fn store_connection_credential(
+        &mut self,
+        id: &str,
+        slot: ConnectionCredentialSlot,
+        secret: &SecretString,
+    ) -> Result<bool> {
+        let Some(connection) = self.get(id) else {
+            return Ok(false);
+        };
+        let current_auth = match slot {
+            ConnectionCredentialSlot::Primary => connection.auth.clone(),
+            ConnectionCredentialSlot::ProxyHop { index } => connection
+                .proxy_chain
+                .get(index)
+                .map(|hop| hop.auth.clone())
+                .ok_or_else(|| anyhow::anyhow!("Proxy hop credential slot not found"))?,
+            ConnectionCredentialSlot::UpstreamProxy => {
+                let SavedUpstreamProxyPolicy::Custom { proxy } = &connection.upstream_proxy else {
+                    bail!("The connection does not use a custom upstream proxy");
+                };
+                let SavedUpstreamProxyAuth::Password {
+                    username,
+                    keychain_id,
+                    ..
+                } = &proxy.auth
+                else {
+                    bail!("The custom upstream proxy is not configured for password auth");
+                };
+                let reference = keychain_id
+                    .clone()
+                    .unwrap_or_else(new_upstream_proxy_password_keychain_id);
+                let username = username.clone();
+                self.keychain.store(&reference, secret)?;
+                let connection = self
+                    .data
+                    .connections
+                    .iter_mut()
+                    .find(|connection| connection.id == id)
+                    .expect("saved connection checked above");
+                let SavedUpstreamProxyPolicy::Custom { proxy } = &mut connection.upstream_proxy
+                else {
+                    unreachable!("upstream proxy shape changed during one store update");
+                };
+                proxy.auth = SavedUpstreamProxyAuth::Password {
+                    username,
+                    keychain_id: Some(reference),
+                    plaintext_password: None,
+                };
+                connection.updated_at = Some(Utc::now());
+                self.save()?;
+                return Ok(true);
+            }
+        };
+        let (next_auth, reference) = auth_with_protected_credential(current_auth)?;
+        self.keychain.store(&reference, secret)?;
+        let connection = self
+            .data
+            .connections
+            .iter_mut()
+            .find(|connection| connection.id == id)
+            .expect("saved connection checked above");
+        match slot {
+            ConnectionCredentialSlot::Primary => connection.auth = next_auth,
+            ConnectionCredentialSlot::ProxyHop { index } => {
+                connection.proxy_chain[index].auth = next_auth;
+            }
+            ConnectionCredentialSlot::UpstreamProxy => unreachable!("handled above"),
+        }
+        connection.updated_at = Some(Utc::now());
+        self.save()?;
+        Ok(true)
+    }
+
+    /// Forgets one SSH credential reference and deletes its protected value after persistence.
+    pub fn forget_connection_credential(
+        &mut self,
+        id: &str,
+        slot: ConnectionCredentialSlot,
+    ) -> Result<bool> {
+        let Some(connection) = self.get(id) else {
+            return Ok(false);
+        };
+        let (next_auth, reference) = match slot {
+            ConnectionCredentialSlot::Primary => auth_without_protected_credential(&connection.auth),
+            ConnectionCredentialSlot::ProxyHop { index } => connection
+                .proxy_chain
+                .get(index)
+                .map(|hop| auth_without_protected_credential(&hop.auth))
+                .ok_or_else(|| anyhow::anyhow!("Proxy hop credential slot not found"))?,
+            ConnectionCredentialSlot::UpstreamProxy => {
+                let SavedUpstreamProxyPolicy::Custom { proxy } = &connection.upstream_proxy else {
+                    bail!("The connection does not use a custom upstream proxy");
+                };
+                let SavedUpstreamProxyAuth::Password {
+                    username,
+                    keychain_id,
+                    ..
+                } = &proxy.auth
+                else {
+                    bail!("The custom upstream proxy is not configured for password auth");
+                };
+                let Some(reference) = keychain_id.clone() else {
+                    return Ok(false);
+                };
+                let username = username.clone();
+                let connection = self
+                    .data
+                    .connections
+                    .iter_mut()
+                    .find(|connection| connection.id == id)
+                    .expect("saved connection checked above");
+                let SavedUpstreamProxyPolicy::Custom { proxy } = &mut connection.upstream_proxy
+                else {
+                    unreachable!("upstream proxy shape changed during one forget update");
+                };
+                proxy.auth = SavedUpstreamProxyAuth::Password {
+                    username,
+                    keychain_id: None,
+                    plaintext_password: None,
+                };
+                connection.updated_at = Some(Utc::now());
+                self.save()?;
+                self.delete_or_queue_connection_keychain_entry(reference)?;
+                return Ok(true);
+            }
+        };
+        let Some(reference) = reference else {
+            return Ok(false);
+        };
+        let connection = self
+            .data
+            .connections
+            .iter_mut()
+            .find(|connection| connection.id == id)
+            .expect("saved connection checked above");
+        match slot {
+            ConnectionCredentialSlot::Primary => connection.auth = next_auth,
+            ConnectionCredentialSlot::ProxyHop { index } => {
+                connection.proxy_chain[index].auth = next_auth;
+            }
+            ConnectionCredentialSlot::UpstreamProxy => unreachable!("handled above"),
+        }
+        connection.updated_at = Some(Utc::now());
+        self.save()?;
+        self.delete_or_queue_connection_keychain_entry(reference)?;
+        Ok(true)
     }
 
     pub fn rename_connection(&mut self, id: &str, name: String) -> Result<bool> {
@@ -606,6 +770,49 @@ impl ConnectionStore {
         Ok(true)
     }
 
+    pub fn set_terminal_highlight_rule_set(
+        &mut self,
+        id: &str,
+        rule_set_id: Option<String>,
+    ) -> Result<bool> {
+        let rule_set_id = rule_set_id.and_then(|id| {
+            let id = id.trim();
+            (!id.is_empty()).then(|| id.to_string())
+        });
+
+        if let Some(connection) = self
+            .data
+            .connections
+            .iter_mut()
+            .find(|connection| connection.id == id)
+        {
+            if connection.options.terminal.highlight_rule_set == rule_set_id {
+                return Ok(true);
+            }
+            connection.options.terminal.highlight_rule_set = rule_set_id;
+            connection.updated_at = Some(Utc::now());
+            self.save()?;
+            return Ok(true);
+        }
+
+        // Telnet profiles own the same terminal presentation options without an SSH node.
+        let Some(profile) = self
+            .data
+            .telnet_profiles
+            .iter_mut()
+            .find(|profile| profile.id == id)
+        else {
+            return Ok(false);
+        };
+        if profile.terminal.highlight_rule_set == rule_set_id {
+            return Ok(true);
+        }
+        profile.terminal.highlight_rule_set = rule_set_id;
+        profile.updated_at = Utc::now();
+        self.save()?;
+        Ok(true)
+    }
+
     pub fn upsert_serial_profile(
         &mut self,
         request: SaveSerialProfileRequest,
@@ -627,6 +834,7 @@ impl ConnectionStore {
 
         profile.name = request.name.trim().to_string();
         profile.group = group;
+        profile.notes = normalize_optional_text(request.notes);
         profile.icon = normalize_optional_text(request.icon);
         profile.color = normalize_optional_text(request.color);
         profile.icon_background_color = normalize_optional_text(request.icon_background_color);
@@ -711,6 +919,7 @@ impl ConnectionStore {
 
         profile.name = request.name.trim().to_string();
         profile.group = group;
+        profile.notes = normalize_optional_text(request.notes);
         profile.icon = normalize_optional_text(request.icon);
         profile.color = normalize_optional_text(request.color);
         profile.icon_background_color = normalize_optional_text(request.icon_background_color);
@@ -808,6 +1017,7 @@ impl ConnectionStore {
         });
         profile.name = request.name.trim().to_string();
         profile.group = group.clone();
+        profile.notes = normalize_optional_text(request.notes);
         profile.icon = normalize_optional_text(request.icon);
         profile.color = normalize_optional_text(request.color);
         profile.icon_background_color = normalize_optional_text(request.icon_background_color);
@@ -871,6 +1081,51 @@ impl ConnectionStore {
         Ok(deleted)
     }
 
+    /// Stores a Mosh primary credential without changing its recent-use timestamp.
+    pub fn store_mosh_profile_credential(
+        &mut self,
+        id: &str,
+        secret: &SecretString,
+    ) -> Result<bool> {
+        let Some(profile) = self.get_mosh_profile(id) else {
+            return Ok(false);
+        };
+        let (next_auth, reference) = auth_with_protected_credential(profile.auth.clone())?;
+        self.keychain.store(&reference, secret)?;
+        let profile = self
+            .data
+            .mosh_profiles
+            .iter_mut()
+            .find(|profile| profile.id == id)
+            .expect("Mosh profile checked above");
+        profile.auth = next_auth;
+        profile.updated_at = Utc::now();
+        self.save()?;
+        Ok(true)
+    }
+
+    /// Forgets a Mosh primary credential without changing its recent-use timestamp.
+    pub fn forget_mosh_profile_credential(&mut self, id: &str) -> Result<bool> {
+        let Some(profile) = self.get_mosh_profile(id) else {
+            return Ok(false);
+        };
+        let (next_auth, reference) = auth_without_protected_credential(&profile.auth);
+        let Some(reference) = reference else {
+            return Ok(false);
+        };
+        let profile = self
+            .data
+            .mosh_profiles
+            .iter_mut()
+            .find(|profile| profile.id == id)
+            .expect("Mosh profile checked above");
+        profile.auth = next_auth;
+        profile.updated_at = Utc::now();
+        self.save()?;
+        self.delete_or_queue_connection_keychain_entry(reference)?;
+        Ok(true)
+    }
+
     pub fn mark_mosh_profile_used(&mut self, id: &str) -> Result<bool> {
         let Some(profile) = self
             .data
@@ -925,6 +1180,7 @@ impl ConnectionStore {
         });
         profile.name = request.name.trim().to_string();
         profile.group = group.clone();
+        profile.notes = normalize_optional_text(request.notes);
         profile.icon = normalize_optional_text(request.icon);
         profile.color = normalize_optional_text(request.color);
         profile.icon_background_color = normalize_optional_text(request.icon_background_color);
@@ -933,6 +1189,8 @@ impl ConnectionStore {
         profile.port = request.port;
         profile.username = normalize_optional_text(request.username);
         profile.domain = normalize_optional_text(request.domain);
+        profile.ssh_gateway_connection_id =
+            normalize_optional_text(request.ssh_gateway_connection_id);
         profile.credential_ref = credential_ref.clone();
         profile.read_only = request.read_only;
         profile.session_options = request.session_options;
@@ -1082,6 +1340,9 @@ impl ConnectionStore {
         connection.proxy_chain = self.materialize_proxy_chain(connection.proxy_chain)?;
         connection.upstream_proxy =
             self.materialize_upstream_proxy_policy(connection.upstream_proxy, None)?;
+        connection.proxy_command = self
+            .materialize_proxy_command_with_runtime_secret(connection.proxy_command, None)?
+            .0;
         // Third-party imports do not carry privilege helper secrets. The user
         // must explicitly create them after import.
         connection.privilege_credentials.clear();
@@ -1124,6 +1385,14 @@ impl ConnectionStore {
             connection.upstream_proxy,
             existing.as_ref().map(|conn| &conn.upstream_proxy),
         )?;
+        connection.proxy_command = self
+            .materialize_proxy_command_with_runtime_secret(
+                connection.proxy_command,
+                existing
+                    .as_ref()
+                    .and_then(|connection| connection.proxy_command.as_ref()),
+            )?
+            .0;
         if let Some(existing) = existing.as_ref() {
             connection.created_at = existing.created_at;
             connection.last_used_at = existing.last_used_at;
@@ -1137,6 +1406,7 @@ impl ConnectionStore {
             &connection.auth,
             &connection.proxy_chain,
             &connection.upstream_proxy,
+            connection.proxy_command.as_ref(),
         );
         if let Some(index) = self
             .data
@@ -1575,6 +1845,16 @@ impl ConnectionStore {
             } => bail!("Upstream proxy password is not saved"),
             SavedUpstreamProxyAuth::None => bail!("Upstream proxy does not use password auth"),
         }
+    }
+
+    pub fn get_saved_proxy_command(&self, command: &SavedProxyCommand) -> Result<SecretString> {
+        let keychain_id = command
+            .keychain_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("ProxyCommand is not saved"))?;
+        self.keychain
+            .get(keychain_id)
+            .context("failed to load ProxyCommand from protected storage")
     }
 
     pub fn save_global_upstream_proxy_password(&self, password: &SecretString) -> Result<String> {
@@ -2067,6 +2347,41 @@ impl ConnectionStore {
         }
     }
 
+    fn materialize_proxy_command_with_runtime_secret(
+        &self,
+        command: Option<SavedProxyCommand>,
+        existing_command: Option<&SavedProxyCommand>,
+    ) -> Result<(Option<SavedProxyCommand>, Option<SecretString>)> {
+        let Some(command) = command else {
+            return Ok((None, None));
+        };
+        if let Some(plaintext_command) = command.plaintext_command {
+            let keychain_id = existing_proxy_command_keychain_id(existing_command)
+                .or(command.keychain_id)
+                .unwrap_or_else(new_proxy_command_keychain_id);
+            self.keychain.store(&keychain_id, &plaintext_command)?;
+            return Ok((
+                Some(SavedProxyCommand {
+                    keychain_id: Some(keychain_id),
+                    plaintext_command: None,
+                }),
+                Some(plaintext_command),
+            ));
+        }
+
+        let keychain_id = command
+            .keychain_id
+            .or_else(|| existing_proxy_command_keychain_id(existing_command))
+            .ok_or_else(|| anyhow::anyhow!("ProxyCommand value is required"))?;
+        Ok((
+            Some(SavedProxyCommand {
+                keychain_id: Some(keychain_id),
+                plaintext_command: None,
+            }),
+            None,
+        ))
+    }
+
     fn stage_imported_connection(
         &mut self,
         mut connection: SavedConnection,
@@ -2118,9 +2433,23 @@ impl ConnectionStore {
             existing.as_ref().map(|conn| &conn.upstream_proxy),
         )?;
         touched_keychain_ids.extend(collect_keychain_ids_for_upstream_proxy(&upstream_proxy));
+        let proxy_command = self
+            .materialize_proxy_command_with_runtime_secret(
+                connection.proxy_command,
+                existing
+                    .as_ref()
+                    .and_then(|connection| connection.proxy_command.as_ref()),
+            )?
+            .0;
+        touched_keychain_ids.extend(
+            proxy_command
+                .as_ref()
+                .and_then(|command| command.keychain_id.clone()),
+        );
         connection.auth = auth;
         connection.proxy_chain = proxy_chain;
         connection.upstream_proxy = upstream_proxy;
+        connection.proxy_command = proxy_command;
         if let Some(existing) = existing.as_ref() {
             connection.created_at = existing.created_at;
             connection.last_used_at = existing.last_used_at;
@@ -2142,6 +2471,7 @@ impl ConnectionStore {
             &connection.auth,
             &connection.proxy_chain,
             &connection.upstream_proxy,
+            connection.proxy_command.as_ref(),
         );
         let stale_old_keychain_ids = old_keychain_ids
             .into_iter()

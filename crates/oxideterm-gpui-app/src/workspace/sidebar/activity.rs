@@ -11,11 +11,11 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.tokens.ui;
-        let top_items_before_plugins = [
-            (SidebarSection::Sessions, LucideIcon::Link2),
+        let mut top_items_before_plugins = vec![(SidebarSection::Sessions, LucideIcon::Link2)];
+        top_items_before_plugins.extend([
             (SidebarSection::Connections, LucideIcon::LayoutList),
             (SidebarSection::Runtime, LucideIcon::Gauge),
-        ];
+        ]);
         let top_items_after_plugins = [
             (SidebarSection::CloudSync, LucideIcon::Cloud),
             (SidebarSection::Assistant, LucideIcon::Sparkles),
@@ -413,7 +413,6 @@ impl WorkspaceApp {
         match section {
             SidebarSection::Sessions => self.i18n.t("sidebar.panels.sessions"),
             SidebarSection::Connections => self.i18n.t("sidebar.panels.open_session_manager"),
-            SidebarSection::Sftp => self.i18n.t("sidebar.panels.sftp"),
             SidebarSection::Forwards => self.i18n.t("forwards.table.title"),
             SidebarSection::Terminal => self.i18n.t("sidebar.panels.runtime_overview"),
             SidebarSection::Runtime => self.i18n.t("sidebar.panels.runtime"),

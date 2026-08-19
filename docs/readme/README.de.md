@@ -12,7 +12,7 @@
 
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.20-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.0.21-blue" alt="Version">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" alt="Plattform">
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="Lizenz">
   <img src="https://img.shields.io/badge/rust-2024%20edition-orange" alt="Rust 2024">
@@ -210,7 +210,7 @@ Remote-Dateien sind Teil desselben Node-Workspace und keine getrennte Nebenfunkt
 
 Erweiterungen und Support-Flächen folgen klaren Rust-eigenen Grenzen:
 
-- Plugins unterstützen Manifest-only-, WASM- und normale Prozesspfade. WASM nutzt Wasmtime/WASI oder einen Sidecar mit kontrollierten Host-Aufrufen; Prozess-Plugins sind lokale Prozesse ohne Betriebssystem-Sandbox.
+- Plugins unterstützen Manifest-only-, WASM- und normale Prozesspfade. WASM nutzt die integrierte Wasmtime/WASI-Laufzeit; Prozess-Plugins sind lokale Prozesse ohne Betriebssystem-Sandbox.
 - Die CLI linkt direkt gegen Domain Crates für doctor, settings, connections, forwards, portable bundles, backups und reports
 - Diagnosen bevorzugen Zähler, Pfade, Feature-Flags und redigierte Hinweise statt roher payloads mit Geheimnisse
 - Mutierende CLI-Flows nutzen dry-run plans, `--yes` guards und rollback backups, wo anwendbar
