@@ -359,6 +359,29 @@ async fn run() -> Result<(), String> {
         println!("TAIL +{offset_ms}ms {} bytes: {:?}", chunk.len(), preview);
     }
 
+    // GPU environment diagnosis: nvidia-smi works in the user's interactive
+    // terminal but returns rc=127 inside the monitor shell on this appliance.
+    // Dump the sampled shell environment, the real stderr, and a login-shell
+    // comparison so the missing PATH/LD setup is visible.
+    let gpu_env_diagnosis = concat!(
+        "echo '===GPU_DIAG==='; ",
+        "id 2>&1; echo \"PATH=$PATH\"; ",
+        "env 2>&1 | grep -iE 'nvidia|^ld_|cuda' || true; ",
+        "file /usr/bin/nvidia-smi 2>&1 | head -n 1; ",
+        "out=$(nvidia-smi --query-gpu=index,name --format=csv,noheader,nounits 2>&1); rc=$?; ",
+        "printf '%s\\n' \"$out\" | head -n 6; echo \"direct rc=$rc\"; ",
+        "out=$(zsh -lic 'nvidia-smi --query-gpu=index,name --format=csv,noheader,nounits' 2>&1); rc=$?; ",
+        "printf '%s\\n' \"$out\" | head -n 6; echo \"login rc=$rc\""
+    );
+    let (gpu_diag_output, _) = session
+        .run_command(gpu_env_diagnosis, Duration::from_secs(30), 64 * 1024)
+        .await
+        .map_err(|error| format!("GPU env diagnosis probe: {error:?}"))?;
+    println!(
+        "GPU ENV DIAGNOSIS:\n{}",
+        String::from_utf8_lossy(&gpu_diag_output)
+    );
+
     println!("ALL PROBE SCENARIOS PASSED");
     Ok(())
 }
