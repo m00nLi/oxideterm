@@ -218,7 +218,10 @@ async fn run() -> Result<(), String> {
     if timing_truncated {
         println!("VENDOR TIMING TRUNCATED");
     }
-    println!("VENDOR TIMING:\n{}", String::from_utf8_lossy(&timing_output));
+    println!(
+        "VENDOR TIMING:\n{}",
+        String::from_utf8_lossy(&timing_output)
+    );
 
     // Replay the exact app path: the app's GPU page uses the reconnecting
     // sampler, which opens a brand-new connection per shell. The persistent

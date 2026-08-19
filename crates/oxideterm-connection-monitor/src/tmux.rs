@@ -596,18 +596,23 @@ fn build_unix_tmux_snapshot_command() -> String {
             "if command -v tmux >/dev/null 2>&1; then ",
             "oxide_tmux_version=$(tmux -V 2>/dev/null | head -n 1 | tr '\\t' ' '); ",
             "printf '__OXIDE_TMUX_CAPABILITY__\\tfull\\ttmux_cli\\t%s\\n' \"$oxide_tmux_version\"; ",
-            "oxide_tmux_sessions=$(tmux list-sessions -F {session_format} 2>&1); ",
+            // Literal tabs are typed into an interactive login shell on
+            // single-channel servers, where zsh/bash line editing consumes
+            // them as completion keystrokes. Generate the field separator at
+            // runtime instead so the tmux format keeps its tabs.
+            "oxide_tmux_tab=$(printf '\\t'); oxide_tmux_delim=\"$oxide_tmux_tab|$oxide_tmux_tab\"; ",
+            "oxide_tmux_sessions=$(tmux list-sessions -F \"{session_format}\" 2>&1); ",
             "oxide_tmux_status=$?; ",
             "if [ \"$oxide_tmux_status\" -ne 0 ]; then ",
             "if printf '%s' \"$oxide_tmux_sessions\" | grep -Eqi 'no server running|error connecting to'; then :; ",
             "else printf '__OXIDE_TMUX_ERROR__\\t%s\\n' \"$(printf '%s' \"$oxide_tmux_sessions\" | head -n 1 | tr '\\t' ' ')\"; fi; ",
             "else ",
             "printf '%s\\n' \"$oxide_tmux_sessions\"; ",
-            "oxide_tmux_windows=$(tmux list-windows -a -F {window_format} 2>&1); ",
+            "oxide_tmux_windows=$(tmux list-windows -a -F \"{window_format}\" 2>&1); ",
             "oxide_tmux_window_status=$?; ",
             "if [ \"$oxide_tmux_window_status\" -eq 0 ]; then printf '%s\\n' \"$oxide_tmux_windows\"; ",
             "else printf '__OXIDE_TMUX_ERROR__\\t%s\\n' \"$(printf '%s' \"$oxide_tmux_windows\" | head -n 1 | tr '\\t' ' ')\"; fi; ",
-            "oxide_tmux_panes=$(tmux list-panes -a -F {pane_format} 2>&1); ",
+            "oxide_tmux_panes=$(tmux list-panes -a -F \"{pane_format}\" 2>&1); ",
             "oxide_tmux_pane_status=$?; ",
             "if [ \"$oxide_tmux_pane_status\" -eq 0 ]; then printf '%s\\n' \"$oxide_tmux_panes\"; ",
             "else printf '__OXIDE_TMUX_ERROR__\\t%s\\n' \"$(printf '%s' \"$oxide_tmux_panes\" | head -n 1 | tr '\\t' ' ')\"; fi; ",
@@ -615,9 +620,9 @@ fn build_unix_tmux_snapshot_command() -> String {
             "else echo '__OXIDE_TMUX_UNAVAILABLE__'; fi; ",
             "echo '===TMUX_END==='"
         ),
-        session_format = shell_quote(TMUX_SESSION_FORMAT),
-        window_format = shell_quote(TMUX_WINDOW_FORMAT),
-        pane_format = shell_quote(TMUX_PANE_FORMAT),
+        session_format = TMUX_SESSION_FORMAT.replace("\t|\t", "$oxide_tmux_delim"),
+        window_format = TMUX_WINDOW_FORMAT.replace("\t|\t", "$oxide_tmux_delim"),
+        pane_format = TMUX_PANE_FORMAT.replace("\t|\t", "$oxide_tmux_delim"),
     )
 }
 
@@ -896,6 +901,35 @@ mod tests {
     }
 
     #[test]
+    fn unix_snapshot_command_never_types_literal_tabs() {
+        let command = build_tmux_snapshot_command("Linux").command;
+        assert!(
+            !command.contains('\t'),
+            "literal tabs are consumed by interactive shell line editors"
+        );
+        assert!(command.contains("$oxide_tmux_delim"));
+        assert!(command.contains("oxide_tmux_tab=$(printf"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_snapshot_command_parses_on_this_host() {
+        let command = build_tmux_snapshot_command("Linux").command;
+        let output = std::process::Command::new("sh")
+            .args(["-c", &command])
+            .output()
+            .expect("POSIX shell should be available on Unix test hosts");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let snapshot = parse_tmux_snapshot(&stdout);
+        assert!(
+            !matches!(snapshot.status, ResourceTmuxStatus::Error { .. }),
+            "unexpected error status: {:?}\n{}",
+            snapshot.status,
+            stdout
+        );
+    }
+
+    #[test]
     fn tmux_capture_failure_prefers_stderr_then_stdout() {
         let stderr_snapshot = tmux_capture_snapshot("stdout reason", "stderr reason", Some(2));
         assert!(
@@ -922,10 +956,11 @@ mod tests {
     }
 
     #[test]
-    fn unix_tmux_snapshot_command_uses_printable_separator() {
+    fn unix_tmux_snapshot_command_generates_separator_at_runtime() {
         let command = build_unix_tmux_snapshot_command();
 
-        assert!(command.contains("SESSION\t|\t#{session_id}"));
+        assert!(!command.contains('\t'));
+        assert!(command.contains("$oxide_tmux_delim"));
         assert!(!command.contains(TMUX_LEGACY_FIELD_SEPARATOR));
     }
 
