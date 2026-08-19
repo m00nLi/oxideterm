@@ -1779,8 +1779,16 @@ impl HostToolsEntity {
                     .await
                     .map_err(|join| join.to_string())??;
                 this.update(cx, |entity, cx| {
-                    entity.host_gpu.snapshot_connection_id = Some(connection_id.clone());
-                    entity.host_gpu.snapshot = None;
+                    // Switching tools stops and restarts the page-scoped GPU
+                    // sampler. Keep the previous snapshot for the same
+                    // connection so re-entry shows live devices immediately
+                    // instead of a blank sampling state.
+                    if entity.host_gpu.snapshot_connection_id.as_deref()
+                        != Some(connection_id.as_str())
+                    {
+                        entity.host_gpu.snapshot_connection_id = Some(connection_id.clone());
+                        entity.host_gpu.snapshot = None;
+                    }
                     entity.host_gpu.expanded_uuid = None;
                     entity.host_gpu.sampling_task = Some(start_gpu_sampling_on(
                         connection_id.clone(),
@@ -1802,8 +1810,10 @@ impl HostToolsEntity {
             return;
         };
         let sampler = self.resource_sampler(handle);
-        self.host_gpu.snapshot_connection_id = Some(connection_id.clone());
-        self.host_gpu.snapshot = None;
+        if self.host_gpu.snapshot_connection_id.as_deref() != Some(connection_id.as_str()) {
+            self.host_gpu.snapshot_connection_id = Some(connection_id.clone());
+            self.host_gpu.snapshot = None;
+        }
         self.host_gpu.expanded_uuid = None;
         // The Entity owns only the page sampler shell; the registry retains the shared node.
         self.host_gpu.sampling_task = Some(start_gpu_sampling_on(
