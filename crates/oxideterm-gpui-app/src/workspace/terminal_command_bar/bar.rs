@@ -112,14 +112,6 @@ impl WorkspaceApp {
             .px(px(12.0))
             .py(px(4.0))
             .shadow_lg()
-            .when(quick_commands_enabled && quick_commands_open, |bar| {
-                // Tauri renders QuickCommandsPopover as a child of the relative
-                // TerminalCommandBar (`absolute bottom-full right-3`). Keep the
-                // native popover on the same local coordinate owner; routing it
-                // through the root backdrop makes the existing bottom/right
-                // placement resolve against the wrong box.
-                bar.child(self.render_terminal_quick_commands_popover(cx))
-            })
             .when(self.terminal_highlight_popover_open, |bar| {
                 bar.child(self.render_terminal_highlight_popover(cx))
             })
@@ -617,13 +609,6 @@ impl WorkspaceApp {
             },
         )
         .into_any_element()
-    }
-
-    pub(in crate::workspace) fn render_terminal_quick_commands_popover(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        self.render_quick_commands_popover(cx)
     }
 
     pub(in crate::workspace) fn render_terminal_broadcast_menu(

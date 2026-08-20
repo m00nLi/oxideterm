@@ -5,14 +5,13 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, App, Context, CursorStyle, KeyDownEvent, MouseButton, div, prelude::*, px, rgb,
-    rgba,
+    AnyElement, App, Context, CursorStyle, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, Window, div, prelude::*, px, rgb, rgba,
 };
 use oxideterm_editor_core::utf16::replace_utf16;
 use oxideterm_gpui_ui::{
-    CommandPanelOptions, StatusPillOptions, StatusTone, SurfacePadding, command_panel,
-    modal::rounded_shell_child_radius,
-    select::SelectAnchorId,
+    StatusPillOptions, StatusTone,
+    modal::{dismissible_dialog_backdrop, rounded_shell_child_radius},
     status_pill,
     text_input::{TextInputView, text_input_anchor_probe, text_input_with_viewport},
 };
@@ -25,8 +24,8 @@ use zeroize::Zeroizing;
 use super::super::ime::WorkspaceImeTarget;
 use super::super::{
     QUICK_COMMAND_LIST_ESTIMATED_HEIGHT, QUICK_COMMAND_LIST_OVERSCAN, SelectableTextRole,
-    TauriVirtualListSpec, WorkspaceApp, settings_mono_font_family,
-    sync_tauri_variable_list_state_by_signatures, tauri_virtual_list,
+    TauriVirtualListSpec, WorkspaceApp, sync_tauri_variable_list_state_by_signatures,
+    tauri_virtual_list,
 };
 use super::{
     QuickCommand, QuickCommandCategory, QuickCommandCategoryDraft, QuickCommandDraft,
@@ -45,34 +44,17 @@ fn quick_command_lucide_icon(icon: QuickCommandIcon) -> LucideIcon {
     }
 }
 
-const QUICK_COMMANDS_POPOVER_MAX_WIDTH: f32 = 860.0;
-const QUICK_COMMANDS_POPOVER_HORIZONTAL_MARGIN: f32 = 12.0;
-const QUICK_COMMANDS_LIST_MAX_HEIGHT: f32 = 360.0;
-const QUICK_COMMANDS_CONTENT_MIN_HEIGHT: f32 = 300.0;
-const QUICK_COMMANDS_BODY_HEADER_HEIGHT: f32 = 49.0;
+const QUICK_COMMANDS_DIALOG_MIN_WIDTH: f32 = 420.0;
+const QUICK_COMMANDS_DIALOG_MIN_HEIGHT: f32 = 260.0;
+const QUICK_COMMANDS_DIALOG_HEADER_HEIGHT: f32 = 44.0;
+const QUICK_COMMANDS_DIALOG_VIEWPORT_MARGIN: f32 = 24.0;
+const QUICK_COMMANDS_DIALOG_RESIZE_HANDLE: f32 = 16.0;
 
 fn quick_command_icon_label_key(icon: QuickCommandIcon) -> String {
     format!(
         "terminal.quick_commands.icon_{}",
         quick_command_icon_source_id(icon)
     )
-}
-
-fn quick_commands_popover_width_for_bar(command_bar_width: f32) -> f32 {
-    let available_width = command_bar_width - QUICK_COMMANDS_POPOVER_HORIZONTAL_MARGIN * 2.0;
-    available_width
-        .max(0.0)
-        .min(QUICK_COMMANDS_POPOVER_MAX_WIDTH)
-}
-
-fn quick_command_list_height(row_count: usize) -> f32 {
-    (row_count.max(1) as f32 * QUICK_COMMAND_LIST_ESTIMATED_HEIGHT)
-        .min(QUICK_COMMANDS_LIST_MAX_HEIGHT)
-}
-
-fn quick_commands_content_height(row_count: usize) -> f32 {
-    (QUICK_COMMANDS_BODY_HEADER_HEIGHT + quick_command_list_height(row_count))
-        .max(QUICK_COMMANDS_CONTENT_MIN_HEIGHT)
 }
 
 fn select_quick_command_category_state(
@@ -210,7 +192,6 @@ struct QuickCommandsRenderSnapshot {
     category_editor: Option<QuickCommandCategoryDraft>,
     last_persist_error: Option<String>,
     visible_commands: Arc<Vec<QuickCommand>>,
-    pinned: bool,
     list_state: gpui::ListState,
 }
 
@@ -252,14 +233,14 @@ impl TerminalQuickCommandsState {
 
     pub(in crate::workspace) fn close(&mut self) -> bool {
         let changed = self.has_open_or_pending()
-            || self.pinned
             || self.store.focused_input.is_some()
             || self.store.highlighted_command.is_some();
         self.open = false;
-        self.pinned = false;
         self.pending_command = None;
         self.store.focused_input = None;
         self.store.highlighted_command = None;
+        self.dialog_drag = None;
+        self.dialog_resize = None;
         changed
     }
 
@@ -277,7 +258,7 @@ impl TerminalQuickCommandsState {
         // Confirmation text may contain shell parameters, so dropping the
         // zeroizing owner is part of every completion path.
         self.pending_command = None;
-        self.open = self.pinned;
+        self.open = false;
     }
 
     pub(in crate::workspace) fn request_confirmation(&mut self, command: String) {
@@ -285,21 +266,9 @@ impl TerminalQuickCommandsState {
         self.open = true;
     }
 
-    fn prepare_insertion(&mut self, command: String, keep_open: bool) -> String {
-        if keep_open {
-            self.open = true;
-            self.pinned = true;
-            self.pending_command = None;
-            self.store.focused_input = None;
-            self.store.highlighted_command = None;
-        } else {
-            self.close();
-        }
+    fn prepare_insertion(&mut self, command: String) -> String {
+        self.close();
         command
-    }
-
-    fn toggle_pinned(&mut self) {
-        self.pinned = !self.pinned;
     }
 
     fn select_category(&mut self, category_id: &str) {
@@ -455,7 +424,7 @@ impl TerminalQuickCommandsState {
         )
         .unwrap_or(0);
         let command = visible_commands.get(selected_index)?.command.clone();
-        Some(self.prepare_insertion(command, self.pinned))
+        Some(self.prepare_insertion(command))
     }
 
     fn cycle_editor_focus(&mut self, input: QuickCommandInput, forward: bool) -> bool {
@@ -607,7 +576,6 @@ impl TerminalQuickCommandsState {
             category_editor: self.store.category_editor.clone(),
             last_persist_error: self.store.last_persist_error.clone(),
             visible_commands,
-            pinned: self.pinned,
             list_state: self.list_state.clone(),
         }
     }
@@ -645,16 +613,9 @@ impl WorkspaceApp {
         });
     }
 
-    fn insert_quick_command_into_command_bar(
-        &mut self,
-        command: String,
-        keep_open: bool,
-        cx: &mut Context<Self>,
-    ) {
+    fn insert_quick_command_into_command_bar(&mut self, command: String, cx: &mut Context<Self>) {
         let command = self.terminal.update(cx, |terminal, _cx| {
-            terminal
-                .quick_commands
-                .prepare_insertion(command, keep_open)
+            terminal.quick_commands.prepare_insertion(command)
         });
         self.replace_terminal_command_sender_text(command, cx);
     }
@@ -822,65 +783,211 @@ impl WorkspaceApp {
             .map(str::to_string)
     }
 
-    pub(in crate::workspace) fn render_quick_commands_popover(
-        &self,
+    pub(in crate::workspace) fn render_quick_commands_dialog(
+        &mut self,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let snapshot = self.quick_commands_render_snapshot(cx);
-        let popover_width = self
-            .select_anchors
-            .get(&SelectAnchorId::TerminalCommandBar)
-            .map(|anchor| quick_commands_popover_width_for_bar(f32::from(anchor.bounds.size.width)))
-            .unwrap_or(QUICK_COMMANDS_POPOVER_MAX_WIDTH);
-        let mut popover = command_panel(
-            &self.tokens,
-            CommandPanelOptions::new()
-                .width(popover_width)
-                .max_height(520.0)
-                .padding(SurfacePadding::None)
-                .terminal_owned(),
-        )
-        .absolute()
-        .bottom(px(56.0))
-        .right(px(QUICK_COMMANDS_POPOVER_HORIZONTAL_MARGIN))
-        // The popover sits inside an occluding outside-dismiss backdrop.
-        // Mark the panel itself as occluding too, so category-row clicks
-        // are hit-tested against this event island instead of the backdrop.
-        .occlude()
-        // Tauri uses `w-[min(860px,calc(100%-1.5rem))]` on a child of
-        // TerminalCommandBar. Compute against the cached command-bar
-        // bounds so AI sidebar and window-width changes shrink the panel
-        // instead of clipping its left edge.
-        .max_w(px(QUICK_COMMANDS_POPOVER_MAX_WIDTH))
-        .text_size(px(self.tokens.metrics.ui_text_xs))
-        .font_family(settings_mono_font_family(self.settings_store.settings()))
-        .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-            cx.stop_propagation();
-        })
-        .on_mouse_down(MouseButton::Right, |_event, _window, cx| {
-            cx.stop_propagation();
-        })
-        .on_scroll_wheel(|_, _, cx| {
-            // Match Tauri's popover scroll boundary: wheel input inside
-            // the quick command surface must not close the overlay or leak
-            // to the terminal behind it.
-            cx.stop_propagation();
-        });
+        let (dialog_size, dialog_offset) = {
+            let state = &self.terminal.read(cx).quick_commands;
+            (state.dialog_size, state.dialog_offset)
+        };
+        let viewport = window.viewport_size();
+        let viewport_width = f32::from(viewport.width);
+        let viewport_height = f32::from(viewport.height);
+        let max_width = (viewport_width - QUICK_COMMANDS_DIALOG_VIEWPORT_MARGIN * 2.0)
+            .max(QUICK_COMMANDS_DIALOG_MIN_WIDTH);
+        let max_height = (viewport_height - QUICK_COMMANDS_DIALOG_VIEWPORT_MARGIN * 2.0)
+            .max(QUICK_COMMANDS_DIALOG_MIN_HEIGHT);
+        let dialog_width =
+            f32::from(dialog_size.width).clamp(QUICK_COMMANDS_DIALOG_MIN_WIDTH, max_width);
+        let dialog_height =
+            f32::from(dialog_size.height).clamp(QUICK_COMMANDS_DIALOG_MIN_HEIGHT, max_height);
+        let theme = self.tokens.ui;
 
-        let content_height = quick_commands_content_height(snapshot.visible_commands.len());
+        let header = div()
+            .id("quick-commands-dialog-header")
+            .flex_none()
+            .h(px(QUICK_COMMANDS_DIALOG_HEADER_HEIGHT))
+            .px(px(12.0))
+            .flex()
+            .items_center()
+            .justify_between()
+            .bg(rgb(theme.bg_panel))
+            .border_b_1()
+            .border_color(rgb(theme.border))
+            .cursor(CursorStyle::OpenHand)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                    this.terminal.update(cx, |terminal, _cx| {
+                        let offset = terminal.quick_commands.dialog_offset;
+                        terminal.quick_commands.dialog_drag = Some((event.position, offset));
+                    });
+                    cx.stop_propagation();
+                }),
+            )
+            .child(
+                div()
+                    .text_size(px(self.tokens.metrics.ui_text_sm))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(rgb(theme.text))
+                    .child(self.i18n.t("terminal.quick_commands.title")),
+            )
+            .child(self.quick_command_icon_button(
+                LucideIcon::X,
+                |this, _event, _window, cx| {
+                    this.close_terminal_quick_commands_popover(cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                },
+                cx,
+            ));
+
         let sidebar = self.render_quick_command_category_sidebar(&snapshot, cx);
         let body = self.render_quick_command_body(&snapshot, cx);
-        popover = popover.child(
-            div()
-                // command_panel is column-oriented; quick commands need their
-                // sidebar and body to share one explicit row-height owner.
-                .h(px(content_height))
-                .min_h(px(0.0))
-                .flex()
-                .child(sidebar)
-                .child(body),
-        );
-        popover.into_any_element()
+        let dialog = div()
+            .id("quick-commands-dialog")
+            .relative()
+            .w(px(dialog_width))
+            .h(px(dialog_height))
+            .rounded(px(self.tokens.radii.lg))
+            .overflow_hidden()
+            .border_1()
+            .border_color(rgb(theme.border))
+            .bg(rgb(theme.bg_elevated))
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .on_mouse_down(MouseButton::Right, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .child(header)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .flex()
+                    .child(sidebar)
+                    .child(body),
+            )
+            .child(
+                div()
+                    .id("quick-commands-dialog-resize")
+                    .absolute()
+                    .bottom_0()
+                    .right_0()
+                    .size(px(QUICK_COMMANDS_DIALOG_RESIZE_HANDLE))
+                    .cursor(CursorStyle::ResizeUpRightDownLeft)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                            this.terminal.update(cx, |terminal, _cx| {
+                                let size = terminal.quick_commands.dialog_size;
+                                terminal.quick_commands.dialog_resize =
+                                    Some((event.position, size));
+                            });
+                            cx.stop_propagation();
+                        }),
+                    ),
+            );
+
+        let backdrop = dismissible_dialog_backdrop()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event, _window, cx| {
+                    this.close_terminal_quick_commands_popover(cx);
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(
+                cx.listener(move |this, event: &MouseMoveEvent, window, cx| {
+                    let viewport = window.viewport_size();
+                    this.update_quick_commands_dialog_geometry(event, viewport, cx);
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _event, _window, cx| {
+                    this.terminal.update(cx, |terminal, _cx| {
+                        terminal.quick_commands.dialog_drag = None;
+                        terminal.quick_commands.dialog_resize = None;
+                    });
+                    cx.notify();
+                }),
+            );
+
+        let offset = dialog_offset;
+        let wrapper = div()
+            .absolute()
+            .top(px(f32::from(offset.y)))
+            .left(px(f32::from(offset.x)))
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(dialog);
+        backdrop.child(wrapper).into_any_element()
+    }
+
+    fn update_quick_commands_dialog_geometry(
+        &mut self,
+        event: &MouseMoveEvent,
+        viewport: gpui::Size<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let viewport_width = f32::from(viewport.width);
+        let viewport_height = f32::from(viewport.height);
+        let mut changed = false;
+        self.terminal.update(cx, |terminal, _cx| {
+            let state = &mut terminal.quick_commands;
+            if let Some((mouse_start, offset_start)) = state.dialog_drag {
+                let dialog_width = f32::from(state.dialog_size.width).min(
+                    (viewport_width - QUICK_COMMANDS_DIALOG_VIEWPORT_MARGIN * 2.0)
+                        .max(QUICK_COMMANDS_DIALOG_MIN_WIDTH),
+                );
+                let dialog_height = f32::from(state.dialog_size.height).min(
+                    (viewport_height - QUICK_COMMANDS_DIALOG_VIEWPORT_MARGIN * 2.0)
+                        .max(QUICK_COMMANDS_DIALOG_MIN_HEIGHT),
+                );
+                let max_x = ((viewport_width - dialog_width) / 2.0).max(0.0);
+                let max_y = ((viewport_height - dialog_height) / 2.0).max(0.0);
+                state.dialog_offset = gpui::point(
+                    gpui::px(
+                        (f32::from(offset_start.x) + f32::from(event.position.x - mouse_start.x))
+                            .clamp(-max_x, max_x),
+                    ),
+                    gpui::px(
+                        (f32::from(offset_start.y) + f32::from(event.position.y - mouse_start.y))
+                            .clamp(-max_y, max_y),
+                    ),
+                );
+                changed = true;
+            }
+            if let Some((mouse_start, size_start)) = state.dialog_resize {
+                let max_width = (viewport_width - QUICK_COMMANDS_DIALOG_VIEWPORT_MARGIN * 2.0)
+                    .max(QUICK_COMMANDS_DIALOG_MIN_WIDTH);
+                let max_height = (viewport_height - QUICK_COMMANDS_DIALOG_VIEWPORT_MARGIN * 2.0)
+                    .max(QUICK_COMMANDS_DIALOG_MIN_HEIGHT);
+                let width = (f32::from(size_start.width)
+                    + f32::from(event.position.x - mouse_start.x))
+                .clamp(QUICK_COMMANDS_DIALOG_MIN_WIDTH, max_width);
+                let height = (f32::from(size_start.height)
+                    + f32::from(event.position.y - mouse_start.y))
+                .clamp(QUICK_COMMANDS_DIALOG_MIN_HEIGHT, max_height);
+                state.dialog_size = gpui::size(gpui::px(width), gpui::px(height));
+                changed = true;
+            }
+        });
+        if changed {
+            cx.notify();
+        }
     }
 
     fn render_quick_command_category_sidebar(
@@ -889,74 +996,30 @@ impl WorkspaceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = self.tokens.ui;
-        let mut sidebar = div()
-            .w(px(160.0))
-            .h_full()
-            .flex_none()
-            .overflow_hidden()
-            .rounded_l(px(rounded_shell_child_radius(self.tokens.radii.lg)))
-            .border_r_1()
-            .border_color(rgba((theme.border << 8) | 0x99))
-            .bg(rgba((theme.bg << 8) | 0x73))
-            .p(px(8.0))
-            .flex()
-            .flex_col()
-            .gap(px(6.0))
-            .child(
-                div()
-                    .mb(px(2.0))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(self.tokens.metrics.ui_text_caption))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(rgb(theme.text_muted))
-                            .child(self.render_display_text_with_role(
-                                SelectableTextRole::PlainDocument,
-                                "quick-commands",
-                                "title",
-                                self.i18n.t("terminal.quick_commands.title").to_uppercase(),
-                                theme.text_muted,
-                                cx,
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.0))
-                            .child(self.quick_command_pin_button(
-                                snapshot.pinned,
-                                |this, _event, _window, cx| {
-                                    this.terminal.update(cx, |terminal, _cx| {
-                                        terminal.quick_commands.toggle_pinned()
-                                    });
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                },
-                                cx,
-                            ))
-                            .child(self.quick_command_icon_button(
-                                LucideIcon::Plus,
-                                |this, _event, _window, cx| {
-                                    this.start_quick_command_category_create(cx);
-                                    cx.stop_propagation();
-                                },
-                                cx,
-                            ))
-                            .child(self.quick_command_icon_button(
-                                LucideIcon::X,
-                                |this, _event, _window, cx| {
-                                    this.close_terminal_quick_commands_popover(cx);
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                },
-                                cx,
-                            )),
+        let mut sidebar =
+            div()
+                .w(px(160.0))
+                .h_full()
+                .flex_none()
+                .overflow_hidden()
+                .rounded_l(px(rounded_shell_child_radius(self.tokens.radii.lg)))
+                .border_r_1()
+                .border_color(rgba((theme.border << 8) | 0x99))
+                .bg(rgba((theme.bg << 8) | 0x73))
+                .p(px(8.0))
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .child(div().mb(px(2.0)).flex().justify_end().child(
+                    self.quick_command_icon_button(
+                        LucideIcon::Plus,
+                        |this, _event, _window, cx| {
+                            this.start_quick_command_category_create(cx);
+                            cx.stop_propagation();
+                        },
+                        cx,
                     ),
-            );
+                ));
 
         for category in &snapshot.categories {
             let category_id = category.id.clone();
@@ -1213,7 +1276,6 @@ impl WorkspaceApp {
         );
         let workspace = cx.entity();
         let visible_commands = snapshot.visible_commands.clone();
-        let pinned = snapshot.pinned;
         let highlighted_command = snapshot.highlighted_command.clone();
         div()
             .flex_1()
@@ -1229,7 +1291,6 @@ impl WorkspaceApp {
                         this.render_quick_command_list_item(
                             index,
                             &visible_commands,
-                            pinned,
                             highlighted_command.as_deref(),
                             cx,
                         )
@@ -1243,7 +1304,6 @@ impl WorkspaceApp {
         &self,
         index: usize,
         visible_commands: &[QuickCommand],
-        pinned: bool,
         highlighted_command: Option<&str>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1255,14 +1315,13 @@ impl WorkspaceApp {
             .px(px(8.0))
             .when(index == 0, |item| item.pt(px(8.0)))
             .pb(px(if index + 1 == total { 8.0 } else { 4.0 }))
-            .child(self.render_quick_command_row(command, pinned, highlighted_command, cx))
+            .child(self.render_quick_command_row(command, highlighted_command, cx))
             .into_any_element()
     }
 
     fn render_quick_command_row(
         &self,
         command: QuickCommand,
-        pinned: bool,
         highlighted_command: Option<&str>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1273,7 +1332,6 @@ impl WorkspaceApp {
         let command_for_edit = command.clone();
         let command_id = command.id.clone();
         let command_id_for_hover = command.id.clone();
-        let keep_open_for_insert = pinned;
         let highlighted = highlighted_command == Some(command.id.as_str());
         let selection_group_id = crate::workspace::selectable_text::selectable_text_id(
             "quick-command-row",
@@ -1324,7 +1382,6 @@ impl WorkspaceApp {
                         cx.listener(move |this, _event, window, cx| {
                             this.insert_quick_command_into_command_bar(
                                 command_for_insert.clone(),
-                                keep_open_for_insert,
                                 cx,
                             );
 window.focus(&this.focus_handle, cx);
