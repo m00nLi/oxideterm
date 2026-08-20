@@ -1,0 +1,44 @@
+name: Native Build (Windows x64)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, feat/single-channel-monitor]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/native-build-windows-x64.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-build-windows-x64-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    name: Windows x64 compile check
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.94.1
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: native-build-windows-x64
+          cache-on-failure: false
+
+      - name: Check Windows GPUI backend
+        run: cargo check -p gpui_windows --target x86_64-pc-windows-msvc
+
+      - name: Check Windows application
+        run: cargo check -p oxideterm-gpui-app --target x86_64-pc-windows-msvc
