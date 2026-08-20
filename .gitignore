@@ -44,3 +44,6 @@ docs/remote-agent-terminal-awareness-design.md
 .hallmark/
 # Local implementation plans
 .planning/
+# Local development notes and handoff documents (may contain internal details)
+dev-docs/
+PROJECT_STATUS.md
