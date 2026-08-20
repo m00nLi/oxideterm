@@ -148,10 +148,12 @@ impl TextEditorView {
         match key {
             "left" | "arrowleft" => {
                 self.cursor.move_left(&self.buffer, modifiers.shift);
+                self.reveal_caret_horizontally();
                 cx.notify();
             }
             "right" | "arrowright" => {
                 self.cursor.move_right(&self.buffer, modifiers.shift);
+                self.reveal_caret_horizontally();
                 cx.notify();
             }
             "up" | "arrowup" => self.move_vertically(-1, modifiers.shift, cx),
@@ -196,6 +198,7 @@ impl TextEditorView {
         };
         if let Some(offset) = offset {
             self.cursor.move_to(offset, extend);
+            self.reveal_caret_horizontally();
             self.marked_text = None;
             cx.notify();
         }
@@ -227,6 +230,7 @@ impl TextEditorView {
         self.secondary_selections.clear();
         self.marked_text = None;
         self.reveal_display_row(target_index);
+        self.reveal_caret_horizontally();
         cx.notify();
     }
 

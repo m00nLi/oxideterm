@@ -311,6 +311,23 @@ pub struct TextEditorView {
     caret_blink_task: Option<Task<()>>,
 }
 
+fn horizontal_scroll_target_for_caret(
+    caret_x: f32,
+    caret_width: f32,
+    scroll_x: f32,
+    viewport_width: f32,
+    max_scroll: f32,
+) -> Option<f32> {
+    let target = if caret_x < scroll_x {
+        caret_x - caret_width
+    } else if caret_x + caret_width > scroll_x + viewport_width {
+        caret_x + caret_width - viewport_width
+    } else {
+        return None;
+    };
+    Some(target.clamp(0.0, max_scroll.max(0.0)))
+}
+
 impl TextEditorView {
     pub fn new(text: impl Into<String>, tokens: &ThemeTokens, cx: &mut Context<Self>) -> Self {
         let metrics = EditorMetrics::from_theme(tokens);
@@ -656,6 +673,7 @@ impl TextEditorView {
                 .map(|(index, _, _)| index)
                 .unwrap_or(line_index);
         self.reveal_display_row(display_index);
+        self.reveal_caret_horizontally();
         if unfolded {
             self.viewport
                 .clamp(self.document_row_count(), self.metrics.line_height);
@@ -714,6 +732,7 @@ impl TextEditorView {
             self.refresh_find_matches();
             self.viewport
                 .clamp(self.document_row_count(), self.metrics.line_height);
+            self.reveal_caret_horizontally();
             cx.notify();
         }
     }
@@ -775,6 +794,7 @@ impl TextEditorView {
             self.refresh_find_matches();
             self.viewport
                 .clamp(self.document_row_count(), self.metrics.line_height);
+            self.reveal_caret_horizontally();
             cx.notify();
         }
     }
@@ -1002,6 +1022,39 @@ impl TextEditorView {
             self.document_row_count(),
             self.metrics.line_height,
         );
+    }
+
+    /// Keeps the caret inside the horizontal viewport. Single-line surfaces
+    /// (for example the terminal command sender) otherwise let the caret run
+    /// past the right edge while typing a long command.
+    pub(super) fn reveal_caret_horizontally(&mut self) {
+        if self.viewport.width_px <= 0.0 {
+            return;
+        }
+        let head = self.cursor.selection().head;
+        let Ok(position) = self.buffer.offset_to_line_col(head) else {
+            return;
+        };
+        let line_text = self.buffer.line_text(position.line).unwrap_or_default();
+        let visual_column = visual_column_for_byte_column(&line_text, position.column);
+        let caret_x =
+            self.visible_content_padding_x() + visual_column as f32 * self.metrics.char_width;
+        let caret_width = self.metrics.char_width;
+        let viewport_width = self.horizontal_viewport_width_px();
+        let scroll_x = self.viewport.scroll_x_px;
+
+        let Some(target) = horizontal_scroll_target_for_caret(
+            caret_x,
+            caret_width,
+            scroll_x,
+            viewport_width,
+            self.max_horizontal_scroll_px(),
+        ) else {
+            return;
+        };
+        if (target - self.viewport.scroll_x_px).abs() > f32::EPSILON {
+            self.viewport.scroll_x_px = target;
+        }
     }
 
     fn set_viewport_bounds(
@@ -1297,7 +1350,10 @@ fn colored_text(text: &str, color: u32) -> Div {
 mod tests {
     use std::sync::Arc;
 
-    use super::{HighlightChunkCache, HighlightChunkCacheKey, LineChunkSpec};
+    use super::{
+        HighlightChunkCache, HighlightChunkCacheKey, LineChunkSpec,
+        horizontal_scroll_target_for_caret,
+    };
 
     fn cache_key(line: usize) -> HighlightChunkCacheKey {
         HighlightChunkCacheKey {
@@ -1343,6 +1399,38 @@ mod tests {
             cache
                 .get(&cache_key(HighlightChunkCache::MAX_ENTRIES))
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn horizontal_reveal_follows_caret_past_the_right_edge() {
+        assert_eq!(
+            horizontal_scroll_target_for_caret(100.0, 10.0, 0.0, 80.0, 1_000.0),
+            Some(30.0)
+        );
+    }
+
+    #[test]
+    fn horizontal_reveal_pulls_back_when_caret_is_left_of_view() {
+        assert_eq!(
+            horizontal_scroll_target_for_caret(50.0, 10.0, 80.0, 80.0, 1_000.0),
+            Some(40.0)
+        );
+    }
+
+    #[test]
+    fn horizontal_reveal_keeps_visible_carets_in_place() {
+        assert_eq!(
+            horizontal_scroll_target_for_caret(50.0, 10.0, 20.0, 80.0, 1_000.0),
+            None
+        );
+    }
+
+    #[test]
+    fn horizontal_reveal_clamps_to_max_scroll() {
+        assert_eq!(
+            horizontal_scroll_target_for_caret(1_000.0, 10.0, 0.0, 80.0, 60.0),
+            Some(60.0)
         );
     }
 }
