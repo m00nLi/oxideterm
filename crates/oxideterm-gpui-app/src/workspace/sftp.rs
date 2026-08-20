@@ -31,9 +31,10 @@ use oxideterm_sftp::TransferConflict as SftpConflictInfo;
 use oxideterm_sftp::{
     AssetFileKind, BackgroundTransferDirection, BackgroundTransferKind, BackgroundTransferSnapshot,
     BackgroundTransferState, FileInfo as RemoteFileInfo, FileType as RemoteFileType,
-    ListFilter as RemoteListFilter, LocalDownloadDisposition, PreviewContent, SftpError,
-    SftpSession, SftpTransferGuard, SortOrder as RemoteSortOrder, StoredTransferProgress,
-    TarCapabilities, TransferDirection as SftpTransferDirection, TransferProgress,
+    ListFilter as RemoteListFilter, LocalDownloadDisposition, PreviewContent,
+    RemoteRelayProgressContext, SftpError, SftpSession, SftpTransferGuard,
+    SortOrder as RemoteSortOrder, StoredTransferProgress, TarCapabilities,
+    TransferDirection as SftpTransferDirection, TransferProgress,
     TransferProtocol as RemoteTransferProtocol, TransferStrategy as RemoteTransferStrategy,
     TransferType as RemoteTransferType, encode_to_encoding, scp_download_directory,
     scp_download_file, scp_upload_directory, scp_upload_file, tar_download_directory,
@@ -247,6 +248,119 @@ pub(super) enum SftpSurfaceId {
     Sidebar,
 }
 
+/// Identifies the remote endpoint without implying NodeRouter ownership.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(super) enum SftpRemoteId {
+    Node(NodeId),
+    Standalone(String),
+}
+
+impl SftpRemoteId {
+    fn storage_key(&self) -> String {
+        match self {
+            Self::Node(node_id) => node_id.0.clone(),
+            Self::Standalone(profile_id) => format!("standalone-sftp:{profile_id}"),
+        }
+    }
+
+    fn node_id(&self) -> Option<&NodeId> {
+        match self {
+            Self::Node(node_id) => Some(node_id),
+            Self::Standalone(_) => None,
+        }
+    }
+
+    fn standalone_endpoint_id(&self) -> Option<&str> {
+        match self {
+            Self::Node(_) => None,
+            Self::Standalone(endpoint_id) => Some(endpoint_id),
+        }
+    }
+
+    fn from_standalone_endpoint_id(endpoint_id: String) -> Self {
+        Self::Standalone(endpoint_id)
+    }
+}
+
+pub(super) struct StandaloneSftpRuntime {
+    pub(super) connection_id: String,
+    pub(super) consumer: ConnectionConsumer,
+    pub(super) handle: SshConnectionHandle,
+    pub(super) title: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct StandaloneSftpTabBinding {
+    pub(super) primary_endpoint_id: String,
+    pub(super) secondary_endpoint_id: Option<String>,
+    pub(super) secondary_initial_remote_path: Option<String>,
+}
+
+impl StandaloneSftpTabBinding {
+    pub(super) fn contains_endpoint(&self, endpoint_id: &str) -> bool {
+        self.primary_endpoint_id == endpoint_id
+            || self.secondary_endpoint_id.as_deref() == Some(endpoint_id)
+    }
+}
+
+pub(super) struct StandaloneSftpConsumerLease {
+    registry: SshConnectionRegistry,
+    connection_id: String,
+    consumer: ConnectionConsumer,
+}
+
+impl Drop for StandaloneSftpConsumerLease {
+    fn drop(&mut self) {
+        // A background transfer owns this consumer independently from its tab.
+        self.registry.release(&self.connection_id, &self.consumer);
+    }
+}
+
+#[derive(Clone)]
+pub(super) enum SftpRemoteBackend {
+    Node { router: NodeRouter, node_id: NodeId },
+    Standalone { handle: SshConnectionHandle },
+}
+
+impl SftpRemoteBackend {
+    async fn resolve_connection(&self) -> Result<SshConnectionHandle, String> {
+        match self {
+            Self::Node { router, node_id } => router
+                .resolve_connection(node_id)
+                .await
+                .map(|resolved| resolved.handle)
+                .map_err(|error| error.to_string()),
+            Self::Standalone { handle } => Ok(handle.clone()),
+        }
+    }
+
+    async fn acquire_sftp(&self) -> Result<Arc<tokio::sync::Mutex<SftpSession>>, String> {
+        match self {
+            Self::Node { router, node_id } => router
+                .acquire_sftp(node_id)
+                .await
+                .map_err(|error| error.to_string()),
+            Self::Standalone { handle } => handle
+                .acquire_sftp()
+                .await
+                .map_err(|error| error.to_string()),
+        }
+    }
+
+    async fn acquire_transfer_sftp(&self) -> Result<SftpSession, String> {
+        match self {
+            Self::Node { router, node_id } => router
+                .acquire_transfer_sftp(node_id)
+                .await
+                .map_err(|error| error.to_string()),
+            Self::Standalone { handle } => handle
+                .acquire_transfer_sftp()
+                .await
+                .map_err(|error| error.to_string()),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct SftpPresentationRequest {
     node_id: NodeId,
@@ -257,19 +371,32 @@ pub(super) struct SftpPresentationRequest {
 pub(super) enum SftpWorkerResult {
     StartRemoteLoad {
         surface_id: SftpSurfaceId,
-        node_id: NodeId,
+        remote_id: SftpRemoteId,
     },
     RemoteList {
         surface_id: SftpSurfaceId,
-        node_id: NodeId,
+        remote_id: SftpRemoteId,
         view_generation: u64,
         session_id: String,
         path: String,
         result: Result<RemoteSftpListing, String>,
     },
+    PairPrimaryList {
+        surface_id: SftpSurfaceId,
+        remote_id: SftpRemoteId,
+        view_generation: u64,
+        path: String,
+        result: Result<RemoteSftpListing, String>,
+    },
     RemotePathCompletion {
         generation: u64,
-        node_id: NodeId,
+        remote_id: SftpRemoteId,
+        parent_path: String,
+        result: Result<Vec<PathCompletionCandidate>, String>,
+    },
+    PairPrimaryPathCompletion {
+        generation: u64,
+        remote_id: SftpRemoteId,
         parent_path: String,
         result: Result<Vec<PathCompletionCandidate>, String>,
     },
@@ -284,7 +411,7 @@ pub(super) enum SftpWorkerResult {
         protocol: RemoteTransferProtocol,
     },
     TransferComplete {
-        node_id: NodeId,
+        remote_id: SftpRemoteId,
         transfer_id: String,
         id: u64,
         result: Result<(), String>,
@@ -292,7 +419,7 @@ pub(super) enum SftpWorkerResult {
         refresh_local: bool,
     },
     ResumeIncompleteTransferLoaded {
-        node_id: NodeId,
+        remote_id: SftpRemoteId,
         transfer_id: String,
         result: Result<StoredTransferProgress, String>,
     },
@@ -303,11 +430,15 @@ pub(super) enum SftpWorkerResult {
         toast: Option<SftpMutationToast>,
     },
     IncompleteTransfersLoaded {
-        node_id: NodeId,
+        remote_id: SftpRemoteId,
         result: Result<Vec<StoredTransferProgress>, String>,
     },
+    IncompleteTransferDiscarded {
+        transfer_id: String,
+        result: Result<(), String>,
+    },
     BackgroundTransfersLoaded {
-        node_id: NodeId,
+        remote_id: SftpRemoteId,
         result: Result<Vec<BackgroundTransferSnapshot>, String>,
     },
     PreviewLoaded {
@@ -339,28 +470,28 @@ pub(super) enum SftpWorkerResult {
 // owned runtime intents. Authentication material never crosses this boundary.
 pub(in crate::workspace::sftp) enum SftpWorkspaceEffect {
     BindSession {
-        node_id: NodeId,
+        remote_id: SftpRemoteId,
         session_id: String,
         cwd: String,
     },
     LoadBackgroundTransfers {
-        node_id: NodeId,
+        remote_id: SftpRemoteId,
     },
     LoadIncompleteTransfers {
-        node_id: NodeId,
+        remote_id: SftpRemoteId,
     },
     RemoteLoadPending {
         surface_id: SftpSurfaceId,
-        node_id: NodeId,
+        remote_id: SftpRemoteId,
     },
     StartRemoteLoad {
         surface_id: SftpSurfaceId,
-        node_id: NodeId,
+        remote_id: SftpRemoteId,
         path: String,
         view_generation: u64,
     },
     TransferFinishedForReconnect {
-        node_id: NodeId,
+        remote_id: SftpRemoteId,
         transfer_id: String,
         success: bool,
     },
@@ -375,6 +506,7 @@ pub(in crate::workspace::sftp) enum SftpWorkspaceEffect {
         view_generation: u64,
         path: String,
     },
+    ReloadPairPrimaryDirectory,
 }
 
 pub(super) struct SftpWorkspaceEffects {
@@ -410,6 +542,9 @@ pub(super) enum SftpWorkspaceEvent {
     ResumeIncompleteTransferRequested {
         transfer_id: String,
     },
+    DiscardIncompleteTransferRequested {
+        transfer_id: String,
+    },
     TooltipRequested {
         id: String,
         label: String,
@@ -421,7 +556,7 @@ pub(super) enum SftpWorkspaceEvent {
     },
     RemoteLoadReady {
         surface_id: SftpSurfaceId,
-        node_id: NodeId,
+        remote_id: SftpRemoteId,
         delivery: delivery::ActiveDeliverySender<SftpWorkerResult>,
     },
     PreviewSaveRequested {
@@ -520,7 +655,7 @@ struct SftpTransferItem {
     id: u64,
     transfer_id: String,
     batch_id: Option<u64>,
-    node_id: NodeId,
+    remote_id: SftpRemoteId,
     name: String,
     local_path: String,
     remote_path: String,
@@ -801,10 +936,12 @@ pub(super) struct SftpWorkspaceEntity {
     remote_load_retry_count: u8,
     remote_load_retry_task: Option<Task<()>>,
     pub(in crate::workspace) current_surface_id: Option<SftpSurfaceId>,
-    pub(in crate::workspace) current_node_id: Option<NodeId>,
-    local_path_by_node: HashMap<NodeId, String>,
-    remote_path_by_node: HashMap<NodeId, String>,
-    remote_home_by_node: HashMap<NodeId, String>,
+    pub(in crate::workspace) current_remote_id: Option<SftpRemoteId>,
+    pair_primary_remote_id: Option<SftpRemoteId>,
+    pair_primary_loading: bool,
+    local_path_by_remote: HashMap<SftpRemoteId, String>,
+    remote_path_by_remote: HashMap<SftpRemoteId, String>,
+    remote_home_by_remote: HashMap<SftpRemoteId, String>,
     view_generation: u64,
     init_error: Option<String>,
     pub(super) focused_input: Option<SftpInput>,
@@ -857,8 +994,8 @@ pub(super) struct SftpWorkspaceEntity {
     incomplete_transfer_list_state: ListState,
     incomplete_transfer_list_cache: RefCell<VirtualListSignatureCache>,
     incomplete_load_inflight: bool,
-    incomplete_load_node: Option<NodeId>,
-    incomplete_load_pending_node: Option<NodeId>,
+    incomplete_load_remote: Option<SftpRemoteId>,
+    incomplete_load_pending_remote: Option<SftpRemoteId>,
     show_incomplete: bool,
     context_menu: Option<SftpContextMenu>,
     context_menu_presence: oxideterm_gpui_ui::motion::ExitPresence,
@@ -920,10 +1057,12 @@ impl Default for SftpWorkspaceEntity {
             remote_load_retry_count: 0,
             remote_load_retry_task: None,
             current_surface_id: None,
-            current_node_id: None,
-            local_path_by_node: HashMap::new(),
-            remote_path_by_node: HashMap::new(),
-            remote_home_by_node: HashMap::new(),
+            current_remote_id: None,
+            pair_primary_remote_id: None,
+            pair_primary_loading: false,
+            local_path_by_remote: HashMap::new(),
+            remote_path_by_remote: HashMap::new(),
+            remote_home_by_remote: HashMap::new(),
             view_generation: 0,
             init_error: None,
             focused_input: None,
@@ -998,8 +1137,8 @@ impl Default for SftpWorkspaceEntity {
             .measure_all(),
             incomplete_transfer_list_cache: RefCell::new(VirtualListSignatureCache::default()),
             incomplete_load_inflight: false,
-            incomplete_load_node: None,
-            incomplete_load_pending_node: None,
+            incomplete_load_remote: None,
+            incomplete_load_pending_remote: None,
             show_incomplete: false,
             context_menu: None,
             context_menu_presence: oxideterm_gpui_ui::motion::ExitPresence::visible(),
@@ -1144,8 +1283,8 @@ impl SftpWorkspaceEntity {
             let _ = entity.update(cx, |sftp, cx| {
                 sftp.folder_picker_task = None;
                 if let Some(path) = selected_path {
-                    if let Some(node_id) = sftp.current_node_id.clone() {
-                        sftp.local_path_by_node.insert(node_id, path.clone());
+                    if let Some(remote_id) = sftp.current_remote_id.clone() {
+                        sftp.local_path_by_remote.insert(remote_id, path.clone());
                     }
                     sftp.apply_local_path(path);
                     cx.notify();
@@ -1362,7 +1501,7 @@ mod entity_delivery_tests {
             id: 1,
             transfer_id: "transfer-1".to_string(),
             batch_id: None,
-            node_id: NodeId::new("delivery-test"),
+            remote_id: SftpRemoteId::Node(NodeId::new("delivery-test")),
             name: "file.txt".to_string(),
             local_path: "/tmp/file.txt".to_string(),
             remote_path: "/file.txt".to_string(),
@@ -1454,7 +1593,7 @@ mod entity_delivery_tests {
 
         sender
             .send(SftpWorkerResult::TransferComplete {
-                node_id: NodeId::new("delivery-test"),
+                remote_id: SftpRemoteId::Node(NodeId::new("delivery-test")),
                 transfer_id: "transfer-1".to_string(),
                 id: 1,
                 result: Ok(()),
@@ -1472,7 +1611,7 @@ mod entity_delivery_tests {
         let entity = cx.new(SftpWorkspaceEntity::new);
         entity.update(cx, |sftp, _cx| {
             sftp.current_surface_id = Some(SftpSurfaceId::Tab(TabId(1)));
-            sftp.current_node_id = Some(NodeId::new("current-node"));
+            sftp.current_remote_id = Some(SftpRemoteId::Node(NodeId::new("current-node")));
             sftp.view_generation = 2;
             sftp.remote_load_inflight = true;
         });
@@ -1490,7 +1629,7 @@ mod entity_delivery_tests {
         sender
             .send(SftpWorkerResult::RemoteList {
                 surface_id: SftpSurfaceId::Tab(TabId(1)),
-                node_id: NodeId::new("current-node"),
+                remote_id: SftpRemoteId::Node(NodeId::new("current-node")),
                 view_generation: 1,
                 session_id: "stale-session".to_string(),
                 path: "/stale".to_string(),
@@ -1512,7 +1651,7 @@ mod entity_delivery_tests {
         entity.update(cx, |sftp, _cx| {
             // Opening SFTP queues the terminal cwd after the remembered directory starts loading.
             sftp.current_surface_id = Some(SftpSurfaceId::Tab(TabId(1)));
-            sftp.current_node_id = Some(NodeId::new("current-node"));
+            sftp.current_remote_id = Some(SftpRemoteId::Node(NodeId::new("current-node")));
             sftp.view_generation = 1;
             sftp.remote_path = "/root/.oxideterm".to_string();
             sftp.remote_path_input = sftp.remote_path.clone();
@@ -1525,7 +1664,7 @@ mod entity_delivery_tests {
         sender
             .send(SftpWorkerResult::RemoteList {
                 surface_id: SftpSurfaceId::Tab(TabId(1)),
-                node_id: NodeId::new("current-node"),
+                remote_id: SftpRemoteId::Node(NodeId::new("current-node")),
                 view_generation: 1,
                 session_id: "current-session".to_string(),
                 path: "/root".to_string(),

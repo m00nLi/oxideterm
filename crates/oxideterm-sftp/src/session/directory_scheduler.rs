@@ -109,13 +109,7 @@ impl DirectoryRateLimiter {
 fn plan_directory_transfer(
     requested_parallelism: usize,
     advertised_open_handle_limit: Option<u64>,
-    single_channel: bool,
 ) -> DirectoryTransferPlan {
-    // Transports that tolerate only one session channel (single-channel SSH
-    // servers) must run the whole directory batch in one lane. Opening a
-    // sibling channel would kill the TCP connection and take the primary
-    // SFTP session down with it.
-    let requested_parallelism = if single_channel { 1 } else { requested_parallelism };
     let requested_workers =
         requested_parallelism.clamp(1, crate::MAX_SFTP_DIRECTORY_PARALLELISM);
     let handle_workers = advertised_open_handle_limit
@@ -153,57 +147,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn planner_uses_requested_parallelism_when_server_limit_is_unknown() {
-        let plan = plan_directory_transfer(8, None, false);
-
-        assert_eq!(plan.worker_count, 8);
-        assert_eq!(plan.channel_count, 4);
-        assert_eq!(plan.bulk_lane_workers, 2);
-        assert_eq!(plan.queue_capacity, 16);
-    }
-
-    #[test]
-    fn planner_respects_small_server_handle_budget() {
-        let plan = plan_directory_transfer(16, Some(10), false);
-
-        assert_eq!(plan.worker_count, 2);
-        assert_eq!(plan.channel_count, 2);
-    }
-
-    #[test]
-    fn planner_keeps_one_worker_when_handle_budget_is_tiny() {
-        let plan = plan_directory_transfer(16, Some(1), false);
-
-        assert_eq!(plan.worker_count, 1);
-        assert_eq!(plan.channel_count, 1);
-        assert_eq!(plan.bulk_lane_workers, 1);
-    }
-
-    #[test]
-    fn planner_keeps_parallelism_available_for_shared_rate_limiting() {
-        let plan = plan_directory_transfer(16, None, false);
-
-        assert_eq!(plan.worker_count, 16);
-        assert_eq!(plan.channel_count, 4);
-    }
-
-    #[test]
-    fn planner_forces_single_lane_when_limit_is_unknown() {
-        let plan = plan_directory_transfer(16, None, true);
-
-        assert_eq!(plan.worker_count, 1);
-        assert_eq!(plan.channel_count, 1);
-        assert_eq!(plan.bulk_lane_workers, 1);
-        assert_eq!(plan.queue_capacity, 2);
-    }
-
-    #[test]
-    fn planner_forces_single_lane_despite_permissive_handle_budget() {
-        let plan = plan_directory_transfer(16, Some(100), true);
-
-        assert_eq!(plan.worker_count, 1);
-        assert_eq!(plan.channel_count, 1);
-        assert_eq!(plan.bulk_lane_workers, 1);
+    fn planner_bounds_parallelism_by_request_and_server_capacity() {
+        for (requested, server_limit, workers, channels) in [
+            (8, None, 8, 4),
+            (16, Some(10), 2, 2),
+            (16, Some(1), 1, 1),
+            (16, None, 16, 4),
+        ] {
+            let plan = plan_directory_transfer(requested, server_limit);
+            assert_eq!((plan.worker_count, plan.channel_count), (workers, channels));
+        }
     }
 
     #[test]
@@ -234,7 +187,7 @@ mod tests {
 
     #[test]
     fn planner_classifies_bulk_jobs_by_size() {
-        let plan = plan_directory_transfer(3, None, false);
+        let plan = plan_directory_transfer(3, None);
 
         assert_eq!(
             plan.classify_size(DIRECTORY_COMPACT_FILE_MAX_BYTES),
@@ -248,7 +201,7 @@ mod tests {
 
     #[test]
     fn directory_job_channel_applies_planned_backpressure() {
-        let plan = plan_directory_transfer(2, None, false);
+        let plan = plan_directory_transfer(2, None);
         let (sender, _receiver) = directory_job_channel(plan);
 
         for job in 0..plan.queue_capacity {

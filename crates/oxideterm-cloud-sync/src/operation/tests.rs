@@ -42,8 +42,6 @@ fn connection_sync_record(
 
 fn dirty_snapshot() -> CloudSyncLocalSnapshot {
     CloudSyncLocalSnapshot {
-        metadata: crate::LocalSyncMetadata::default(),
-        scope: crate::SyncScope::default(),
         dirty: crate::StructuredDirtyInfo {
             current_state: crate::StructuredLocalState::default(),
             dirty_sections: crate::StructuredDirtySections {
@@ -52,15 +50,7 @@ fn dirty_snapshot() -> CloudSyncLocalSnapshot {
             },
             has_dirty: true,
         },
-        upload_units: 0,
-        connections_record_count: 0,
-        forwards_record_count: 0,
-        quick_commands_record_count: 0,
-        serial_profiles_record_count: 0,
-        telnet_profiles_record_count: 0,
-        mosh_profiles_record_count: 0,
-        remote_desktop_profiles_record_count: 0,
-        sensitive_credentials_record_count: 0,
+        ..CloudSyncLocalSnapshot::default()
     }
 }
 
@@ -342,7 +332,6 @@ fn upload_conflict_check_allows_unchanged_legacy_snapshot_like_tauri() {
 #[test]
 fn upload_conflict_check_rejects_changed_sensitive_credentials_section() {
     let local_snapshot = CloudSyncLocalSnapshot {
-        metadata: crate::LocalSyncMetadata::default(),
         scope: crate::SyncScope {
             sync_sensitive_credentials: true,
             ..crate::SyncScope::default()
@@ -359,14 +348,8 @@ fn upload_conflict_check_rejects_changed_sensitive_credentials_section() {
             has_dirty: true,
         },
         upload_units: 1,
-        connections_record_count: 0,
-        forwards_record_count: 0,
-        quick_commands_record_count: 0,
-        serial_profiles_record_count: 0,
-        telnet_profiles_record_count: 0,
-        mosh_profiles_record_count: 0,
-        remote_desktop_profiles_record_count: 0,
         sensitive_credentials_record_count: 1,
+        ..CloudSyncLocalSnapshot::default()
     };
     let metadata = RemoteMetadata {
         exists: true,

@@ -458,11 +458,14 @@ impl SftpSession {
             .as_ref()
             .map(|manager| manager.directory_parallelism())
             .unwrap_or(1);
-        plan_directory_transfer(
-            requested_parallelism,
-            self.sftp.advertised_open_handle_limit(),
-            self.single_channel,
-        )
+        // Single-channel transports tolerate only one session channel, so the
+        // whole directory batch must stay in one lane.
+        let requested_parallelism = if self.single_channel {
+            1
+        } else {
+            requested_parallelism
+        };
+        plan_directory_transfer(requested_parallelism, self.sftp.advertised_open_handle_limit())
     }
 
     async fn produce_download_jobs(

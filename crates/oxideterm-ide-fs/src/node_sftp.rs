@@ -620,7 +620,7 @@ fn map_sftp_error(error: SftpError) -> IdeFileError {
         }
         SftpError::SubsystemNotAvailable(_) => IdeFileErrorKind::Unsupported,
         SftpError::InvalidPath(_) => IdeFileErrorKind::NotFound,
-        SftpError::TransferCancelled => IdeFileErrorKind::Other,
+        SftpError::TransferCancelled | SftpError::TransferShutdown => IdeFileErrorKind::Other,
         SftpError::TransferInterrupted(_) => IdeFileErrorKind::Disconnected,
         SftpError::NotInitialized(_) => IdeFileErrorKind::Disconnected,
         SftpError::TransferError(_) | SftpError::WriteError(_) | SftpError::StorageError(_) => {
@@ -686,13 +686,10 @@ mod tests {
     }
 
     #[test]
-    fn maps_channel_closed_to_disconnected() {
+    fn maps_unavailable_sftp_routes_to_disconnected() {
         let error = map_sftp_error(SftpError::ChannelError("channel closed".into()));
         assert_eq!(error.kind, IdeFileErrorKind::Disconnected);
-    }
 
-    #[test]
-    fn maps_sftp_session_unavailable_route_to_disconnected() {
         let error = map_route_error(RouteError::CapabilityUnavailable(
             "Session not found: node-1".to_string(),
         ));

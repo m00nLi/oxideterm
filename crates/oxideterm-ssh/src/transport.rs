@@ -207,6 +207,7 @@ pub enum SshTransportError {
         host: String,
         port: u16,
         fingerprint: String,
+        key_type: String,
     },
     #[error(
         "SSH host key changed for {host}:{port}: expected {expected_fingerprint}, got {actual_fingerprint}"
@@ -216,6 +217,7 @@ pub enum SshTransportError {
         port: u16,
         expected_fingerprint: String,
         actual_fingerprint: String,
+        key_type: String,
     },
     #[error("SSH host key check failed: {0}")]
     HostKeyCheckFailed(String),
@@ -906,20 +908,12 @@ mod auth_banner_tests {
     };
 
     #[test]
-    fn sanitize_auth_banner_strips_control_chars() {
+    fn auth_banner_pipeline_sanitizes_formats_and_consumes_once() {
         assert_eq!(
             sanitize_auth_banner("hello\u{0007}\nworld"),
             Some("hello\nworld".to_string())
         );
-    }
-
-    #[test]
-    fn sanitize_auth_banner_drops_empty_banner() {
         assert_eq!(sanitize_auth_banner("\u{0007}\r\n"), None);
-    }
-
-    #[test]
-    fn auth_banners_are_consumed_once() {
         let sink = new_auth_banner_sink();
         sink.lock().push("Banner A".to_string());
         sink.lock().push("Banner B".to_string());
@@ -929,10 +923,6 @@ mod auth_banner_tests {
             vec!["Banner A".to_string(), "Banner B".to_string()]
         );
         assert!(take_auth_banners(&sink).is_empty());
-    }
-
-    #[test]
-    fn auth_banner_prelude_matches_terminal_line_endings() {
         assert_eq!(
             auth_banner_prelude_bytes(vec!["one\ntwo".to_string(), "three".to_string()]),
             b"one\r\ntwo\r\nthree\r\n".to_vec()

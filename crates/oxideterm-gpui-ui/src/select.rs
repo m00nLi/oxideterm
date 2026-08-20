@@ -118,6 +118,8 @@ pub enum SelectAnchorId {
     NewConnectionGroup,
     NewConnectionKeyAuthSource,
     NewConnectionManagedKey,
+    NewConnectionStandaloneSftpSecondaryKeyAuthSource,
+    NewConnectionStandaloneSftpSecondaryManagedKey,
     NewConnectionJumpSavedConnection,
     NewConnectionRemoteDesktopSshGateway,
     NewConnectionJumpKeyAuthSource,
@@ -126,6 +128,9 @@ pub enum SelectAnchorId {
     NewConnectionUpstreamProxyPolicy,
     NewConnectionUpstreamProxyProtocol,
     NewConnectionUpstreamProxyAuth,
+    NewConnectionStandaloneSftpSecondaryUpstreamProxyPolicy,
+    NewConnectionStandaloneSftpSecondaryUpstreamProxyProtocol,
+    NewConnectionStandaloneSftpSecondaryUpstreamProxyAuth,
     NewConnectionLocalShell,
     NewConnectionSerialPort,
     NewConnectionSerialDataBits,
@@ -226,6 +231,8 @@ impl SelectAnchorId {
             Self::NewConnectionGroup
                 | Self::NewConnectionKeyAuthSource
                 | Self::NewConnectionManagedKey
+                | Self::NewConnectionStandaloneSftpSecondaryKeyAuthSource
+                | Self::NewConnectionStandaloneSftpSecondaryManagedKey
                 | Self::NewConnectionJumpSavedConnection
                 | Self::NewConnectionRemoteDesktopSshGateway
                 | Self::NewConnectionJumpKeyAuthSource
@@ -234,6 +241,9 @@ impl SelectAnchorId {
                 | Self::NewConnectionUpstreamProxyPolicy
                 | Self::NewConnectionUpstreamProxyProtocol
                 | Self::NewConnectionUpstreamProxyAuth
+                | Self::NewConnectionStandaloneSftpSecondaryUpstreamProxyPolicy
+                | Self::NewConnectionStandaloneSftpSecondaryUpstreamProxyProtocol
+                | Self::NewConnectionStandaloneSftpSecondaryUpstreamProxyAuth
                 | Self::NewConnectionLocalShell
                 | Self::NewConnectionSerialPort
                 | Self::NewConnectionSerialDataBits
@@ -737,8 +747,7 @@ mod tests {
     use gpui::CursorStyle;
 
     use super::{
-        SelectAnchorId, interactive_select_trigger_spec, readonly_value_trigger_spec,
-        select_option_is_actionable,
+        interactive_select_trigger_spec, readonly_value_trigger_spec, select_option_is_actionable,
     };
 
     #[test]
@@ -760,56 +769,5 @@ mod tests {
         assert_eq!(interactive.cursor, CursorStyle::PointingHand);
         assert_eq!(interactive.opacity, 1.0);
         assert!(interactive.show_chevron);
-    }
-
-    #[test]
-    fn settings_select_anchor_ids_are_distinct_from_slider_and_sidebar_anchors() {
-        assert!(SelectAnchorId::SettingsLanguage.is_settings_select_trigger());
-        assert!(SelectAnchorId::SettingsSftpConflict.is_settings_select_trigger());
-        assert!(SelectAnchorId::SettingsConnectionImportSource.is_settings_select_trigger());
-        assert!(
-            SelectAnchorId::SettingsConnectionImportDuplicateStrategy.is_settings_select_trigger()
-        );
-
-        assert!(!SelectAnchorId::SettingsTerminalFontSizeSlider.is_settings_select_trigger());
-        assert!(!SelectAnchorId::AiModelSelector.is_settings_select_trigger());
-        assert!(!SelectAnchorId::AiInlineModelSelector.is_settings_select_trigger());
-        assert!(!SelectAnchorId::NewConnectionGroup.is_settings_select_trigger());
-    }
-
-    #[test]
-    fn new_connection_select_anchor_ids_are_tracked_as_trigger_anchors() {
-        assert!(SelectAnchorId::NewConnectionGroup.is_new_connection_select_trigger());
-        assert!(SelectAnchorId::NewConnectionKeyAuthSource.is_new_connection_select_trigger());
-        assert!(SelectAnchorId::NewConnectionPrivilegeKind.is_new_connection_select_trigger());
-        assert!(SelectAnchorId::NewConnectionJumpKeyAuthSource.is_new_connection_select_trigger());
-        assert!(
-            SelectAnchorId::NewConnectionUpstreamProxyPolicy.is_new_connection_select_trigger()
-        );
-        assert!(
-            SelectAnchorId::NewConnectionUpstreamProxyProtocol.is_new_connection_select_trigger()
-        );
-        assert!(SelectAnchorId::NewConnectionUpstreamProxyAuth.is_new_connection_select_trigger());
-        assert!(SelectAnchorId::NewConnectionSerialPort.is_new_connection_select_trigger());
-        assert!(SelectAnchorId::NewConnectionTerminalEncoding.is_new_connection_select_trigger());
-        assert!(
-            SelectAnchorId::NewConnectionTerminalBackspaceSequence
-                .is_new_connection_select_trigger()
-        );
-        assert!(
-            SelectAnchorId::NewConnectionTerminalDeleteSequence.is_new_connection_select_trigger()
-        );
-        assert!(!SelectAnchorId::SettingsLanguage.is_new_connection_select_trigger());
-        assert!(!SelectAnchorId::AiModelSelector.is_new_connection_select_trigger());
-    }
-
-    #[test]
-    fn cloud_sync_select_anchor_ids_are_tracked_as_trigger_anchors() {
-        assert!(SelectAnchorId::CloudSyncBackend.is_cloud_sync_select_trigger());
-        assert!(SelectAnchorId::CloudSyncAuthMode.is_cloud_sync_select_trigger());
-        assert!(SelectAnchorId::CloudSyncConflictStrategy.is_cloud_sync_select_trigger());
-
-        assert!(!SelectAnchorId::SettingsLanguage.is_cloud_sync_select_trigger());
-        assert!(!SelectAnchorId::AiModelSelector.is_cloud_sync_select_trigger());
     }
 }

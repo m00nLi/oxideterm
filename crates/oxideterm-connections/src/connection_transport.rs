@@ -13,6 +13,7 @@ pub const VNC_DEFAULT_PORT_TEXT: &str = "5900";
 pub enum ConnectionTransport {
     LocalTerminal,
     Ssh,
+    StandaloneSftp,
     Mosh,
     Telnet,
     Serial,
@@ -31,6 +32,7 @@ pub fn transport_default_port(transport: ConnectionTransport) -> Option<&'static
     match transport {
         ConnectionTransport::LocalTerminal => None,
         ConnectionTransport::Ssh => Some(SSH_DEFAULT_PORT_TEXT),
+        ConnectionTransport::StandaloneSftp => Some(SSH_DEFAULT_PORT_TEXT),
         ConnectionTransport::Mosh => Some(MOSH_DEFAULT_PORT_TEXT),
         ConnectionTransport::Telnet => Some(TELNET_DEFAULT_PORT_TEXT),
         ConnectionTransport::Rdp => Some(RDP_DEFAULT_PORT_TEXT),
@@ -63,25 +65,34 @@ pub fn transport_username_transition(
     match next_transport {
         ConnectionTransport::Rdp
             if username.is_empty()
-                || (previous_transport == ConnectionTransport::Ssh && username == "root") =>
+                || (matches!(
+                    previous_transport,
+                    ConnectionTransport::Ssh | ConnectionTransport::StandaloneSftp
+                ) && username == "root") =>
         {
             Some(TransportUsernameTransition::Set("Administrator"))
         }
         ConnectionTransport::Vnc
             if matches!(
                 previous_transport,
-                ConnectionTransport::Ssh | ConnectionTransport::Rdp
+                ConnectionTransport::Ssh
+                    | ConnectionTransport::StandaloneSftp
+                    | ConnectionTransport::Rdp
             ) && matches!(username, "root" | "Administrator") =>
         {
             Some(TransportUsernameTransition::Clear)
         }
-        ConnectionTransport::Ssh | ConnectionTransport::Mosh
+        ConnectionTransport::Ssh
+        | ConnectionTransport::StandaloneSftp
+        | ConnectionTransport::Mosh
             if previous_transport == ConnectionTransport::Rdp
                 && (username == "Administrator" || username.is_empty()) =>
         {
             Some(TransportUsernameTransition::Set("root"))
         }
-        ConnectionTransport::Ssh | ConnectionTransport::Mosh
+        ConnectionTransport::Ssh
+        | ConnectionTransport::StandaloneSftp
+        | ConnectionTransport::Mosh
             if previous_transport == ConnectionTransport::Vnc && username.is_empty() =>
         {
             Some(TransportUsernameTransition::Set("root"))
@@ -114,7 +125,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn port_transition_replaces_only_empty_or_known_defaults() {
+    fn transport_transitions_preserve_custom_values_and_local_only_state() {
         assert_eq!(
             transport_port_replacement("22", ConnectionTransport::Ssh, ConnectionTransport::Rdp),
             Some("3389")
@@ -127,10 +138,6 @@ mod tests {
             transport_port_replacement("2200", ConnectionTransport::Ssh, ConnectionTransport::Rdp),
             None
         );
-    }
-
-    #[test]
-    fn username_transition_preserves_custom_values() {
         assert_eq!(
             transport_username_transition(
                 "root",
@@ -155,10 +162,6 @@ mod tests {
             ),
             Some(TransportUsernameTransition::Clear)
         );
-    }
-
-    #[test]
-    fn local_terminal_is_a_non_persistable_launch_target() {
         assert!(!transport_is_persistable(
             ConnectionTransport::LocalTerminal
         ));

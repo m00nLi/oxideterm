@@ -1583,6 +1583,52 @@ impl SshTransportClient {
             .open_shell_channel("")
             .await
     }
+
+    /// Authenticates a routed connection and reports the first untrusted host key.
+    pub async fn preflight_route_host_keys(&self) -> (String, u16, HostKeyStatus) {
+        match self.connect_authenticated_connection().await {
+            Ok(_) => (
+                self.config.host.clone(),
+                self.config.port,
+                HostKeyStatus::Verified,
+            ),
+            Err(SshTransportError::HostKeyUnknown {
+                host,
+                port,
+                fingerprint,
+                key_type,
+            }) => (
+                host,
+                port,
+                HostKeyStatus::Unknown {
+                    fingerprint,
+                    key_type,
+                },
+            ),
+            Err(SshTransportError::HostKeyChanged {
+                host,
+                port,
+                expected_fingerprint,
+                actual_fingerprint,
+                key_type,
+            }) => (
+                host,
+                port,
+                HostKeyStatus::Changed {
+                    expected_fingerprint,
+                    actual_fingerprint,
+                    key_type,
+                },
+            ),
+            Err(error) => (
+                self.config.host.clone(),
+                self.config.port,
+                HostKeyStatus::Error {
+                    message: error.to_string(),
+                },
+            ),
+        }
+    }
 }
 
 #[cfg(test)]

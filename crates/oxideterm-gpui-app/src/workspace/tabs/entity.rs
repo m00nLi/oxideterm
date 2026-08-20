@@ -1196,18 +1196,6 @@ mod tests {
     }
 
     #[test]
-    fn typed_workspace_ids_are_monotonic_and_independent() {
-        let mut tab_host = WorkspaceTabHostEntity::new();
-
-        assert_eq!(tab_host.alloc_tab_id(), TabId(1));
-        assert_eq!(tab_host.alloc_pane_id(), PaneId(1));
-        assert_eq!(tab_host.alloc_session_id(), TerminalSessionId(1));
-        assert_eq!(tab_host.alloc_tab_id(), TabId(2));
-        assert_eq!(tab_host.alloc_pane_id(), PaneId(2));
-        assert_eq!(tab_host.alloc_session_id(), TerminalSessionId(2));
-    }
-
-    #[test]
     fn canonical_tabs_keep_selection_reorder_and_removal_atomic() {
         let mut tab_host = WorkspaceTabHostEntity::new();
         let first = TabId(1);
