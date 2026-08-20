@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   windows-x64:
-    name: Windows x64 compile check
+    name: Windows x64 release build
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -37,8 +37,12 @@ jobs:
           key: native-build-windows-x64
           cache-on-failure: false
 
-      - name: Check Windows GPUI backend
-        run: cargo check -p gpui_windows --target x86_64-pc-windows-msvc
+      - name: Build Windows application
+        run: cargo build --release -p oxideterm-gpui-app --target x86_64-pc-windows-msvc
 
-      - name: Check Windows application
-        run: cargo check -p oxideterm-gpui-app --target x86_64-pc-windows-msvc
+      - name: Upload Windows binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: OxideTerm-windows-x64
+          path: target/x86_64-pc-windows-msvc/release/oxideterm-native.exe
+          if-no-files-found: error
