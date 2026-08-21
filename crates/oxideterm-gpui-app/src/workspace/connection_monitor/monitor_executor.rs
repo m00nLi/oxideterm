@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    future::Future,
     sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
@@ -12,6 +13,91 @@ use tracing::{debug, warn};
 
 const DEFAULT_MONITOR_KEEPALIVE_INTERVAL: u32 = 10;
 
+/// Slot for a dedicated single-channel monitor shell session.
+enum SessionSlot<S> {
+    /// A creator is establishing the connection; waiters park on this guard
+    /// until the slot becomes `Ready` or is removed after a failed connect.
+    Connecting(Arc<tokio::sync::Mutex<()>>),
+    Ready(S),
+}
+
+type MonitorSession = Arc<tokio::sync::Mutex<MonitorShellSession>>;
+
+/// Return the single session for `connection_id`, creating it through
+/// `connect` when necessary.
+///
+/// Creation is serialized per connection: the creator inserts a `Connecting`
+/// slot before awaiting `connect` and replaces it with `Ready` on success or
+/// removes it on failure. Waiters park on the slot guard and re-check the map
+/// after waking, so concurrent first commands share one transport instead of
+/// opening duplicate dedicated connections.
+async fn acquire_session<S, E, F, Fut>(
+    sessions: &Mutex<HashMap<String, SessionSlot<S>>>,
+    connection_id: &str,
+    connect: F,
+) -> Result<S, E>
+where
+    S: Clone,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<S, E>>,
+{
+    loop {
+        let (guard, creator) = {
+            let mut map = sessions.lock().expect("monitor session map poisoned");
+            match map.get(connection_id) {
+                Some(SessionSlot::Ready(session)) => return Ok(session.clone()),
+                Some(SessionSlot::Connecting(guard)) => (guard.clone(), false),
+                None => {
+                    let guard = Arc::new(tokio::sync::Mutex::new(()));
+                    map.insert(
+                        connection_id.to_string(),
+                        SessionSlot::Connecting(guard.clone()),
+                    );
+                    (guard, true)
+                }
+            }
+        };
+
+        // The creator holds the guard across the connect await. A waiter
+        // blocks here and re-checks the slot after the creator finishes.
+        let _held = guard.lock().await;
+
+        if let Some(SessionSlot::Ready(session)) = sessions
+            .lock()
+            .expect("monitor session map poisoned")
+            .get(connection_id)
+        {
+            return Ok(session.clone());
+        }
+        if !creator {
+            // The previous creator failed and removed its slot; retry as the
+            // next creator.
+            continue;
+        }
+
+        match connect().await {
+            Ok(session) => {
+                sessions
+                    .lock()
+                    .expect("monitor session map poisoned")
+                    .insert(connection_id.to_string(), SessionSlot::Ready(session.clone()));
+                return Ok(session);
+            }
+            Err(error) => {
+                let mut map = sessions.lock().expect("monitor session map poisoned");
+                let slot_is_ours = matches!(
+                    map.get(connection_id),
+                    Some(SessionSlot::Connecting(existing)) if Arc::ptr_eq(existing, &guard)
+                );
+                if slot_is_ours {
+                    map.remove(connection_id);
+                }
+                return Err(error);
+            }
+        }
+    }
+}
+
 /// Runs host-tools commands on the right transport for the target node.
 ///
 /// Normal servers keep per-command exec channels on the shared registry
@@ -20,7 +106,7 @@ const DEFAULT_MONITOR_KEEPALIVE_INTERVAL: u32 = 10;
 #[derive(Clone)]
 pub(crate) struct MonitorCommandExecutor {
     registry: SshConnectionRegistry,
-    sessions: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<MonitorShellSession>>>>>,
+    sessions: Arc<Mutex<HashMap<String, SessionSlot<MonitorSession>>>>,
     keepalive: Arc<RwLock<(u32, Vec<u8>)>>,
     detected_os: Arc<Mutex<HashMap<String, String>>>,
 }
@@ -108,33 +194,30 @@ impl MonitorCommandExecutor {
                 });
         }
 
-        let session = if let Some(session) = self
-            .sessions
-            .lock()
-            .expect("monitor session map poisoned")
-            .get(connection_id)
-        {
-            session.clone()
-        } else {
-            debug!(
-                connection_id,
-                "opening dedicated single-channel monitor shell"
-            );
+        let connection_id_owned = connection_id.to_string();
+        let session = acquire_session(&self.sessions, connection_id, move || {
             let config = handle.ssh_config();
             let (interval_secs, data) = self.keepalive_snapshot();
-            let session = connect_monitor_shell(config, interval_secs, data)
-                .await
-                .map_err(|error| {
-                    warn!(connection_id, error = %error, "single-channel monitor connect failed");
-                    MonitorShellError::Write(error.to_string())
-                })?;
-            let session = Arc::new(tokio::sync::Mutex::new(session));
-            self.sessions
-                .lock()
-                .expect("monitor session map poisoned")
-                .insert(connection_id.to_string(), session.clone());
-            session
-        };
+            let connection_id = connection_id_owned.clone();
+            async move {
+                debug!(
+                    connection_id,
+                    "opening dedicated single-channel monitor shell"
+                );
+                connect_monitor_shell(config, interval_secs, data)
+                    .await
+                    .map(|shell| Arc::new(tokio::sync::Mutex::new(shell)))
+                    .map_err(|error| {
+                        warn!(
+                            connection_id,
+                            error = %error,
+                            "single-channel monitor connect failed"
+                        );
+                        MonitorShellError::Write(error.to_string())
+                    })
+            }
+        })
+        .await?;
 
         let result = session
             .lock()
@@ -184,11 +267,168 @@ fn monitor_shell_output(stdout: Vec<u8>, truncated: bool) -> SshCommandOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    type TestSession = Arc<tokio::sync::Mutex<u8>>;
+    type TestSlot = SessionSlot<TestSession>;
+
+    fn test_sessions() -> Arc<Mutex<HashMap<String, TestSlot>>> {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
 
     #[test]
     fn monitor_shell_success_reports_zero_exit_code_for_tmux_parsing() {
         let output = monitor_shell_output(b"===TMUX===...".to_vec(), false);
         assert_eq!(output.exit_code, Some(0));
         assert_eq!(output.stdout, "===TMUX===...");
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_commands_share_one_session() {
+        let sessions = test_sessions();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let connect = || {
+            let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            async move {
+                tokio::task::yield_now().await;
+                assert_eq!(attempt, 1, "connect runs only for the creator");
+                Ok::<TestSession, String>(Arc::new(tokio::sync::Mutex::new(1_u8)))
+            }
+        };
+
+        let (first, second) = tokio::join!(
+            acquire_session(&sessions, "conn-1", connect),
+            acquire_session(&sessions, "conn-1", connect),
+        );
+        let first = first.expect("first caller");
+        let second = second.expect("second caller");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[tokio::test]
+    async fn waiter_reuses_the_creators_session() {
+        let sessions = test_sessions();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let creator_sessions = sessions.clone();
+        let creator_attempts = attempts.clone();
+        let creator_started = started.clone();
+        let creator = tokio::spawn(async move {
+            acquire_session(&creator_sessions, "conn-1", move || {
+                let attempt = creator_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let creator_started = creator_started.clone();
+                async move {
+                    creator_started.notify_one();
+                    tokio::task::yield_now().await;
+                    assert_eq!(attempt, 1);
+                    Ok::<TestSession, String>(Arc::new(tokio::sync::Mutex::new(1_u8)))
+                }
+            })
+            .await
+        });
+        started.notified().await;
+
+        let waiter = acquire_session(&sessions, "conn-1", || async {
+            panic!("the waiter must reuse the creator's session");
+            #[allow(unreachable_code)]
+            Ok::<TestSession, String>(Arc::new(tokio::sync::Mutex::new(2_u8)))
+        });
+
+        let creator_session = creator.await.expect("creator task").expect("creator connect");
+        let waiter_session = waiter.await.expect("waiter connect");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(Arc::ptr_eq(&creator_session, &waiter_session));
+    }
+
+    #[tokio::test]
+    async fn failed_creation_removes_the_slot_and_allows_retry() {
+        let sessions = test_sessions();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let connect = || {
+            let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            async move {
+                tokio::task::yield_now().await;
+                if attempt == 1 {
+                    Err("boom".to_string())
+                } else {
+                    Ok::<TestSession, String>(Arc::new(tokio::sync::Mutex::new(2_u8)))
+                }
+            }
+        };
+
+        let first = acquire_session(&sessions, "conn-1", connect).await;
+        assert!(matches!(first, Err(ref error) if error == "boom"));
+        let second = acquire_session(&sessions, "conn-1", connect)
+            .await
+            .expect("retry succeeds");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        let _ = second;
+    }
+
+    #[tokio::test]
+    async fn waiter_becomes_creator_after_failed_connection_attempt() {
+        let sessions = test_sessions();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let creator_sessions = sessions.clone();
+        let creator_attempts = attempts.clone();
+        let creator_started = started.clone();
+        let creator = tokio::spawn(async move {
+            acquire_session(&creator_sessions, "conn-1", move || {
+                let attempt = creator_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let creator_started = creator_started.clone();
+                async move {
+                    creator_started.notify_one();
+                    tokio::task::yield_now().await;
+                    if attempt == 1 {
+                        Err("boom".to_string())
+                    } else {
+                        Ok::<TestSession, String>(Arc::new(tokio::sync::Mutex::new(1_u8)))
+                    }
+                }
+            })
+            .await
+        });
+        started.notified().await;
+
+        let waiter = acquire_session(&sessions, "conn-1", || {
+            let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            async move {
+                tokio::task::yield_now().await;
+                assert_eq!(attempt, 2, "the waiter becomes the retry creator");
+                Ok::<TestSession, String>(Arc::new(tokio::sync::Mutex::new(1_u8)))
+            }
+        });
+
+        let creator_result = creator.await.expect("creator task");
+        assert!(creator_result.is_err());
+        let waiter_session = waiter.await.expect("waiter retries as creator");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        let _ = waiter_session;
+    }
+
+    #[tokio::test]
+    async fn ready_session_is_reused_without_reconnecting() {
+        let sessions = test_sessions();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let connect = || {
+            let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            async move {
+                assert_eq!(attempt, 1);
+                Ok::<TestSession, String>(Arc::new(tokio::sync::Mutex::new(3_u8)))
+            }
+        };
+
+        let first = acquire_session(&sessions, "conn-1", connect)
+            .await
+            .expect("first");
+        let second = acquire_session(&sessions, "conn-1", connect)
+            .await
+            .expect("second");
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }
