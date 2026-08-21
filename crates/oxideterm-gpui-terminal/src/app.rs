@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque, hash_map::DefaultHasher},
+    collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
     env,
     hash::{Hash, Hasher},
     ops::Range,
@@ -105,6 +105,8 @@ pub enum TerminalPaneEvent {
     PrivilegePromptSubmitRequested,
     // The requested action remains pane-owned until the active Workspace consumes it.
     ContextActionRequested,
+    // Match payloads remain pane-owned; Workspace drains them using the source pane identity.
+    TriggerMatchesAvailable,
     // Search completion is asynchronous; Workspace reads the latest pane-owned status.
     SearchStatusChanged,
 }
@@ -344,10 +346,12 @@ pub struct TerminalPane {
     snapshot: TerminalSnapshot,
     snapshot_dirty: bool,
     snapshot_generation: u64,
+    next_snapshot_line_id: u64,
     terminal_timestamps_enabled: bool,
-    // Visual-only metadata keyed by terminal absolute line; never write this
+    // Visual-only metadata keyed by stable snapshot line identity; never write this
     // into the PTY buffer, copied text, or search/indexed terminal content.
-    row_timestamps: Arc<HashMap<i64, TerminalRowTimestamp>>,
+    row_timestamps: Arc<HashMap<u64, TerminalRowTimestamp>>,
+    row_timestamp_retained_min_line: Option<u64>,
     metrics: TerminalMetrics,
     selection: Option<TerminalSelection>,
     pending_paste: Option<String>,
@@ -355,6 +359,7 @@ pub struct TerminalPane {
     context_menu: Option<TerminalContextMenu>,
     context_menu_presence: oxideterm_gpui_ui::motion::ExitPresence,
     context_action_requested: Option<TerminalContextAction>,
+    pending_trigger_matches: VecDeque<oxideterm_terminal_triggers::TriggerMatched>,
     plugin_input_interceptor: Option<TerminalInputInterceptor>,
     input_broadcaster: Option<TerminalInputBroadcaster>,
     #[cfg(test)]
@@ -475,6 +480,7 @@ pub enum TerminalContextAction {
     SendSelectionToAi,
     FillCommandBarFromSelection,
     OpenSearch,
+    OpenSessionTriggers,
 }
 
 #[derive(Clone, Debug)]
@@ -502,6 +508,7 @@ struct PendingTerminalCwd {
 pub(crate) struct TerminalRowTimestamp {
     pub(crate) label: String,
     signature: u64,
+    source_signature: u64,
 }
 
 #[derive(Clone)]
@@ -561,6 +568,64 @@ fn command_mark_ui_available(enabled: bool, mode: TermMode) -> bool {
 fn privilege_prompt_input_tracking_available(mode: TermMode) -> bool {
     // Full-screen applications own input; their navigation is not shell history.
     !mode.contains(TermMode::ALT_SCREEN)
+}
+
+fn take_snapshot_line_id(next_line_id: &mut u64) -> u64 {
+    let line_id = (*next_line_id).max(1);
+    *next_line_id = line_id.wrapping_add(1).max(1);
+    line_id
+}
+
+fn assign_initial_snapshot_line_ids(snapshot: &mut TerminalSnapshot, next_line_id: &mut u64) {
+    for row in &mut snapshot.lines {
+        row.line_id = take_snapshot_line_id(next_line_id);
+    }
+}
+
+fn reconcile_snapshot_line_ids(
+    snapshot: &mut TerminalSnapshot,
+    previous: &TerminalSnapshot,
+    next_line_id: &mut u64,
+) {
+    let previous_by_source = previous
+        .lines
+        .iter()
+        .filter(|row| row.source_id != 0 && row.line_id != 0)
+        .map(|row| (row.source_id, row))
+        .collect::<HashMap<_, _>>();
+    let previous_by_grid_line = previous
+        .lines
+        .iter()
+        .filter(|row| row.line_id != 0)
+        .map(|row| (row.absolute_line, row))
+        .collect::<HashMap<_, _>>();
+    let mut used_line_ids = snapshot
+        .lines
+        .iter()
+        .filter_map(|row| (row.line_id != 0).then_some(row.line_id))
+        .collect::<HashSet<_>>();
+
+    for row in &mut snapshot.lines {
+        if row.line_id != 0 {
+            continue;
+        }
+
+        // A backing row moving toward a lower grid line is retained output. Rows recycled into
+        // the bottom move in the opposite direction and therefore receive a new identity.
+        let moved_line_id = previous_by_source
+            .get(&row.source_id)
+            .filter(|previous_row| previous_row.absolute_line > row.absolute_line)
+            .map(|previous_row| previous_row.line_id);
+        let stationary_line_id = previous_by_grid_line
+            .get(&row.absolute_line)
+            .filter(|previous_row| previous_row.source_id == row.source_id)
+            .map(|previous_row| previous_row.line_id);
+        let inherited_line_id = moved_line_id
+            .or(stationary_line_id)
+            .filter(|line_id| !used_line_ids.contains(line_id));
+        row.line_id = inherited_line_id.unwrap_or_else(|| take_snapshot_line_id(next_line_id));
+        used_line_ids.insert(row.line_id);
+    }
 }
 
 include!("app_recording.rs");
@@ -738,7 +803,7 @@ impl TerminalPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<Self> {
-        let (snapshot, session_kind, cwd_integration_launch_state) = {
+        let (mut snapshot, session_kind, cwd_integration_launch_state) = {
             let terminal = terminal.lock();
             (
                 terminal.snapshot().with_generation(1),
@@ -746,6 +811,8 @@ impl TerminalPane {
                 terminal.cwd_integration_launch_state(),
             )
         };
+        let mut next_snapshot_line_id = 1;
+        assign_initial_snapshot_line_ids(&mut snapshot, &mut next_snapshot_line_id);
         let cwd_shell_integration_status = initial_cwd_shell_integration_status(
             preferences.current_directory_awareness_enabled,
             session_kind,
@@ -851,8 +918,10 @@ impl TerminalPane {
             snapshot,
             snapshot_dirty: false,
             snapshot_generation: 1,
+            next_snapshot_line_id,
             terminal_timestamps_enabled: false,
             row_timestamps: Arc::new(HashMap::new()),
+            row_timestamp_retained_min_line: None,
             metrics,
             selection: None,
             pending_paste: None,
@@ -860,6 +929,7 @@ impl TerminalPane {
             context_menu: None,
             context_menu_presence: oxideterm_gpui_ui::motion::ExitPresence::visible(),
             context_action_requested: None,
+            pending_trigger_matches: VecDeque::new(),
             plugin_input_interceptor: None,
             input_broadcaster: None,
             #[cfg(test)]
@@ -970,10 +1040,15 @@ impl TerminalPane {
     }
 
     fn stamp_snapshot(&mut self, mut snapshot: TerminalSnapshot) -> TerminalSnapshot {
-        self.record_snapshot_row_timestamps(&snapshot);
+        reconcile_snapshot_line_ids(
+            &mut snapshot,
+            &self.snapshot,
+            &mut self.next_snapshot_line_id,
+        );
         // Raw backend snapshots are stateless; the pane owns frame generation
         // so future render caches can invalidate without changing backends.
         snapshot.reuse_unchanged_rows_from(&self.snapshot);
+        self.record_snapshot_row_timestamps(&snapshot);
         self.snapshot_generation = self.snapshot_generation.wrapping_add(1);
         if self.snapshot_generation == 0 {
             self.snapshot_generation = 1;
@@ -994,8 +1069,9 @@ impl TerminalPane {
     }
 
     fn trim_row_timestamps(&mut self, snapshot: &TerminalSnapshot) {
-        let Some(max_line) = snapshot.lines.iter().map(|row| row.absolute_line).max() else {
+        let Some(max_line) = snapshot.lines.iter().map(|row| row.line_id).max() else {
             Arc::make_mut(&mut self.row_timestamps).clear();
+            self.row_timestamp_retained_min_line = None;
             return;
         };
         let retained_rows = self
@@ -1003,9 +1079,13 @@ impl TerminalPane {
             .scrollback_lines
             .saturating_add(snapshot.rows)
             .saturating_add(1024)
-            .max(2048) as i64;
+            .max(2048) as u64;
         let min_line = max_line.saturating_sub(retained_rows);
-        Arc::make_mut(&mut self.row_timestamps).retain(|line, _| *line >= min_line);
+        trim_row_timestamp_history(
+            Arc::make_mut(&mut self.row_timestamps),
+            &mut self.row_timestamp_retained_min_line,
+            min_line,
+        );
     }
 
     pub fn terminal_timestamps_enabled(&self) -> bool {
@@ -1957,6 +2037,51 @@ impl TerminalPane {
         self.send_command_sender_text(text, cx)
     }
 
+    pub fn send_trigger_text(
+        &mut self,
+        text: &str,
+        append_enter: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(input) = terminal_trigger_input(text, append_enter) else {
+            return false;
+        };
+        if !self.terminal_accepts_input() {
+            return false;
+        }
+
+        // Trigger captures bypass plugin interception, broadcast, recording, and command
+        // history so remote output cannot escape through an unrelated observer.
+        let write_result = {
+            let mut terminal = self.terminal.lock();
+            if self.input_locked || self.terminal_exited || !terminal.is_interactive() {
+                return false;
+            }
+            terminal.write_text(&input)
+        };
+        if write_result.is_err() {
+            return false;
+        }
+
+        self.last_terminal_input = Instant::now();
+        self.reset_cursor_blink();
+        self.restore_live_output_after_user_input();
+        cx.notify();
+        true
+    }
+
+    pub fn set_trigger_rules(
+        &mut self,
+        rules: Option<Arc<oxideterm_terminal_triggers::CompiledTriggerSet>>,
+    ) {
+        self.pending_trigger_matches.clear();
+        self.terminal.lock().set_trigger_rules(rules);
+    }
+
+    pub fn take_trigger_matches(&mut self) -> Vec<oxideterm_terminal_triggers::TriggerMatched> {
+        self.pending_trigger_matches.drain(..).collect()
+    }
+
     pub fn send_command_sender_raw_bytes(&mut self, bytes: &[u8], cx: &mut Context<Self>) -> bool {
         if bytes.is_empty() || !self.terminal_accepts_input() {
             return false;
@@ -2546,6 +2671,17 @@ impl TerminalPane {
             TerminalEvent::Output(bytes) => {
                 if let Some(recorder) = self.recorder.as_mut() {
                     recorder.record_output(&bytes);
+                }
+                TerminalEventEffect::default()
+            }
+            TerminalEvent::TriggerMatched(matched) => {
+                const MAX_PENDING_TRIGGER_MATCHES: usize = 128;
+                let should_emit = self.pending_trigger_matches.is_empty();
+                if self.pending_trigger_matches.len() < MAX_PENDING_TRIGGER_MATCHES {
+                    self.pending_trigger_matches.push_back(matched);
+                    if should_emit {
+                        cx.emit(TerminalPaneEvent::TriggerMatchesAvailable);
+                    }
                 }
                 TerminalEventEffect::default()
             }
@@ -3248,6 +3384,17 @@ pub fn paste_needs_confirmation(text: &str) -> bool {
         && (text.split('\n').count() > PASTE_LINE_THRESHOLD || text.len() > PASTE_CHAR_THRESHOLD)
 }
 
+fn terminal_trigger_input(text: &str, append_enter: bool) -> Option<Zeroizing<String>> {
+    if text.is_empty() && !append_enter {
+        return None;
+    }
+    let mut input = Zeroizing::new(text.to_string());
+    if append_enter {
+        input.push('\r');
+    }
+    Some(input)
+}
+
 fn graphics_options_from_preferences(preferences: &TerminalUiPreferences) -> GraphicsOptions {
     let graphics = preferences.render_policy.terminal_graphics;
     let storage_limit_mb = graphics.storage_limit_bytes.div_ceil(1024 * 1024);
@@ -3279,32 +3426,76 @@ fn terminal_timestamp_label(hour: u32, minute: u32, second: u32, millis: u32) ->
 }
 
 fn record_timestampable_snapshot_rows(
-    row_timestamps: &mut HashMap<i64, TerminalRowTimestamp>,
+    row_timestamps: &mut HashMap<u64, TerminalRowTimestamp>,
     snapshot: &TerminalSnapshot,
     label: &str,
 ) {
     for row in &snapshot.lines {
+        // The snapshot signature is a cheap invalidation key. Cursor-only changes
+        // still fall through to the content signature comparison below.
+        if row_timestamps
+            .get(&row.line_id)
+            .is_some_and(|timestamp| timestamp.source_signature == row.signature)
+        {
+            continue;
+        }
+
         if terminal_row_has_timestamp_content(row) {
             let timestamp_signature = terminal_row_timestamp_signature(row);
-            let line_changed = row_timestamps
-                .get(&row.absolute_line)
-                .map(|timestamp| timestamp.signature)
-                != Some(timestamp_signature);
-            if line_changed {
+            if let Some(timestamp) = row_timestamps.get_mut(&row.line_id) {
+                if timestamp.signature != timestamp_signature {
+                    timestamp.label = label.to_string();
+                    timestamp.signature = timestamp_signature;
+                }
+                timestamp.source_signature = row.signature;
+            } else {
                 row_timestamps.insert(
-                    row.absolute_line,
+                    row.line_id,
                     TerminalRowTimestamp {
                         label: label.to_string(),
                         signature: timestamp_signature,
+                        source_signature: row.signature,
                     },
                 );
             }
         } else {
             // Blank viewport rows are recycled later. Removing their metadata
             // prevents new output from inheriting a stale line-modification time.
-            row_timestamps.remove(&row.absolute_line);
+            row_timestamps.remove(&row.line_id);
         }
     }
+}
+
+fn trim_row_timestamp_history(
+    row_timestamps: &mut HashMap<u64, TerminalRowTimestamp>,
+    retained_min_line: &mut Option<u64>,
+    min_line: u64,
+) {
+    let Some(previous_min_line) = *retained_min_line else {
+        row_timestamps.retain(|line, _| *line >= min_line);
+        *retained_min_line = Some(min_line);
+        return;
+    };
+
+    if min_line <= previous_min_line {
+        // Snapshot identity can restart when a pane is rebuilt. New rows may then be inserted
+        // below the former boundary, so restart incremental trimming from this identity.
+        *retained_min_line = Some(min_line);
+        return;
+    }
+
+    let advanced_lines =
+        usize::try_from(min_line.saturating_sub(previous_min_line)).unwrap_or(usize::MAX);
+    if advanced_lines < row_timestamps.len() {
+        // Normal scrolling advances by only a few rows. Removing those keys is
+        // cheaper than scanning the entire retained timestamp history.
+        for line in previous_min_line..min_line {
+            row_timestamps.remove(&line);
+        }
+    } else {
+        row_timestamps.retain(|line, _| *line >= min_line);
+    }
+    *retained_min_line = Some(min_line);
 }
 
 fn terminal_row_timestamp_signature(row: &TerminalRow) -> u64 {
@@ -3391,6 +3582,29 @@ mod tests {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             div()
         }
+    }
+
+    #[test]
+    fn trigger_input_appends_only_the_explicit_enter() {
+        assert!(terminal_trigger_input("", false).is_none());
+        assert_eq!(
+            terminal_trigger_input("value", false)
+                .as_ref()
+                .map(|input| input.as_str()),
+            Some("value")
+        );
+        assert_eq!(
+            terminal_trigger_input("value\nnext", true)
+                .as_ref()
+                .map(|input| input.as_str()),
+            Some("value\nnext\r")
+        );
+        assert_eq!(
+            terminal_trigger_input("", true)
+                .as_ref()
+                .map(|input| input.as_str()),
+            Some("\r")
+        );
     }
 
     #[test]
@@ -3565,6 +3779,8 @@ mod tests {
             cell.cursor = true;
         }
         let mut row = TerminalRow {
+            line_id: absolute_line.max(0) as u64,
+            source_id: 0,
             absolute_line,
             cells: Arc::new(cells),
             wrapped: false,
@@ -3591,6 +3807,49 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_line_ids_follow_scrolled_sources_without_reusing_recycled_rows() {
+        let mut previous_lines = (0..3)
+            .map(|line| timestamp_test_row(line, &format!("line-{line}")))
+            .collect::<Vec<_>>();
+        for (index, row) in previous_lines.iter_mut().enumerate() {
+            row.line_id = 10 + index as u64;
+            row.source_id = 100 + index;
+        }
+        let previous = TerminalSnapshot {
+            generation: 1,
+            cols: 8,
+            rows: 3,
+            cursor_col: 0,
+            cursor_row: 2,
+            cursor_shape: TerminalCursorShape::Block,
+            display_offset: 0,
+            scrollback_lines: 0,
+            lines: previous_lines,
+            images: Vec::new(),
+        };
+        let mut next = previous.clone();
+        next.lines = vec![
+            previous.lines[1].clone(),
+            previous.lines[2].clone(),
+            previous.lines[0].clone(),
+        ];
+        for (index, row) in next.lines.iter_mut().enumerate() {
+            row.line_id = 0;
+            row.absolute_line = index as i64;
+        }
+        next.lines[0].signature = 2_000;
+        let mut next_line_id = 20;
+
+        reconcile_snapshot_line_ids(&mut next, &previous, &mut next_line_id);
+
+        assert_eq!(
+            next.lines.iter().map(|row| row.line_id).collect::<Vec<_>>(),
+            vec![11, 12, 20]
+        );
+        assert_eq!(next_line_id, 21);
+    }
+
+    #[test]
     fn row_timestamps_track_last_modified_nonblank_content() {
         let mut row_timestamps = HashMap::new();
         let blank_snapshot = timestamp_test_snapshot(timestamp_test_row(42, "   "));
@@ -3611,11 +3870,11 @@ mod tests {
         let unchanged_snapshot =
             timestamp_test_snapshot(timestamp_test_row_with_cursor(42, "ls", Some(1), true));
         record_timestampable_snapshot_rows(&mut row_timestamps, &unchanged_snapshot, "10:00:02");
+        let unchanged_timestamp = row_timestamps.get(&42).expect("timestamped row");
+        assert_eq!(unchanged_timestamp.label, "10:00:01");
         assert_eq!(
-            row_timestamps
-                .get(&42)
-                .map(|timestamp| timestamp.label.as_str()),
-            Some("10:00:01")
+            unchanged_timestamp.source_signature,
+            unchanged_snapshot.lines[0].signature
         );
 
         let changed_snapshot = timestamp_test_snapshot(timestamp_test_row(42, "pwd"));
@@ -3635,6 +3894,35 @@ mod tests {
         record_timestampable_snapshot_rows(&mut row_timestamps, &cleared_snapshot, "10:00:04");
 
         assert!(!row_timestamps.contains_key(&42));
+    }
+
+    #[test]
+    fn row_timestamp_history_trims_incrementally_and_handles_rewind() {
+        let timestamp = |line: u64| TerminalRowTimestamp {
+            label: line.to_string(),
+            signature: line,
+            source_signature: line,
+        };
+        let mut row_timestamps = (0..6)
+            .map(|line| (line, timestamp(line)))
+            .collect::<HashMap<_, _>>();
+        let mut retained_min_line = None;
+
+        trim_row_timestamp_history(&mut row_timestamps, &mut retained_min_line, 2);
+        assert_eq!(retained_min_line, Some(2));
+        assert_eq!(row_timestamps.len(), 4);
+        assert!(row_timestamps.keys().all(|line| *line >= 2));
+
+        trim_row_timestamp_history(&mut row_timestamps, &mut retained_min_line, 4);
+        assert_eq!(retained_min_line, Some(4));
+        assert_eq!(row_timestamps.len(), 2);
+        assert!(row_timestamps.keys().all(|line| *line >= 4));
+
+        trim_row_timestamp_history(&mut row_timestamps, &mut retained_min_line, 1);
+        row_timestamps.insert(1, timestamp(1));
+        trim_row_timestamp_history(&mut row_timestamps, &mut retained_min_line, 3);
+        assert_eq!(retained_min_line, Some(3));
+        assert!(!row_timestamps.contains_key(&1));
     }
 
     #[gpui::test]

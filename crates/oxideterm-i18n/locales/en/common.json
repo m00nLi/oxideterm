@@ -55,6 +55,7 @@
     "cmd_new_terminal": "New Local Terminal",
     "cmd_new_connection": "New SSH Connection",
     "cmd_settings": "Open Settings",
+    "cmd_manage_terminal_triggers": "Manage Terminal Triggers",
     "cmd_toggle_sidebar": "Toggle Sidebar",
     "cmd_zen_mode": "Toggle Zen Mode",
     "cmd_toggle_panel": "Toggle Panel",
@@ -606,6 +607,8 @@
       },
       "confirm": {
         "import_title": "Import remote snapshot?",
+        "force_upload_title": "Force overwrite remote snapshot?",
+        "force_upload_description": "This replaces the remote snapshot with the selected local data even if it changed on another device. Those remote changes may be lost.",
         "clear_secret_title": "Clear stored secret?",
         "clear_secret_description": "This removes the stored value for {{label}} from secure storage. This action cannot be undone.",
         "restore_backup_title": "Restore the previous local backup?",

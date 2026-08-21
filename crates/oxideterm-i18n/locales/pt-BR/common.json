@@ -55,6 +55,7 @@
     "cmd_new_terminal": "Novo terminal local",
     "cmd_new_connection": "Nova conexão SSH",
     "cmd_settings": "Abrir configurações",
+    "cmd_manage_terminal_triggers": "Gerenciar gatilhos do terminal",
     "cmd_toggle_sidebar": "Alternar barra lateral",
     "cmd_toggle_panel": "Alternar painel",
     "cmd_toggle_ai_sidebar": "Alternar OxideSens",
@@ -614,6 +615,8 @@
       },
       "confirm": {
         "import_title": "Importar snapshot remoto?",
+        "force_upload_title": "Forçar a substituição do snapshot remoto?",
+        "force_upload_description": "Isso substitui o snapshot remoto pelos dados locais selecionados, mesmo que ele tenha sido alterado em outro dispositivo. Essas alterações remotas podem ser perdidas.",
         "clear_secret_title": "Limpar credenciais armazenadas?",
         "clear_secret_description": "Isso remove o valor armazenado para {{label}} do armazenamento seguro. Esta ação não pode ser desfeita.",
         "restore_backup_title": "Restaurar o backup local anterior?",

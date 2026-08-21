@@ -68,6 +68,7 @@ members = [
   "crates/oxideterm-ssh",
   "crates/oxideterm-terminal",
   "crates/oxideterm-terminal-recording",
+  "crates/oxideterm-terminal-triggers",
   "crates/oxideterm-terminal-encoding",
   "crates/oxideterm-terminal-graphics",
   "crates/oxideterm-terminal-model",
@@ -108,7 +109,7 @@ russh-sftp = { path = "crates/russh-sftp" }
 edition = "2024"
 license = "GPL-3.0-only"
 publish = false
-version = "2.0.22"
+version = "2.0.23"
 
 [workspace.dependencies]
 accesskit = "0.24.0"

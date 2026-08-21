@@ -310,6 +310,17 @@ impl LocalPtySession {
             .send(LocalGraphicsMsg::SetOutputEventsEnabled(enabled));
     }
 
+    pub fn set_trigger_rules(
+        &mut self,
+        rules: Option<Arc<oxideterm_terminal_triggers::CompiledTriggerSet>>,
+    ) {
+        // Cross-chunk state is transferred to and owned by the PTY reader thread.
+        let _ = self
+            .notifier
+            .0
+            .send(LocalGraphicsMsg::SetTriggerRules(rules));
+    }
+
     pub fn start_modem_transfer(
         &mut self,
         request: TerminalModemTransferRequest,
@@ -696,7 +707,10 @@ pub(crate) fn incremental_snapshot_from_term<T: EventListener>(
 
     let mut snapshot = previous.clone();
     for row in dirty_rows.expect("partial terminal damage must contain row indexes") {
-        snapshot.lines[row] = snapshot_row_from_term(term, size, display_offset, row);
+        let line_id = snapshot.lines[row].line_id;
+        let mut next_row = snapshot_row_from_term(term, size, display_offset, row);
+        next_row.line_id = line_id;
+        snapshot.lines[row] = next_row;
     }
     refresh_snapshot_metadata(&mut snapshot, term, size, graphics, display_offset);
     snapshot
@@ -794,11 +808,12 @@ pub(crate) fn snapshot_from_term_with_display_offset<T: EventListener>(
 
     if cursor_row < rows.len() && cursor_col < size.cols {
         rows[cursor_row].cells_mut()[cursor_col].cursor = true;
-        let _ = mark_active_input_rows(&mut rows, cursor_row);
-    }
-
-    for row in &mut rows {
-        row.refresh_signature();
+        let active_input_rows = mark_active_input_rows(&mut rows, cursor_row);
+        // Snapshot rows already carry content signatures. Only cursor and
+        // active-input metadata changed after row construction.
+        for row in &mut rows[active_input_rows] {
+            row.refresh_signature();
+        }
     }
 
     TerminalSnapshot {
@@ -821,48 +836,76 @@ fn snapshot_row_from_term<T: EventListener>(
     display_offset: usize,
     row: usize,
 ) -> TerminalRow {
-    let grid_line = row as i32 - display_offset as i32;
-    let mut snapshot_row = TerminalRow {
-        absolute_line: i64::from(grid_line),
-        wrapped: false,
-        active_input: false,
-        signature: 0,
-        cells: Arc::new(vec![
-            TerminalCell {
-                ch: ' ',
-                zerowidth: String::new(),
-                wide: false,
-                fg: OXIDETERM_DARK_THEME.foreground,
-                bg: OXIDETERM_DARK_THEME.ansi_background,
-                style_origin: TerminalStyleOrigin::default(),
-                attrs: TerminalAttrs::default(),
-                hyperlink: None,
-                cursor: false,
-            };
-            size.cols
-        ]),
+    let Some(source) = snapshot_row_source(term, size, display_offset, row) else {
+        return blank_snapshot_row(size, display_offset, row);
     };
+    snapshot_row_from_source(term, size, display_offset, row, source)
+}
+
+#[derive(Clone, Copy)]
+struct SnapshotRowSource {
+    source_id: usize,
+    populated_cols: usize,
+    wrapped: bool,
+}
+
+fn snapshot_row_source<T: EventListener>(
+    term: &Term<T>,
+    size: TerminalSize,
+    display_offset: usize,
+    row: usize,
+) -> Option<SnapshotRowSource> {
+    let grid_line = row as i32 - display_offset as i32;
     if grid_line < -(term.grid().history_size() as i32) || grid_line >= term.screen_lines() as i32 {
-        snapshot_row.refresh_signature();
-        return snapshot_row;
+        return None;
     }
 
     let terminal_row = &term.grid()[Line(grid_line)];
-    for (col, cell) in terminal_row[..].iter().take(size.cols).enumerate() {
-        if cell.flags.contains(Flags::WRAPLINE) {
-            snapshot_row.wrapped = true;
-        }
+    let terminal_cells = &terminal_row[..];
+    let default_cell = AlacrittyCell::default();
+    let populated_cols = terminal_cells
+        .iter()
+        .take(size.cols)
+        .rposition(|cell| cell != &default_cell)
+        .map_or(0, |column| column + 1);
+    let visible_cells = &terminal_cells[..populated_cols];
+    let wrapped = visible_cells
+        .iter()
+        .any(|cell| cell.flags.contains(Flags::WRAPLINE));
+
+    Some(SnapshotRowSource {
+        // The cell allocation follows the row content when Alacritty rotates or swaps row values.
+        source_id: terminal_cells.as_ptr() as usize,
+        populated_cols,
+        wrapped,
+    })
+}
+
+fn snapshot_row_from_source<T: EventListener>(
+    term: &Term<T>,
+    size: TerminalSize,
+    display_offset: usize,
+    row: usize,
+    source: SnapshotRowSource,
+) -> TerminalRow {
+    let grid_line = row as i32 - display_offset as i32;
+    let terminal_row = &term.grid()[Line(grid_line)];
+    let terminal_cells = &terminal_row[..];
+    let mut cells = Vec::with_capacity(size.cols);
+    // Default trailing cells have fixed paint data, so skip color and metadata conversion.
+    for cell in &terminal_cells[..source.populated_cols] {
         if cell
             .flags
             .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
         {
+            cells.push(blank_terminal_cell());
             continue;
         }
         let ch = if cell.c == '\0' { ' ' } else { cell.c };
         let attrs = attrs_from_flags(cell.flags);
         let (fg, bg) = style_colors_for_cell(cell.fg, cell.bg, ch, attrs);
         let style_origin = style_origin_for_cell(cell.fg, cell.bg, attrs);
-        snapshot_row.cells_mut()[col] = TerminalCell {
+        cells.push(TerminalCell {
             ch,
             zerowidth: cell.zerowidth().into_iter().flatten().copied().collect(),
             wide: cell.flags.contains(Flags::WIDE_CHAR),
@@ -874,10 +917,48 @@ fn snapshot_row_from_term<T: EventListener>(
                 .hyperlink()
                 .map(|hyperlink| hyperlink.uri().to_string()),
             cursor: false,
-        };
+        });
     }
+    cells.resize(size.cols, blank_terminal_cell());
+    let mut snapshot_row = TerminalRow {
+        line_id: 0,
+        source_id: source.source_id,
+        absolute_line: i64::from(grid_line),
+        wrapped: source.wrapped,
+        active_input: false,
+        signature: 0,
+        cells: Arc::new(cells),
+    };
     snapshot_row.refresh_signature();
     snapshot_row
+}
+
+fn blank_snapshot_row(size: TerminalSize, display_offset: usize, row: usize) -> TerminalRow {
+    let mut snapshot_row = TerminalRow {
+        line_id: 0,
+        source_id: 0,
+        absolute_line: row as i64 - display_offset as i64,
+        wrapped: false,
+        active_input: false,
+        signature: 0,
+        cells: Arc::new(vec![blank_terminal_cell(); size.cols]),
+    };
+    snapshot_row.refresh_signature();
+    snapshot_row
+}
+
+fn blank_terminal_cell() -> TerminalCell {
+    TerminalCell {
+        ch: ' ',
+        zerowidth: String::new(),
+        wide: false,
+        fg: OXIDETERM_DARK_THEME.foreground,
+        bg: OXIDETERM_DARK_THEME.ansi_background,
+        style_origin: TerminalStyleOrigin::default(),
+        attrs: TerminalAttrs::default(),
+        hyperlink: None,
+        cursor: false,
+    }
 }
 
 fn refresh_snapshot_metadata<T: EventListener>(
@@ -950,6 +1031,7 @@ mod incremental_snapshot_tests {
         assert_eq!(actual.scrollback_lines, expected.scrollback_lines);
         assert_eq!(actual.lines.len(), expected.lines.len());
         for (actual, expected) in actual.lines.iter().zip(&expected.lines) {
+            assert_eq!(actual.source_id, expected.source_id);
             assert_eq!(actual.absolute_line, expected.absolute_line);
             assert_eq!(actual.cells, expected.cells);
             assert_eq!(actual.wrapped, expected.wrapped);
@@ -987,6 +1069,28 @@ mod incremental_snapshot_tests {
             &next.lines[2].cells
         ));
         assert_snapshot_content_eq(&next, &full);
+    }
+
+    #[test]
+    fn snapshot_source_identity_follows_output_rows_during_scroll() {
+        let size = TerminalSize {
+            cols: 8,
+            rows: 3,
+            cell_width: 0,
+            cell_height: 0,
+        };
+        let (listener, _events) = local_event_channel();
+        let mut term = Term::new(Config::default(), &size, listener);
+        let graphics = TerminalGraphicsState::default();
+        let mut parser = Processor::<StdSyncHandler>::new();
+        parser.advance(&mut term, b"one\r\ntwo\r\nthree\r\nfour");
+        let previous = snapshot_from_term(&term, size, &graphics);
+
+        parser.advance(&mut term, b"\r\nfive");
+        let next = snapshot_from_term(&term, size, &graphics);
+
+        assert_eq!(next.lines[0].source_id, previous.lines[1].source_id);
+        assert_eq!(next.lines[1].source_id, previous.lines[2].source_id);
     }
 
     #[test]

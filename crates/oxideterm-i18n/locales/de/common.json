@@ -55,6 +55,7 @@
     "cmd_new_terminal": "Neues lokales Terminal",
     "cmd_new_connection": "Neue SSH-Verbindung",
     "cmd_settings": "Einstellungen öffnen",
+    "cmd_manage_terminal_triggers": "Terminalauslöser verwalten",
     "cmd_toggle_sidebar": "Seitenleiste umschalten",
     "cmd_toggle_panel": "Panel umschalten",
     "cmd_toggle_ai_sidebar": "OxideSens umschalten",
@@ -614,6 +615,8 @@
       },
       "confirm": {
         "import_title": "Remote-Snapshot importieren?",
+        "force_upload_title": "Remote-Snapshot zwangsweise überschreiben?",
+        "force_upload_description": "Dadurch wird der Remote-Snapshot durch die ausgewählten lokalen Daten ersetzt, auch wenn er auf einem anderen Gerät geändert wurde. Diese Remote-Änderungen können verloren gehen.",
         "clear_secret_title": "Gespeichertes Geheimnis löschen?",
         "clear_secret_description": "Dies entfernt den gespeicherten Wert für {{label}} aus dem sicheren Speicher. Diese Aktion kann nicht rückgängig gemacht werden.",
         "restore_backup_title": "Vorherige lokale Sicherung wiederherstellen?",

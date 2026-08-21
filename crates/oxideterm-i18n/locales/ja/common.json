@@ -55,6 +55,7 @@
     "cmd_new_terminal": "新規ローカルターミナル",
     "cmd_new_connection": "新規 SSH 接続",
     "cmd_settings": "設定を開く",
+    "cmd_manage_terminal_triggers": "ターミナルトリガーを管理",
     "cmd_toggle_sidebar": "サイドバー切替",
     "cmd_toggle_panel": "パネルの切り替え",
     "cmd_toggle_ai_sidebar": "OxideSens の切り替え",
@@ -614,6 +615,8 @@
       },
       "confirm": {
         "import_title": "リモートスナップショットをインポートしますか？",
+        "force_upload_title": "リモートスナップショットを強制的に上書きしますか？",
+        "force_upload_description": "別のデバイスで変更されていても、選択したローカルデータでリモートスナップショットを置き換えます。リモート側の変更は失われる可能性があります。",
         "clear_secret_title": "保存済みシークレットを消去しますか？",
         "clear_secret_description": "{{label}} の保存済みの値をセキュアストレージから削除します。この操作は取り消せません。",
         "restore_backup_title": "以前のローカルバックアップを復元しますか？",

@@ -15,9 +15,7 @@ struct ConnectionFormModalSnapshot {
     serial_profile_id: Option<String>,
     telnet_profile_id: Option<String>,
     saved_password_keychain_id: Option<String>,
-    password_visible: bool,
-    password_loading: bool,
-    password_error: Option<String>,
+    password_loaded: bool,
     key_path: String,
     managed_key_id: String,
     cert_path: String,
@@ -65,9 +63,7 @@ impl ConnectionFormModalSnapshot {
             serial_profile_id: form.serial_profile_id.clone(),
             telnet_profile_id: form.telnet_profile_id.clone(),
             saved_password_keychain_id: form.saved_password_keychain_id.clone(),
-            password_visible: form.password_visible,
-            password_loading: form.password_loading,
-            password_error: form.password_error.clone(),
+            password_loaded: form.password_loaded,
             key_path: form.key_path.clone(),
             managed_key_id: form.managed_key_id.clone(),
             cert_path: form.cert_path.clone(),
@@ -621,31 +617,25 @@ impl WorkspaceApp {
                                     if edit_properties_mode
                                         && form.saved_password_keychain_id.is_some()
                                     {
-                                        content
-                                            .child(self.render_edit_saved_password_field(
-                                                form.password_visible,
-                                                form.password_loading,
+                                        let content = if form.password_loaded {
+                                            content.child(self.render_connection_secret_field(
+                                                self.i18n.t(
+                                                    "sessionManager.edit_properties.saved_password",
+                                                ),
+                                                String::new(),
+                                                NewConnectionField::Password,
                                                 cx,
                                             ))
-                                            .child(self.render_connection_hint(
-                                                self.i18n.t(
-                                                    "sessionManager.edit_properties.password_hint",
-                                                ),
-                                            ))
-                                            .when_some(
-                                                form.password_error.clone(),
-                                                |content, error| {
-                                                    content.child(
-                                                        div()
-                                                            .text_size(px(self
-                                                                .tokens
-                                                                .metrics
-                                                                .ui_text_xs))
-                                                            .text_color(rgb(self.tokens.ui.error))
-                                                            .child(error),
-                                                    )
-                                                },
+                                        } else {
+                                            content.child(
+                                                self.render_edit_saved_password_field(cx),
                                             )
+                                        };
+                                        content.child(self.render_connection_hint(
+                                            self.i18n.t(
+                                                "sessionManager.edit_properties.password_hint",
+                                            ),
+                                        ))
                                     } else if edit_properties_mode {
                                         content.child(self.render_connection_secret_field(
                                             self.i18n.t("ssh.form.password"),
@@ -1042,18 +1032,33 @@ impl WorkspaceApp {
                                         ))
                                 })
                                 .when(mosh_mode, |content| {
+                                    let route = div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(self.tokens.metrics.modal_section_gap))
+                                        .child(self.render_connection_hint(
+                                            self.i18n.t("mosh.form.jump_route_hint"),
+                                        ))
+                                        .child(self.render_proxy_chain_section(false, cx))
+                                        .into_any_element();
                                     let mosh_options = self.render_mosh_advanced_fields(
-                                            &form.mosh_server_executable,
-                                            &form.mosh_udp_host,
+                                        &form.mosh_server_executable,
+                                        &form.mosh_udp_host,
                                             &form.mosh_udp_port,
-                                            &form.mosh_locale,
-                                            cx,
-                                        );
-                                    content.child(self.render_connection_form_section(
-                                        ConnectionFormSection::MoshOptions,
-                                        mosh_options,
+                                        &form.mosh_locale,
                                         cx,
-                                    ))
+                                        );
+                                    content
+                                        .child(self.render_connection_form_section(
+                                            ConnectionFormSection::Route,
+                                            route,
+                                            cx,
+                                        ))
+                                        .child(self.render_connection_form_section(
+                                            ConnectionFormSection::MoshOptions,
+                                            mosh_options,
+                                            cx,
+                                        ))
                                 })
                                     })
                                     .when(shows_icon_field, |content| {

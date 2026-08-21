@@ -236,6 +236,8 @@ mod tests {
 
     fn snapshot(text: &str, explicit_range: Range<usize>) -> TerminalSnapshot {
         let mut row = TerminalRow {
+            line_id: 0,
+            source_id: 0,
             absolute_line: 0,
             cells: Arc::new(
                 text.chars()
@@ -279,6 +281,34 @@ mod tests {
 
         assert!(!layout.foregrounds.contains_key(&(0, 0)));
         assert!(layout.foregrounds.contains_key(&(0, 4)));
+    }
+
+    #[test]
+    fn localized_date_colors_survive_wide_character_spacers() {
+        let mut snapshot = snapshot("6月22", 0..0);
+        let cells = snapshot.lines[0].cells_mut();
+        cells[1].wide = true;
+        cells.insert(2, cell(' ', false));
+        snapshot.cols = cells.len();
+        snapshot.lines[0].refresh_signature();
+        let theme = TerminalUiTheme::default();
+        let scheme = compiled_builtin_scheme(SemanticScheme::Balanced);
+        let mut layout = TerminalHighlightLayout::empty();
+
+        append_terminal_semantics_for_rows(
+            &snapshot,
+            &[],
+            0..1,
+            &theme,
+            scheme,
+            SemanticShellDialect::Auto,
+            &mut layout,
+        );
+
+        let timestamp = semantic_foreground(&theme, SemanticClass::Timestamp, scheme);
+        for column in [0, 1, 3, 4] {
+            assert_eq!(layout.foregrounds.get(&(0, column)), Some(&timestamp));
+        }
     }
 
     #[test]

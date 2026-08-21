@@ -48,6 +48,25 @@ impl Default for TerminalAutosuggestSettings {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TerminalTriggerSettings {
+    // Shell execution is a separate trust decision from enabling ordinary terminal triggers.
+    #[serde(default)]
+    pub explicit_shell_enabled: bool,
+    #[serde(flatten)]
+    pub extra: ExtraFields,
+}
+
+impl Default for TerminalTriggerSettings {
+    fn default() -> Self {
+        Self {
+            explicit_shell_enabled: false,
+            extra: ExtraFields::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TerminalCommandBarSettings {
     pub enabled: bool,
     pub git_status: bool,
@@ -323,6 +342,8 @@ pub struct TerminalSettings {
     pub autosuggest: TerminalAutosuggestSettings,
     pub command_bar: TerminalCommandBarSettings,
     #[serde(default)]
+    pub triggers: TerminalTriggerSettings,
+    #[serde(default)]
     pub remote_shell_integration_mode: RemoteShellIntegrationMode,
     pub command_marks: TerminalCommandMarksSettings,
     pub background_enabled: bool,
@@ -439,6 +460,7 @@ impl Default for TerminalSettings {
             free_type_mode: false,
             autosuggest: TerminalAutosuggestSettings::default(),
             command_bar: TerminalCommandBarSettings::default(),
+            triggers: TerminalTriggerSettings::default(),
             remote_shell_integration_mode: RemoteShellIntegrationMode::Ask,
             command_marks: TerminalCommandMarksSettings::default(),
             background_enabled: true,
@@ -503,6 +525,19 @@ mod tests {
     fn keepalive_interval_preserves_enabled_values() {
         assert_eq!(effective_keepalive_interval(30, b"\n"), 30);
         assert_eq!(effective_keepalive_interval(1, b"\n"), 1);
+    }
+
+    #[test]
+    fn terminal_trigger_shell_execution_defaults_to_denied() {
+        let mut value = serde_json::to_value(TerminalSettings::default()).expect("settings value");
+        value
+            .as_object_mut()
+            .expect("terminal settings object")
+            .remove("triggers");
+
+        let settings: TerminalSettings = serde_json::from_value(value).expect("legacy settings");
+
+        assert!(!settings.triggers.explicit_shell_enabled);
     }
 
     #[test]

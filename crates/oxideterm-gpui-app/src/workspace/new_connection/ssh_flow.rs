@@ -46,7 +46,7 @@ use crate::workspace::{
     delivery::ActiveDeliverySender,
     session_manager::{
         RuntimeSecretHandoff, duplicate_connection_template_name, form_from_saved_connection,
-        restore_saved_proxy_chain_in_form, save_request_from_form_with_existing_auth,
+        restore_legacy_jump_host_in_form, save_request_from_form_with_existing_auth,
         save_request_from_form_with_proxy_hop_prefix, upstream_proxy_config_from_form,
     },
 };
@@ -349,13 +349,6 @@ impl WorkspaceApp {
             cx.notify();
         });
         result
-    }
-
-    pub(in crate::workspace) fn saved_connection_form_source_id<'a>(
-        &self,
-        cx: &'a App,
-    ) -> Option<&'a str> {
-        self.connection_form_state(cx).saved_connection_source_id()
     }
 
     pub(in crate::workspace) fn saved_connection_form_uses_unloaded_secret(
