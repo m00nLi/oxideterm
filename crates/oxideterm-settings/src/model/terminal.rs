@@ -59,7 +59,7 @@ pub struct TerminalCommandBarSettings {
     pub show_current_directory: bool,
     pub smart_completion: bool,
     pub quick_commands_enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_command_bar_quick_bar")]
     pub quick_bar_enabled: bool,
     pub quick_commands_confirm_before_run: bool,
     pub quick_commands_show_toast: bool,
@@ -106,7 +106,7 @@ impl Default for TerminalCommandBarSettings {
             show_current_directory: true,
             smart_completion: true,
             quick_commands_enabled: true,
-            quick_bar_enabled: false,
+            quick_bar_enabled: true,
             quick_commands_confirm_before_run: false,
             quick_commands_show_toast: true,
             focus_handoff_commands: RECOMMENDED_FOCUS_HANDOFF_COMMANDS
@@ -123,6 +123,10 @@ fn default_command_bar_project_tasks() -> bool {
 }
 
 fn default_command_bar_current_directory_awareness() -> bool {
+    true
+}
+
+fn default_command_bar_quick_bar() -> bool {
     true
 }
 
@@ -707,7 +711,7 @@ mod tests {
                 |settings| settings.current_directory_awareness,
             ),
             ("projectTasks", true, |settings| settings.project_tasks),
-            ("quickBarEnabled", false, |settings| settings.quick_bar_enabled),
+            ("quickBarEnabled", true, |settings| settings.quick_bar_enabled),
         ];
 
         for (field, expected, read) in defaults {
