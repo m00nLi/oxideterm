@@ -417,6 +417,17 @@ impl ProfilerRegistry {
         true
     }
 
+    /// Restore a degraded sampler to `Running` without touching its metrics or
+    /// history, used when a sample succeeds after the failure threshold.
+    pub fn mark_running(&self, connection_id: &str) -> bool {
+        let mut profilers = lock(&self.profilers);
+        let Some(entry) = profilers.get_mut(connection_id) else {
+            return false;
+        };
+        entry.snapshot.state = ProfilerState::Running;
+        true
+    }
+
     pub fn record_metrics(&self, update: ProfilerUpdate) -> bool {
         let mut profilers = lock(&self.profilers);
         let Some(entry) = profilers.get_mut(&update.connection_id) else {
@@ -691,6 +702,7 @@ async fn sample_loop(
     let mut previous_sample: Option<PreviousResourceSample> = None;
     let mut consecutive_failures = 0_u32;
     let mut consecutive_incomplete = 0_u32;
+    let mut degraded = false;
     let mut interval = tokio::time::interval(RESOURCE_SAMPLE_INTERVAL);
     interval.tick().await;
 
@@ -818,13 +830,25 @@ async fn sample_loop(
                         }
                     } else {
                         consecutive_incomplete = 0;
-                        if matches!(
-                            metrics.source,
-                            MetricsSource::RttOnly | MetricsSource::Unsupported
-                        ) {
-                            consecutive_failures = consecutive_failures.saturating_add(1);
-                        } else {
-                            consecutive_failures = 0;
+                        match metrics.source {
+                            // Unsupported is a stable state with its own retry
+                            // affordance in the UI; it is not a failure streak.
+                            MetricsSource::Unsupported => {}
+                            MetricsSource::RttOnly => {
+                                consecutive_failures = consecutive_failures.saturating_add(1);
+                                if !degraded
+                                    && consecutive_failures >= RESOURCE_MAX_CONSECUTIVE_FAILURES
+                                {
+                                    degraded = registry.mark_degraded(&connection_id);
+                                }
+                            }
+                            _ => {
+                                consecutive_failures = 0;
+                                if degraded {
+                                    registry.mark_running(&connection_id);
+                                    degraded = false;
+                                }
+                            }
                         }
                         debug!(
                             connection_id,
@@ -843,6 +867,9 @@ async fn sample_loop(
                 }
                 Err(error) => {
                     consecutive_failures = consecutive_failures.saturating_add(1);
+                    if !degraded && consecutive_failures >= RESOURCE_MAX_CONSECUTIVE_FAILURES {
+                        degraded = registry.mark_degraded(&connection_id);
+                    }
                     let elapsed_ms = started.elapsed().as_millis();
                     warn!(
                         connection_id,
@@ -924,8 +951,21 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
 
     use crate::ResourceTopProcess;
+
+    const FULL_SAMPLE: &str = concat!(
+        "===STAT===\n",
+        "cpu  100 0 50 500 0 0 0 0\n",
+        "===MEMINFO===\n",
+        "MemTotal: 100000 kB\n",
+        "MemAvailable: 50000 kB\n",
+        "===LOADAVG===\n",
+        "0.10 0.20 0.30\n",
+        "===TOPPROCS===\n",
+        "1\t0\troot\tS\t0.0\t1.5\t100\t200\t10:00\tinit\t/init\n",
+    );
 
     fn empty_metrics_with_cached_system_info(
         timestamp_ms: u64,
@@ -974,6 +1014,124 @@ mod tests {
         assert_eq!(registry.state("conn-1"), Some(ProfilerState::Running));
         assert!(registry.latest("conn-1").is_none());
         assert!(registry.history("conn-1").is_empty());
+    }
+
+    #[test]
+    fn mark_running_restores_state_without_touching_metrics_or_history() {
+        let registry = ProfilerRegistry::new();
+        registry.start("conn-1");
+        registry.record_metrics(ProfilerUpdate {
+            connection_id: "conn-1".into(),
+            metrics: ResourceMetrics::empty(1, MetricsSource::Full),
+        });
+        registry.mark_degraded("conn-1");
+
+        assert!(registry.mark_running("conn-1"));
+        assert_eq!(registry.state("conn-1"), Some(ProfilerState::Running));
+        assert_eq!(
+            registry.latest("conn-1"),
+            Some(ResourceMetrics::empty(1, MetricsSource::Full))
+        );
+        assert_eq!(registry.history("conn-1").len(), 1);
+        assert!(!registry.mark_running("missing"));
+    }
+
+    #[tokio::test]
+    async fn repeated_sample_failures_degrade_and_recover_without_dropping_last_good() {
+        let registry = ProfilerRegistry::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let script = vec![
+            Ok(FULL_SAMPLE.to_string()),
+            Err("boom".to_string()),
+            Err("boom".to_string()),
+            Err("boom".to_string()),
+            Ok(FULL_SAMPLE.to_string()),
+        ];
+        let sampler = Arc::new(ScriptedSampler::new(script));
+        assert!(registry.start_with_sampler("conn-1", sampler, "Linux", Some(tx)));
+        assert!(registry.refresh("conn-1"));
+
+        let first_update = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("first sample should arrive")
+            .expect("update channel should stay open");
+        assert_eq!(first_update.metrics.source, MetricsSource::Full);
+        let last_good = registry.latest("conn-1").expect("last good sample");
+
+        registry.refresh("conn-1");
+        registry.refresh("conn-1");
+        registry.refresh("conn-1");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if registry.state("conn-1") == Some(ProfilerState::Degraded) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("profiler should degrade after repeated failures");
+
+        // Failed samples must not replace the last good snapshot.
+        assert_eq!(registry.latest("conn-1"), Some(last_good.clone()));
+
+        registry.refresh("conn-1");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if registry.state("conn-1") == Some(ProfilerState::Running) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("profiler should recover after a good sample");
+
+        let recovered_update = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("recovery sample should arrive")
+            .expect("update channel should stay open");
+        assert_eq!(recovered_update.metrics.source, MetricsSource::Full);
+    }
+
+    #[tokio::test]
+    async fn repeated_rtt_only_samples_degrade_and_recover() {
+        let registry = ProfilerRegistry::new();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let script = vec![
+            Ok("garbage output".to_string()),
+            Ok("garbage output".to_string()),
+            Ok("garbage output".to_string()),
+            Ok(FULL_SAMPLE.to_string()),
+        ];
+        let sampler = Arc::new(ScriptedSampler::new(script));
+        assert!(registry.start_with_sampler("conn-1", sampler, "Linux", Some(tx)));
+        assert!(registry.refresh("conn-1"));
+
+        registry.refresh("conn-1");
+        registry.refresh("conn-1");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if registry.state("conn-1") == Some(ProfilerState::Degraded) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("profiler should degrade after repeated RttOnly samples");
+
+        registry.refresh("conn-1");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if registry.state("conn-1") == Some(ProfilerState::Running) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("profiler should recover after a full sample");
     }
 
     #[test]
@@ -1193,6 +1351,57 @@ mod tests {
             _timeout: Duration,
         ) -> ResourceSamplerFuture<'a, Result<Box<dyn ResourceSampleShell>, String>> {
             Box::pin(async { Err("open failed".to_string()) })
+        }
+    }
+
+    struct ScriptedSampler {
+        script: Arc<Mutex<VecDeque<Result<String, String>>>>,
+    }
+
+    impl ScriptedSampler {
+        fn new(script: Vec<Result<String, String>>) -> Self {
+            Self {
+                script: Arc::new(Mutex::new(script.into_iter().collect())),
+            }
+        }
+    }
+
+    impl ResourceSampler for ScriptedSampler {
+        fn open_shell<'a>(
+            &'a self,
+            _init_command: &'a str,
+            _timeout: Duration,
+        ) -> ResourceSamplerFuture<'a, Result<Box<dyn ResourceSampleShell>, String>> {
+            let script = self.script.clone();
+            Box::pin(async move {
+                Ok(Box::new(ScriptedShell { script }) as Box<dyn ResourceSampleShell>)
+            })
+        }
+    }
+
+    struct ScriptedShell {
+        script: Arc<Mutex<VecDeque<Result<String, String>>>>,
+    }
+
+    impl ResourceSampleShell for ScriptedShell {
+        fn sample_until<'a>(
+            &'a mut self,
+            _command: &'a str,
+            _end_marker: &'a str,
+            _timeout: Duration,
+            _max_output_size: usize,
+        ) -> ResourceSamplerFuture<'a, Result<String, String>> {
+            Box::pin(async move {
+                self.script
+                    .lock()
+                    .expect("script poisoned")
+                    .pop_front()
+                    .expect("script exhausted")
+            })
+        }
+
+        fn close<'a>(&'a mut self) -> ResourceSamplerFuture<'a, Result<(), String>> {
+            Box::pin(async { Ok(()) })
         }
     }
 }
