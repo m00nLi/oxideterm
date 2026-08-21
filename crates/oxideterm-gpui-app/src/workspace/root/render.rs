@@ -97,11 +97,6 @@ impl WorkspaceApp {
                     modals.push(self.render_file_manager_dialog(window, has_background, cx));
                 }
             }
-            TabKind::LocalTerminal | TabKind::SshTerminal | TabKind::MoshTerminal => {
-                if self.terminal.read(cx).quick_commands.is_open() {
-                    modals.push(self.render_quick_commands_dialog(window, cx));
-                }
-            }
             _ => {}
         }
         if *tab_kind != TabKind::Sftp

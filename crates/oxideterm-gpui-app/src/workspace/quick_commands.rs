@@ -68,11 +68,8 @@ pub(super) struct QuickCommandsState {
 pub(in crate::workspace) struct TerminalQuickCommandsState {
     pub(super) store: QuickCommandsState,
     pub(super) open: bool,
+    pub(super) pinned: bool,
     pub(super) pending_command: Option<Zeroizing<String>>,
-    pub(super) dialog_size: gpui::Size<gpui::Pixels>,
-    pub(super) dialog_offset: gpui::Point<gpui::Pixels>,
-    pub(super) dialog_drag: Option<(gpui::Point<gpui::Pixels>, gpui::Point<gpui::Pixels>)>,
-    pub(super) dialog_resize: Option<(gpui::Point<gpui::Pixels>, gpui::Size<gpui::Pixels>)>,
     pub(super) list_state: ListState,
     pub(super) list_cache: RefCell<VirtualListSignatureCache>,
     pub(super) input_viewports: RefCell<HashMap<QuickCommandInput, TextInputViewport>>,
@@ -83,11 +80,8 @@ impl TerminalQuickCommandsState {
         Self {
             store: QuickCommandsState::load(settings_path),
             open: false,
+            pinned: false,
             pending_command: None,
-            dialog_size: gpui::size(gpui::px(760.0), gpui::px(520.0)),
-            dialog_offset: gpui::point(gpui::px(0.0), gpui::px(0.0)),
-            dialog_drag: None,
-            dialog_resize: None,
             // User-defined command sets are unbounded, so the surface owns a
             // virtual list instead of rebuilding every row on root repaint.
             list_state: ListState::new(
