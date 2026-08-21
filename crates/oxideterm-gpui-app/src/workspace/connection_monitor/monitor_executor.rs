@@ -98,6 +98,50 @@ where
     }
 }
 
+/// Remove a `Ready` slot only while it still holds `expected`, so a stale
+/// failure path cannot evict a session that a concurrent caller rebuilt.
+fn evict_session_if_ready<T>(
+    sessions: &Mutex<HashMap<String, SessionSlot<Arc<T>>>>,
+    connection_id: &str,
+    expected: &Arc<T>,
+) -> bool {
+    let mut map = sessions.lock().expect("monitor session map poisoned");
+    let matches = matches!(
+        map.get(connection_id),
+        Some(SessionSlot::Ready(existing)) if Arc::ptr_eq(existing, expected)
+    );
+    if matches {
+        map.remove(connection_id);
+    }
+    matches
+}
+
+/// Acquire the cached session for `connection_id` and transparently replace it
+/// when `alive` reports it dead, so the first command after a reconnect does
+/// not wait out its timeout on a transport whose reader has already exited.
+async fn acquire_live_session<T, E, F, Fut, A>(
+    sessions: &Mutex<HashMap<String, SessionSlot<Arc<T>>>>,
+    connection_id: &str,
+    connect: F,
+    alive: A,
+) -> Result<Arc<T>, E>
+where
+    F: Fn() -> Fut + Copy,
+    Fut: Future<Output = Result<Arc<T>, E>>,
+    A: Fn(&T) -> bool,
+{
+    for _ in 0..2 {
+        let session = acquire_session(sessions, connection_id, connect).await?;
+        if alive(&session) {
+            return Ok(session);
+        }
+        evict_session_if_ready(sessions, connection_id, &session);
+    }
+    // Best effort after a failed replacement: a still-dead session fails the
+    // command immediately and the existing error path evicts it again.
+    acquire_session(sessions, connection_id, connect).await
+}
+
 /// Runs host-tools commands on the right transport for the target node.
 ///
 /// Normal servers keep per-command exec channels on the shared registry
@@ -195,28 +239,38 @@ impl MonitorCommandExecutor {
         }
 
         let connection_id_owned = connection_id.to_string();
-        let session = acquire_session(&self.sessions, connection_id, move || {
-            let config = handle.ssh_config();
-            let (interval_secs, data) = self.keepalive_snapshot();
-            let connection_id = connection_id_owned.clone();
-            async move {
-                debug!(
-                    connection_id,
-                    "opening dedicated single-channel monitor shell"
-                );
-                connect_monitor_shell(config, interval_secs, data)
-                    .await
-                    .map(|shell| Arc::new(tokio::sync::Mutex::new(shell)))
-                    .map_err(|error| {
-                        warn!(
-                            connection_id,
-                            error = %error,
-                            "single-channel monitor connect failed"
-                        );
-                        MonitorShellError::Write(error.to_string())
-                    })
-            }
-        })
+        let session = acquire_live_session(
+            &self.sessions,
+            connection_id,
+            || {
+                let config = handle.ssh_config();
+                let (interval_secs, data) = self.keepalive_snapshot();
+                let connection_id = connection_id_owned.clone();
+                async move {
+                    debug!(
+                        connection_id,
+                        "opening dedicated single-channel monitor shell"
+                    );
+                    connect_monitor_shell(config, interval_secs, data)
+                        .await
+                        .map(|shell| Arc::new(tokio::sync::Mutex::new(shell)))
+                        .map_err(|error| {
+                            warn!(
+                                connection_id,
+                                error = %error,
+                                "single-channel monitor connect failed"
+                            );
+                            MonitorShellError::Write(error.to_string())
+                        })
+                }
+            },
+            |session: &tokio::sync::Mutex<MonitorShellSession>| {
+                session
+                    .try_lock()
+                    .map(|guard| guard.is_alive())
+                    .unwrap_or(true)
+            },
+        )
         .await?;
 
         let result = session
@@ -430,5 +484,91 @@ mod tests {
 
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn dead_cached_session_is_evicted_and_reconnected_once() {
+        let sessions = test_sessions();
+        sessions
+            .lock()
+            .expect("session map poisoned")
+            .insert(
+                "conn-1".to_string(),
+                SessionSlot::Ready(Arc::new(tokio::sync::Mutex::new(0_u8))),
+            );
+        let connects = Arc::new(AtomicUsize::new(0));
+        let connect = || {
+            let attempt = connects.fetch_add(1, Ordering::SeqCst) + 1;
+            async move {
+                tokio::task::yield_now().await;
+                assert_eq!(attempt, 1, "dead session needs exactly one reconnect");
+                Ok::<_, String>(Arc::new(tokio::sync::Mutex::new(1_u8)))
+            }
+        };
+
+        let session = acquire_live_session(&sessions, "conn-1", connect, |slot| {
+            slot.try_lock().is_ok_and(|value| *value == 1)
+        })
+        .await
+        .expect("live session");
+
+        assert_eq!(connects.load(Ordering::SeqCst), 1);
+        assert_eq!(*session.try_lock().expect("session lock"), 1);
+    }
+
+    #[tokio::test]
+    async fn live_cached_session_is_reused_without_reconnecting() {
+        let sessions = test_sessions();
+        sessions
+            .lock()
+            .expect("session map poisoned")
+            .insert(
+                "conn-1".to_string(),
+                SessionSlot::Ready(Arc::new(tokio::sync::Mutex::new(1_u8))),
+            );
+        let connects = Arc::new(AtomicUsize::new(0));
+        let connect = || {
+            let connects = connects.clone();
+            async move {
+                connects.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, String>(Arc::new(tokio::sync::Mutex::new(1_u8)))
+            }
+        };
+
+        let session = acquire_live_session(&sessions, "conn-1", connect, |slot| {
+            slot.try_lock().is_ok_and(|value| *value == 1)
+        })
+        .await
+        .expect("live session");
+
+        assert_eq!(connects.load(Ordering::SeqCst), 0);
+        assert_eq!(*session.try_lock().expect("session lock"), 1);
+    }
+
+    #[test]
+    fn evict_only_removes_the_matching_ready_slot() {
+        let sessions = test_sessions();
+        let original = Arc::new(tokio::sync::Mutex::new(1_u8));
+        sessions
+            .lock()
+            .expect("session map poisoned")
+            .insert(
+                "conn-1".to_string(),
+                SessionSlot::Ready(original.clone()),
+            );
+
+        let other = Arc::new(tokio::sync::Mutex::new(1_u8));
+        assert!(!evict_session_if_ready(&sessions, "conn-1", &other));
+        assert!(sessions
+            .lock()
+            .expect("session map poisoned")
+            .contains_key("conn-1"));
+
+        assert!(evict_session_if_ready(&sessions, "conn-1", &original));
+        assert!(sessions
+            .lock()
+            .expect("session map poisoned")
+            .get("conn-1")
+            .is_none());
     }
 }

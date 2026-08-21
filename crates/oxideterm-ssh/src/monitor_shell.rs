@@ -226,6 +226,7 @@ pub struct SingleChannelShellSession<R> {
     command_lock: Mutex<()>,
     state: Arc<Mutex<MonitorShellState>>,
     command_in_flight: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
     reader_task: tokio::task::JoinHandle<()>,
     keepalive_task: tokio::task::JoinHandle<()>,
 }
@@ -273,9 +274,11 @@ where
     pub(crate) fn new(stream: R) -> Self {
         let (reader, writer) = tokio::io::split(stream);
         let state = Arc::new(Mutex::new(MonitorShellState::default()));
+        let alive = Arc::new(AtomicBool::new(true));
         let reader_state = state.clone();
+        let reader_alive = alive.clone();
         let reader_task = tokio::spawn(async move {
-            reader_loop(reader, reader_state).await;
+            reader_loop(reader, reader_state, reader_alive).await;
         });
         let writer = Arc::new(Mutex::new(writer));
         let command_in_flight = Arc::new(AtomicBool::new(false));
@@ -306,9 +309,17 @@ where
             command_lock: Mutex::new(()),
             state,
             command_in_flight,
+            alive,
             reader_task,
             keepalive_task,
         }
+    }
+
+    /// Whether the read side is still running. Once the transport errors or
+    /// closes, the reader marks the session dead so callers can fail new
+    /// commands immediately instead of waiting out their timeouts.
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
     }
 
     pub async fn run_command(
@@ -317,6 +328,9 @@ where
         timeout: Duration,
         max_output: usize,
     ) -> Result<(Vec<u8>, bool), MonitorShellError> {
+        if !self.is_alive() {
+            return Err(MonitorShellError::ChannelClosed);
+        }
         let _command_guard = self.command_lock.lock().await;
         let _in_flight_guard = InFlightGuard::new(self.command_in_flight.clone());
         let receiver = {
@@ -376,7 +390,11 @@ impl<R> Drop for SingleChannelShellSession<R> {
     }
 }
 
-async fn reader_loop<R>(mut reader: R, state: Arc<Mutex<MonitorShellState>>)
+async fn reader_loop<R>(
+    mut reader: R,
+    state: Arc<Mutex<MonitorShellState>>,
+    alive: Arc<AtomicBool>,
+)
 where
     R: AsyncRead + Unpin,
 {
@@ -386,12 +404,14 @@ where
             Ok(read) => read,
             Err(error) => {
                 warn!(error = %error, "monitor shell reader failed");
+                alive.store(false, Ordering::Release);
                 fail_all_waiters(&state).await;
                 return;
             }
         };
         if read == 0 {
             debug!("monitor shell reader reached EOF");
+            alive.store(false, Ordering::Release);
             fail_all_waiters(&state).await;
             return;
         }
@@ -628,5 +648,31 @@ mod tests {
             .0;
         assert_eq!(recovered, b"ok");
         responder.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_fails_fast_after_reader_eof_instead_of_waiting_for_timeout() {
+        let (client, server) = tokio::io::duplex(4096);
+        let mut session = SingleChannelShellSession::new(client);
+        // Dropping the server half closes the channel; the reader observes EOF.
+        drop(server);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while session.is_alive() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("session should mark itself dead after EOF");
+
+        let started = tokio::time::Instant::now();
+        let result = session
+            .run_command("echo x", Duration::from_secs(30), 1024)
+            .await;
+        assert_eq!(result, Err(MonitorShellError::ChannelClosed));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "dead session must fail immediately instead of waiting for the timeout"
+        );
     }
 }
