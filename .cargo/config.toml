@@ -1,0 +1,5 @@
+[env]
+# Tree-sitter links Wasmtime's C API statically. MSVC headers otherwise declare
+# its exports as DLL imports, so Wasm grammar calls jump through invalid addresses.
+CFLAGS_aarch64_pc_windows_msvc = "-DWASM_API_EXTERN= -DWASI_API_EXTERN="
+CFLAGS_x86_64_pc_windows_msvc = "-DWASM_API_EXTERN= -DWASI_API_EXTERN="
